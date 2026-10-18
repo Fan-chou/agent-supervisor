@@ -57,6 +57,11 @@ export const RULES: RuleInfo[] = [
 
 export const RULE_IDS = RULES.map((r) => r.id);
 
+/** 配置里该规则对应的 rules 键（和检测器 ruleDisabled 用同一种查找：id 或 id_ 前缀）。没有就用 id。 */
+export function ruleConfigKey(cfg: Config, id: string): string {
+  return Object.keys(cfg.rules ?? {}).find((k) => k === id || k.startsWith(id + "_")) ?? id;
+}
+
 export interface RuleView extends RuleInfo {
   /** 生效阈值（来自配置，不是写死的）。 */
   thresholds: Record<string, unknown>;
@@ -68,7 +73,7 @@ export interface RuleView extends RuleInfo {
 
 export function ruleViews(cfg: Config): RuleView[] {
   return RULES.map((r) => {
-    const ov = cfg.rules?.[r.id] ?? null;
-    return { ...r, thresholds: thresholdsForRule(r.id, cfg), override: ov ? { ...ov } : null, disabled: ov?.disabled === true };
+    const ov = cfg.rules?.[ruleConfigKey(cfg, r.id)] ?? null;
+    return { ...r, thresholds: thresholdsForRule(r.id, cfg), override: ov ? { ...ov } : null, disabled: ov?.disabled === true || ov?.action === "off" };
   });
 }
