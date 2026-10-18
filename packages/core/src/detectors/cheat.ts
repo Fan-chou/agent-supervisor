@@ -10,7 +10,8 @@ const ASSERT_LINE = /\b(assert\w*|expect\s*\(|should\b|assert_eq!|assert!|requir
 const count = (re: RegExp, s: string) => (s.match(re) ?? []).length;
 
 /** 用户意图是写测试、修 flaky、更新快照、基准、修 CI 时，X1/T 组降级。 */
-export const TEST_INTENT_RE = /写测试|加测试|补测试|新增测试|添加测试|增加测试|测试用例|修复?(?:\s*)测试|flaky|不稳定|快照|snapshot|基准|benchmark|\bwrite (?:the )?(?:unit |integration |e2e )?tests?\b|\badd (?:unit |integration |e2e )?tests?\b|\bfix (?:the |a )?(?:failing |broken |flaky )?tests?\b|\bupdate (?:the )?snapshots?\b|\bfix (?:the )?ci\b|修\s*ci|修复\s*ci|ci\s*(?:失败|挂了|报错)/i;
+// 注意不要把「fix the failing test」（修一个失败的测试，多半是要改源码）算进来，否则 X1 和 T 组整体失效。
+export const TEST_INTENT_RE = /(?:写|加|补|新增|添加|增加)[^，。,.\n]{0,6}测试|flaky|不稳定|快照|snapshot|基准|benchmark|\b(?:write|add|create)\s+(?:some |more |new |the )?(?:unit |integration |e2e |regression )?tests?\b|\bfix (?:the |a )?(?:ci|pipeline|build)\b|修\s*ci|修复\s*ci|ci\s*(?:失败|挂了|报错)/i;
 
 export function hasTestIntent(s: SessionTracker): boolean {
   if (TEST_INTENT_RE.test(s.currentIntent())) return true;
