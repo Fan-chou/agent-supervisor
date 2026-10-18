@@ -1,6 +1,6 @@
 // 评测入口：读 labels → 回放每个会话 → 计算每条规则的 precision/recall 与首次报警延迟。
 import { readFileSync } from "node:fs";
-import { defaultConfig, mockJudge, type Config, type JudgeFn } from "@sv/core";
+import { applyOverride, beginRun, defaultConfig, mockJudge, type Config, type JudgeFn, type LogStore } from "@sv/core";
 import { replayFile, type ReplayResult } from "../../packages/replay/src/index.ts";
 import type { PromptStyle } from "@sv/core";
 import { loadLabels, type Labels } from "./labels.ts";
@@ -12,11 +12,17 @@ export interface EvalOptions {
   window?: number;
   /** 提示 A/B：按写法生成 judge。 */
   judgeFactory?: (style: PromptStyle) => JudgeFn;
+  /** 写日志：每次评测记一条 kind=eval 的运行（含当时的阈值与覆盖项），各会话的回放写在这个 run 下。 */
+  logStore?: LogStore;
+  label?: string;
+  /** 命令行覆盖项（只用于记录；cfg 里应当已经应用）。 */
+  overrides?: string[];
 }
 
 export interface EvalRun {
   report: EvalReport;
   results: ReplayResult[];
+  runId?: number;
 }
 
 export async function runEval(labels: Labels, opts: EvalOptions = {}): Promise<EvalRun> {
@@ -24,10 +30,12 @@ export async function runEval(labels: Labels, opts: EvalOptions = {}): Promise<E
   const inputs: SessionInput[] = [];
   const results: ReplayResult[] = [];
   const warnings: string[] = [];
+  const judgeMode = typeof opts.judge === "function" ? "custom" : (opts.judge ?? "off");
+  const runId = opts.logStore ? beginRun(opts.logStore, cfg, { kind: "eval", label: opts.label, source: labels.path, judgeMode, overrides: opts.overrides }) : undefined;
   for (const label of labels.sessions) {
     try {
       const planMd = label.plan ? readFileSync(label.plan, "utf8") : undefined;
-      const result = await replayFile(label.file, { cfg, judge: opts.judge ?? "off", planMd });
+      const result = await replayFile(label.file, { cfg, judge: opts.judge ?? "off", planMd, log: opts.logStore && runId !== undefined ? { store: opts.logStore, runId } : undefined });
       inputs.push({ label, result });
       results.push(result);
     } catch (err) {
@@ -36,7 +44,49 @@ export async function runEval(labels: Labels, opts: EvalOptions = {}): Promise<E
   }
   const report = computeReport(inputs, { window: opts.window });
   report.warnings.push(...warnings);
-  return { report, results };
+  if (opts.logStore && runId !== undefined) opts.logStore.endRun(runId);
+  return { report, results, runId };
+}
+
+export interface SweepPoint {
+  value: string;
+  overrides: string[];
+  runId?: number;
+  report: EvalReport;
+}
+
+/**
+ * 阈值扫描：对 path 的每个取值各跑一遍评测（每个取值写一条 kind=eval 的运行记录）。
+ * path 必须是已存在的配置路径（applyOverride 会拒绝写错的键），所以扫到的一定是真正生效的阈值。
+ */
+export async function runSweep(labels: Labels, sweep: { path: string; values: string[] }, opts: EvalOptions = {}): Promise<SweepPoint[]> {
+  const base = opts.cfg ?? defaultConfig();
+  const planned = sweep.values.map((v) => {
+    const assignment = `${sweep.path}=${v}`;
+    return { value: v, assignment, cfg: applyOverride(base, assignment) }; // 先全部校验，写错时一个都不跑
+  });
+  const out: SweepPoint[] = [];
+  for (const p of planned) {
+    const run = await runEval(labels, { ...opts, cfg: p.cfg, label: `${opts.label ?? "sweep"}:${p.assignment}`, overrides: [...(opts.overrides ?? []), p.assignment] });
+    out.push({ value: p.value, overrides: [...(opts.overrides ?? []), p.assignment], runId: run.runId, report: run.report });
+  }
+  return out;
+}
+
+export function renderSweepText(path: string, points: SweepPoint[]): string {
+  const L: string[] = [];
+  L.push(`阈值扫描 ${path} = ${points.map((p) => p.value).join(" | ")}`);
+  for (const p of points) if (p.runId !== undefined) L.push(`  ${path}=${p.value} → run ${p.runId}`);
+  L.push("");
+  const rules = [...new Set(points.flatMap((p) => Object.keys(p.report.rules)))].sort();
+  const cell = (r: EvalReport["rules"][string] | undefined) => (r ? `${r.hits}命中 P ${pct(r.precision)} R ${pct(r.recall)} 延迟${r.firstAlarmLatency.median ?? "–"}` : "–");
+  L.push(["规则".padEnd(6), ...points.map((p) => `${path.split(".").slice(-2).join(".")}=${p.value}`.padEnd(34))].join(" "));
+  for (const id of rules) L.push([id.padEnd(6), ...points.map((p) => cell(p.report.rules[id]).padEnd(34))].join(" "));
+  L.push("");
+  L.push(["总体".padEnd(6), ...points.map((p) => `recall ${pct(p.report.overall.recall)} · 漏报 ${p.report.latency.missed}`.padEnd(34))].join(" "));
+  L.push(["拦截类".padEnd(6), ...points.map((p) => `报警 ${p.report.classes.blocking.alarms} FDR ${pct(p.report.classes.blocking.fdr)} ${p.report.gates[0].pass === null ? "n/a" : p.report.gates[0].pass ? "通过" : "未通过"}`.padEnd(34))].join(" "));
+  L.push(["建议类".padEnd(6), ...points.map((p) => `报警 ${p.report.classes.advisory.alarms} FDR ${pct(p.report.classes.advisory.fdr)} ${p.report.gates[1].pass === null ? "n/a" : p.report.gates[1].pass ? "通过" : "未通过"}`.padEnd(34))].join(" "));
+  return L.join("\n");
 }
 
 export interface AbReport {

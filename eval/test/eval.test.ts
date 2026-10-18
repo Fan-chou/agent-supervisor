@@ -4,7 +4,7 @@ import { main } from "../../packages/cli/src/sv.ts";
 import type { ReplayResult, TimelineEntry } from "../../packages/replay/src/index.ts";
 import { LabelError, loadLabels, parseLabels, type LabelSession } from "../src/labels.ts";
 import { classOf, computeReport, dist, type SessionInput } from "../src/metrics.ts";
-import { defaultMockFactory, renderEvalText, runEval, runPromptAb } from "../src/run.ts";
+import { defaultMockFactory, renderEvalText, renderSweepText, runEval, runPromptAb, runSweep } from "../src/run.ts";
 
 const ROOT = join(import.meta.dir, "../..");
 const LABELS = join(ROOT, "test/fixtures/labels.yaml");
@@ -206,5 +206,59 @@ describe("sv eval CLI", () => {
     expect(ab.out).toContain("提示写法 A");
     expect((await run(["eval"])).code).toBe(2);
     expect((await run(["eval", join(ROOT, "package.json")])).code).toBe(2);
+  });
+});
+
+describe("eval 写日志 + 阈值扫描", () => {
+  test("runEval 记一条 kind=eval 的运行，含阈值哈希与覆盖项，回放写在这个 run 下", async () => {
+    const { LogStore, applyOverride, defaultConfig } = await import("@sv/core");
+    const store = new LogStore(":memory:");
+    const cfg = applyOverride(defaultConfig(), "thresholds.T1.H=4");
+    const { runId, report } = await runEval(loadLabels(LABELS), { cfg, logStore: store, label: "x", overrides: ["thresholds.T1.H=4"] });
+    const run = store.db.query("SELECT * FROM runs WHERE id=?").get(runId!) as Record<string, string>;
+    expect(run).toMatchObject({ kind: "eval", label: "x" });
+    expect(JSON.parse(run.overrides_json)).toEqual(["thresholds.T1.H=4"]);
+    expect(run.ended_ts).toBeTruthy();
+    expect(store.db.query("SELECT COUNT(*) AS n FROM sessions WHERE run_id=?").get(runId!)).toEqual({ n: report.counts.total });
+    expect((store.db.query("SELECT COUNT(*) AS n FROM hits WHERE run_id=?").get(runId!) as { n: number }).n).toBeGreaterThan(0);
+  });
+  test("runSweep：每个取值各跑一遍、各写一条运行；改变真正生效的阈值会改变结果", async () => {
+    const { LogStore } = await import("@sv/core");
+    const store = new LogStore(":memory:");
+    const points = await runSweep(loadLabels(LABELS), { path: "thresholds.T1.H", values: ["3", "5", "99"] }, { logStore: store, label: "sw" });
+    expect(points).toHaveLength(3);
+    expect(store.db.query("SELECT label FROM runs ORDER BY id").all()).toEqual([{ label: "sw:thresholds.T1.H=3" }, { label: "sw:thresholds.T1.H=5" }, { label: "sw:thresholds.T1.H=99" }]);
+    const blocks = points.map((p) => p.report.classes.blocking.alarms);
+    expect(blocks[0]).toBeGreaterThan(blocks[2]); // H 阈值 3 → 99：拦截类报警变少
+    const t1H = (p: (typeof points)[number]) => p.report.rules.T1.levels.H ?? 0;
+    expect(t1H(points[0])).toBeGreaterThan(t1H(points[2]));
+    const text = renderSweepText("thresholds.T1.H", points);
+    expect(text).toContain("阈值扫描 thresholds.T1.H = 3 | 5 | 99");
+    expect(text).toContain("拦截类");
+    expect(text).toMatch(/run \d+/);
+  });
+  test("扫描键名写错 → 直接报错，一个都不跑（不会得出「没影响」的错误结论）", async () => {
+    const { LogStore } = await import("@sv/core");
+    const store = new LogStore(":memory:");
+    await expect(runSweep(loadLabels(LABELS), { path: "thresholds.T1.h", values: ["3", "4"] }, { logStore: store })).rejects.toThrow(/没有路径/);
+    expect(store.count("runs")).toBe(0);
+  });
+  test("sv eval --sweep CLI", async () => {
+    const lines: string[] = [];
+    const o1 = console.log;
+    const o2 = console.error;
+    console.log = (...a: unknown[]) => void lines.push(a.join(" "));
+    console.error = (...a: unknown[]) => void lines.push(a.join(" "));
+    try {
+      expect(await main(["eval", LABELS, "--sweep", "thresholds.T1.H=3,4"])).toBe(0);
+      expect(lines.join("\n")).toContain("阈值扫描 thresholds.T1.H = 3 | 4");
+      lines.length = 0;
+      expect(await main(["eval", LABELS, "--sweep", "thresholds.T1.h=3,4"])).toBe(2);
+      expect(lines.join("\n")).toContain("扫描有误");
+      expect(await main(["eval", LABELS, "--sweep", "thresholds.T1.H=3"])).toBe(2);
+    } finally {
+      console.log = o1;
+      console.error = o2;
+    }
   });
 });

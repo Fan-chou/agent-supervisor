@@ -70,3 +70,8 @@
 **测试结果**：`bun test` 671 通过 / 0 失败（19 个文件）；`tsc --noEmit` 无错误。所有测试不发网络请求。
 
 **仍未做**：outbox 原子领取、守护进程、`--judge=live`、sv-hook、Codex/OpenCode 的 render 契约测试、用真实 transcript 校准、30 个会话的人工标注（需要 Jack 的数据）。新增日志只有「写入 + 查询 + CLI」的最小版；`adapter_health` 与 `live` 类型的 run 要等 M3 的守护进程来写。
+
+## 交接（2026-10-18 14:10 UTC+8，run3 因 Claude 会话额度用尽中断，额度约 18:00 UTC+8 重置）
+- 已提交：CLAUDE.md 前端段落；单一阈值（去掉 GPT/默认 profile）；SQLite 结构化日志 + sv stats/mark/explain/override/export/prune；design §18 + changelog v2.1；frontend-design v2。rm -rf 窄化规则在 decisions #21 已标为 Jack 确认。
+- 本提交为 WIP（监督者代提交）：eval 写日志、阈值扫描（sweep）、redact/检测器/config 调整；bun test 679/0，tsc 通过。eval logging/sweep 的测试尚未补完（中断时正在写）。
+- 待办（.supervisor-run/msg4.txt）：#20 标为 Jack 已确认（X2 跟随 mode，shadow 不拦截）；shadow 下 X2 记录 severity=dangerous、outcome=would_have_blocked，sv stats 按危险统计；frontend 加危险徽标/筛选/会话危险计数/"本应拦截"指示器。之后继续 M3。

@@ -39,6 +39,15 @@ describe("redact", () => {
   test("纯数字的值不当作密钥（token 用量等统计字段保持原样）", () => {
     expect(redact(JSON.stringify({ usage: { prompt_tokens: 1200, completion_tokens: 80 } }))).toBe(JSON.stringify({ usage: { prompt_tokens: 1200, completion_tokens: 80 } }));
     expect(redact("max_tokens=800 API_KEY=abc12345")).toBe("max_tokens=800 API_KEY=[REDACTED:secret-assignment]");
+    expect(redact('{"contextTokens": 85000, "total_tokens":1300}')).toBe('{"contextTokens": 85000, "total_tokens":1300}');
+  });
+  test("但纯数字的密钥照样脱敏（例外只给复数 tokens 用量字段）", () => {
+    for (const s of ["DB_PASSWORD=123456", "FOO_SECRET=987654", "X_KEY=12345678", "API_TOKEN=424242", 'auth_token: "20231018"', "PIN_CREDENTIAL=0042", "token=123456"]) {
+      const out = redact(s);
+      expect(out, s).toContain("[REDACTED");
+      expect(out, s).not.toMatch(/123456|987654|12345678|424242|20231018|0042/);
+    }
+    expect(redact("password=123456")).toContain("[REDACTED");
   });
   test("URL 里的口令", () => {
     const out = redact("postgres://admin:s3cretpw@db.local:5432/app");

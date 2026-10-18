@@ -61,7 +61,7 @@ export const L1: Detector = (e: Event, ctx) => {
     const { n, verified } = failChain(ctx, list, last.errFp);
     const u = s.unchangedBetween(last, { verBefore: s.version, ev: e });
     if (u === "changed") return [];
-    const need = Math.ceil(2 * s.scaleOf("L1"));
+    const need = Math.ceil(th.L1_block_after * s.scaleOf("L1"));
     if (n >= need) {
       return [
         mkHit(e, ctx, {
@@ -86,13 +86,13 @@ export const L2: Detector = (e, ctx) => {
   const { s, th } = ctx;
   const cur = s.last();
   if (!cur || cur.seq !== e.seq || !cur.outHash || cur.status === "pending" || cur.neutral) return [];
-  const lo = Math.max(s.loopFloor, cur.idx - 11);
+  const lo = Math.max(s.loopFloor, cur.idx - (th.L2_window - 1));
   const same = s.steps.filter((x) => x.idx >= lo && x.argsHash === cur.argsHash && x.outHash === cur.outHash);
   const poll = cur.normCmd ? POLL_RE.test(cur.normCmd) : false;
   const n = same.length;
   if (poll) {
     // L2a：轮询类白名单，≥8 次才记 L
-    return n === Math.ceil(8 * s.scaleOf("L2")) ? [mkHit(e, ctx, { ruleId: "L2a", sev: "L", category: "loop", key: `L2a:${cur.argsHash}`, evidence: same.map((x) => x.seq), detail: { count: n } })] : [];
+    return n === Math.ceil(th.L2a_repeat * s.scaleOf("L2")) ? [mkHit(e, ctx, { ruleId: "L2a", sev: "L", category: "loop", key: `L2a:${cur.argsHash}`, evidence: same.map((x) => x.seq), detail: { count: n } })] : [];
   }
   const need = Math.ceil(th.L2_repeat * s.scaleOf("L2"));
   if (n === need) {
@@ -104,7 +104,7 @@ export const L2: Detector = (e, ctx) => {
         key: `L2:${cur.argsHash}:${cur.outHash}`,
         evidence: same.map((x) => x.seq),
         detail: { count: n, cmd: cur.normCmd ?? cur.name },
-        message: `最近 12 步内同一调用（${short(cur.normCmd ?? cur.name)}）已执行 ${n} 次，输出完全相同。`,
+        message: `最近 ${th.L2_window} 步内同一调用（${short(cur.normCmd ?? cur.name)}）已执行 ${n} 次，输出完全相同。`,
       }),
     ];
   }
@@ -113,12 +113,12 @@ export const L2: Detector = (e, ctx) => {
 
 export const L3: Detector = (e, ctx) => {
   if (e.phase !== "post" || !e.tool || ruleDisabled(ctx, "L3")) return [];
-  const { s } = ctx;
+  const { s, th } = ctx;
   const cur = s.last();
   if (!cur || cur.seq !== e.seq || cur.status !== "fail" || !cur.errFp) return [];
-  const lo = Math.max(s.loopFloor, cur.idx - 9);
+  const lo = Math.max(s.loopFloor, cur.idx - (th.L3_window - 1));
   const same = s.steps.filter((x) => x.idx >= lo && x.status === "fail" && x.errFp === cur.errFp);
-  const need = Math.ceil(3 * s.scaleOf("L3"));
+  const need = Math.ceil(th.L3_repeat * s.scaleOf("L3"));
   if (same.length === need) {
     return [
       mkHit(e, ctx, {
@@ -128,7 +128,7 @@ export const L3: Detector = (e, ctx) => {
         key: `L3:${cur.errFp}`,
         evidence: same.map((x) => x.seq),
         detail: { count: same.length },
-        message: `最近 10 步内同一个错误已出现 ${same.length} 次（命令不一定相同）。`,
+        message: `最近 ${th.L3_window} 步内同一个错误已出现 ${same.length} 次（命令不一定相同）。`,
       }),
     ];
   }
@@ -147,7 +147,7 @@ export function oscillationReturns(hashes: string[]): number {
 
 export const L4: Detector = (e, ctx) => {
   if (e.phase !== "post" || ruleDisabled(ctx, "L4")) return [];
-  const { s } = ctx;
+  const { s, th } = ctx;
   const cur = s.last();
   if (!cur || cur.seq !== e.seq || !cur.isEdit) return [];
   const out: Hit[] = [];
@@ -155,7 +155,7 @@ export const L4: Detector = (e, ctx) => {
     const st = s.edits.get(f);
     if (!st) continue;
     const r = oscillationReturns(st.hashes);
-    if (r === Math.ceil(2 * s.scaleOf("L4"))) {
+    if (r === Math.ceil(th.L4_returns * s.scaleOf("L4"))) {
       out.push(
         mkHit(e, ctx, {
           ruleId: "L4",
@@ -201,12 +201,12 @@ export const L5: Detector = (e, ctx) => {
 
 export const L6: Detector = (e, ctx) => {
   if (e.phase !== "post" || ruleDisabled(ctx, "L6")) return [];
-  const { s } = ctx;
+  const { s, th } = ctx;
   const cur = s.last();
   if (!cur || cur.seq !== e.seq || cur.readFiles.length === 0) return [];
   const out: Hit[] = [];
   for (const f of new Set(cur.readFiles)) {
-    if ((s.readsSinceEdit.get(f) ?? 0) === Math.ceil(3 * s.scaleOf("L6"))) {
+    if ((s.readsSinceEdit.get(f) ?? 0) === Math.ceil(th.L6_reads * s.scaleOf("L6"))) {
       out.push(mkHit(e, ctx, { ruleId: "L6", sev: "L", category: "loop", key: `L6:${f}`, detail: { file: f } }));
     }
   }

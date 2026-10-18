@@ -5,7 +5,12 @@ interface Rule {
   re: RegExp;
   /** 只替换捕获组 1（保留变量名等前缀）。 */
   keepPrefix?: boolean;
+  /** 返回 true 则保持原样（prefix = 捕获组 1，value = 捕获组 2）。 */
+  skip?: (prefix: string, value: string) => boolean;
 }
+
+/** 用量计数类字段（prompt_tokens: 1200、max_tokens=800、contextTokens）：键名以复数 tokens 结尾且值是纯数字，不是密钥。 */
+const isUsageCounter = (prefix: string, value: string) => /tokens["']?\s*[=:]\s*["']?$/i.test(prefix) && /^\d+(?:\.\d+)?$/.test(value);
 
 const RULES: Rule[] = [
   // 多行 PEM 块放最前面；没有结尾标记时吞到文本结束
@@ -27,9 +32,10 @@ const RULES: Rule[] = [
   // FOO_KEY=xxx、API_TOKEN: xxx、"secret": "xxx"
   {
     kind: "secret-assignment",
-    // 纯数字的值不是密钥（prompt_tokens: 1200、max_tokens=800），否则会把 token 用量之类的统计字段抹掉
-    re: /(\b[A-Za-z0-9_.-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)S?["']?\s*[=:]\s*["']?)(?!\d+(?:\.\d+)?(?:[\s"',;}\]]|$))[^\s"'&,;}]{3,}/gi,
+    // 例外只给用量计数类字段（见 isUsageCounter）；DB_PASSWORD=123456、X_KEY=12345678 这类纯数字密钥照样脱敏
+    re: /(\b[A-Za-z0-9_.-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)S?["']?\s*[=:]\s*["']?)([^\s"'&,;}]{3,})/gi,
     keepPrefix: true,
+    skip: isUsageCounter,
   },
   { kind: "password", re: /(\b(?:password|passwd|pwd)["']?\s*[=:]\s*["']?)[^\s"'&,;}]{1,}/gi, keepPrefix: true },
 ];
@@ -38,6 +44,7 @@ export function redact(text: string): string {
   let out = text;
   for (const r of RULES) {
     out = out.replace(r.re, (...args) => {
+      if (r.skip?.(args[1] as string, args[2] as string)) return args[0] as string;
       if (r.keepPrefix) return `${args[1]}[REDACTED:${r.kind}]`;
       return `[REDACTED:${r.kind}]`;
     });

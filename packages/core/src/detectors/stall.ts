@@ -45,7 +45,7 @@ const phaseOf = (st: Step): Phase => (st.isEdit ? "edit" : st.readOnly ? "explor
 /** S2 第一阶段只在回放中观察，不上线。 */
 export const S2: Detector = (e, ctx) => {
   if (e.phase !== "post" || !e.tool || ruleDisabled(ctx, "S2")) return [];
-  const { s } = ctx;
+  const { s, th } = ctx;
   const cur = s.last();
   if (!cur || cur.seq !== e.seq || cur.neutral) return [];
   const ph = phaseOf(cur);
@@ -56,7 +56,7 @@ export const S2: Detector = (e, ctx) => {
     if (phaseOf(st) !== ph) break;
     n++;
   }
-  if (n === 7) {
+  if (n === th.S2_phase_steps) {
     return [mkHit(e, ctx, { ruleId: "S2", sev: "L", category: "stagnation", key: `S2:${ph}:${cur.seq}`, observeOnly: true, detail: { phase: ph, streak: n } })];
   }
   return [];
@@ -91,16 +91,16 @@ export const S3: Detector = (e, ctx) => {
 
 export const S4: Detector = (e, ctx) => {
   if (e.phase !== "post" || !e.tool || e.tool.kind !== "agent" || ruleDisabled(ctx, "S4")) return [];
-  const { s } = ctx;
+  const { s, th } = ctx;
   const turnAgents = s.turnSteps.filter((x) => x.kind === "agent");
   const out = [];
-  if (turnAgents.length === Math.ceil(15 * s.scaleOf("S4"))) {
+  if (turnAgents.length === Math.ceil(th.S4_subagents * s.scaleOf("S4"))) {
     out.push(mkHit(e, ctx, { ruleId: "S4", sev: "M", category: "stagnation", key: `S4:count:${s.turn}`, detail: { subagents: turnAgents.length }, message: `自上次用户消息起已启动 ${turnAgents.length} 个子 agent。` }));
   }
   const empty = (x: Step) => (x.ev.result?.outputHead.length ?? 0) + (x.ev.result?.outputTail.length ?? 0) < 20;
   let run = 0;
   for (let i = turnAgents.length - 1; i >= 0 && empty(turnAgents[i]); i--) run++;
-  if (run === 3) {
+  if (run === th.S4_empty_run) {
     out.push(mkHit(e, ctx, { ruleId: "S4", sev: "M", category: "stagnation", key: `S4:empty:${s.turn}:${turnAgents.length}`, detail: { emptyRun: run }, message: "连续 3 个子 agent 没有产出内容。" }));
   }
   return out;

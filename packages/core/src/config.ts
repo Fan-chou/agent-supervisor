@@ -12,6 +12,27 @@ export interface Thresholds {
   S1_readonly: number;
   /** L1：连续失败多少次后 advise。 */
   L1_advise: number;
+  /** L1：前面已连续失败多少次后，下一次尝试在 pre 上 H。 */
+  L1_block_after: number;
+  /** L2：看最近多少步；L2a（轮询白名单）重复多少次才记 L。 */
+  L2_window: number;
+  L2a_repeat: number;
+  /** L3：最近 L3_window 步内同一错误指纹出现 L3_repeat 次。 */
+  L3_repeat: number;
+  L3_window: number;
+  /** L4：内容回退到之前版本的次数。 */
+  L4_returns: number;
+  /** L6：同一文件、期间没改动的读取次数。 */
+  L6_reads: number;
+  /** S2（仅回放观察）：同一阶段连续多少步。 */
+  S2_phase_steps: number;
+  /** S4：自上次真实用户消息起的子 agent 数；连续无产出的子 agent 数。 */
+  S4_subagents: number;
+  S4_empty_run: number;
+  /** R2 花费比例：达到 warn 记 L，达到 limit 记 M；R3 上下文填充率。 */
+  R2_warn: number;
+  R2_limit: number;
+  R3_ratio: number;
   T1: Ladder;
   T2: Ladder;
   T3: Ladder;
@@ -92,6 +113,19 @@ export function defaultThresholds(): Thresholds {
     L2_repeat: 4,
     S1_readonly: 12,
     L1_advise: 2,
+    L1_block_after: 2,
+    L2_window: 12,
+    L2a_repeat: 8,
+    L3_repeat: 3,
+    L3_window: 10,
+    L4_returns: 2,
+    L6_reads: 3,
+    S2_phase_steps: 7,
+    S4_subagents: 15,
+    S4_empty_run: 3,
+    R2_warn: 0.8,
+    R2_limit: 1,
+    R3_ratio: 0.85,
     T1: { advise: 2, H: 3 },
     T2: { advise: 3, M: 5 },
     T3: { advise: 1 },
@@ -203,7 +237,13 @@ export function applyOverride(cfg: Config, assignment: string): Config {
     cur = next;
   }
   const last = path[path.length - 1];
-  if (!(last in cur) && !path[0].startsWith("thresholds")) throw new Error(`配置里没有路径 ${path.join(".")}`);
+  // 路径必须已存在，写错键名（thresholds.T1.h）不能悄悄通过——否则回放对比会得出「这个阈值没影响」的错误结论。
+  // 唯一的例外：给 T1–T8 的阶梯新增 L / advise / M / H 级别。
+  const ladderLevel = path.length === 3 && path[0] === "thresholds" && /^T[1-8]$/.test(path[1]) && ["L", "advise", "M", "H"].includes(last);
+  if (!(last in cur) && !ladderLevel) throw new Error(`配置里没有路径 ${path.join(".")}`);
+  if (typeof cur[last] === "number" || ladderLevel) {
+    if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${path.join(".")} 需要数字，收到 ${raw}`);
+  } else if (typeof cur[last] === "string" && typeof value !== "string") throw new Error(`${path.join(".")} 需要字符串，收到 ${raw}`);
   cur[last] = value;
   return clone as unknown as Config;
 }
@@ -213,22 +253,22 @@ export function thresholdsForRule(ruleId: string, cfg: Config): Record<string, u
   const t = cfg.thresholds;
   const d = cfg.detect;
   switch (ruleId) {
-    case "L1": return { advise_after_failures: t.L1_advise, block_attempt: 3 };
-    case "L2": return { repeat: t.L2_repeat, window_steps: 12 };
-    case "L2a": return { repeat: 8, window_steps: 12 };
-    case "L3": return { repeat: 3, window_steps: 10 };
-    case "L4": return { returns: 2 };
+    case "L1": return { advise_after_failures: t.L1_advise, block_after_failures: t.L1_block_after };
+    case "L2": return { repeat: t.L2_repeat, window_steps: t.L2_window };
+    case "L2a": return { repeat: t.L2a_repeat, window_steps: t.L2_window };
+    case "L3": return { repeat: t.L3_repeat, window_steps: t.L3_window };
+    case "L4": return { returns: t.L4_returns };
     case "L5": return { segments_L: d.l5_segments_L, segments_M: d.l5_segments_M };
-    case "L6": return { reads: 3 };
+    case "L6": return { reads: t.L6_reads };
     case "S1": return { readonly_steps: t.S1_readonly };
-    case "S2": return { stall_steps: 7 };
+    case "S2": return { stall_steps: t.S2_phase_steps };
     case "S3": return { minutes: d.s3_minutes, calls: d.s3_calls };
-    case "S4": return { subagents: 15, empty_run: 3 };
+    case "S4": return { subagents: t.S4_subagents, empty_run: t.S4_empty_run };
     case "P4": return { every_edits: d.p4_every_edits };
     case "P6": return { deleted_lines: d.p6_deleted_lines };
     case "R1": return { calls: d.r1_calls };
-    case "R2": return { budget_usd: d.session_budget_usd ?? null, L: 0.8, M: 1 };
-    case "R3": return { context_window: d.context_window, ratio: 0.85 };
+    case "R2": return { budget_usd: d.session_budget_usd ?? null, L: t.R2_warn, M: t.R2_limit };
+    case "R3": return { context_window: d.context_window, ratio: t.R3_ratio };
     case "R4": return { every_steps: d.r4_interval_steps };
     case "TB": return { full_tests_per_turn: t.full_tests_per_turn, verify_calls_per_turn: t.verify_calls_per_turn };
     case "T1": case "T2": case "T3": case "T4": case "T5": case "T6": case "T7": case "T8":

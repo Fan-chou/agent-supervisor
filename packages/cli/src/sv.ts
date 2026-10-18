@@ -12,6 +12,8 @@ const USAGE = `用法：
                         [--set thresholds.T1.H=4 ...]            覆盖配置（可重复），用于调阈值
                         [--log [db]] [--label <name>]            写结构化日志（默认库见 config 的 log.db）
   sv eval   <labels.yaml> [--judge=off|mock] [--window N] [--ab] [--set k=v ...] [--format=text|json] [--out <path>]
+            [--sweep thresholds.T1.H=3,4,5]                      阈值扫描：每个取值各跑一遍并各写一条 eval 运行记录
+            [--log [db]] [--label name]                          写结构化日志
   sv stats  [--by rule|model|judge|session|runs] [--run N,M] [--label L] [--since 7d|2026-10-01] [--session ID]
             [--format text|json|csv] [--db path]
   sv stats  --compare A,B                                         对比两次运行（thresholds 不同的回放）
@@ -23,7 +25,7 @@ const USAGE = `用法：
 
 replay 只读本地 transcript，不发任何网络请求；--judge=live 不在第一阶段范围内。`;
 
-const VALUE_FLAGS = new Set(["config", "plan", "out", "mode", "format", "judge", "db", "run", "label", "kind", "since", "until", "session", "by", "compare", "days", "note", "window", "set", "log"]);
+const VALUE_FLAGS = new Set(["sweep", "config", "plan", "out", "mode", "format", "judge", "db", "run", "label", "kind", "since", "until", "session", "by", "compare", "days", "note", "window", "set", "log"]);
 
 export function parseArgs(argv: string[]) {
   const pos: string[] = [];
@@ -123,7 +125,7 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (cmd === "eval") {
     const { runEvalCli } = await import("../../../eval/src/cli.ts");
-    return runEvalCli(pos.slice(1), flags as Record<string, string | true>, cfg, judge as JudgeMode);
+    return runEvalCli(pos.slice(1), flags, cfg, judge as JudgeMode);
   }
   console.error(`未知子命令：${cmd}\n${USAGE}`);
   return 2;

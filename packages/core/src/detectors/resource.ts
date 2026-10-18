@@ -14,11 +14,11 @@ export const R1: Detector = (e, ctx) => {
 
 export const R2: Detector = (e, ctx) => {
   if (!e.usage || ruleDisabled(ctx, "R2")) return [];
-  const { s, cfg } = ctx;
+  const { s, cfg, th } = ctx;
   const budget = cfg.detect.session_budget_usd;
   if (!budget || !s.usage.hasCost) return []; // 取不到就跳过
   const ratio = s.usage.costUsd / budget;
-  const level = ratio >= 1 ? "M" : ratio >= 0.8 ? "L" : null;
+  const level = ratio >= th.R2_limit ? "M" : ratio >= th.R2_warn ? "L" : null;
   if (!level) return [];
   const flag = `R2:${level}`;
   if (s.fired.has(flag)) return [];
@@ -28,9 +28,9 @@ export const R2: Detector = (e, ctx) => {
 
 export const R3: Detector = (e, ctx) => {
   if (!e.usage || ruleDisabled(ctx, "R3")) return [];
-  const { s, cfg } = ctx;
+  const { s, cfg, th } = ctx;
   const ratio = s.usage.contextTokens / cfg.detect.context_window;
-  if (ratio < 0.85 || s.fired.has("R3")) return [];
+  if (ratio < th.R3_ratio || s.fired.has("R3")) return [];
   s.fired.add("R3");
   return [mkHit(e, ctx, { ruleId: "R3", sev: "L", category: "stagnation", key: "R3", detail: { ratio: Math.round(ratio * 100) / 100 } })];
 };

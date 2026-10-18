@@ -44,9 +44,65 @@ describe("只有一套阈值，不按模型分档", () => {
     expect(cfg.thresholds.T1.H).toBe(3);
     expect(applyOverride(cfg, "budgets.judge_cooldown_s=30").budgets.judge_cooldown_s).toBe(30);
     expect(applyOverride(cfg, "mode=enforce").mode).toBe("enforce");
-    expect(applyOverride(cfg, "thresholds.T9={\"advise\":2}").thresholds).toHaveProperty("T9");
     expect(() => applyOverride(cfg, "nope.x=1")).toThrow();
     expect(() => applyOverride(cfg, "garbage")).toThrow();
+  });
+  test("applyOverride 严格：写错键名不能悄悄通过（否则 --compare 会得出「这个阈值没影响」的错误结论）", () => {
+    const cfg = defaultConfig();
+    expect(() => applyOverride(cfg, "thresholds.T1.h=4")).toThrow(/没有路径/);
+    expect(() => applyOverride(cfg, "thresholds.L2_repeats=5")).toThrow(/没有路径/);
+    expect(() => applyOverride(cfg, "thresholds.T9={\"advise\":2}")).toThrow(/没有路径/);
+    expect(() => applyOverride(cfg, "thresholds.T1.H=abc")).toThrow(/需要数字/);
+    expect(() => applyOverride(cfg, "thresholds.L2_repeat=\"x\"")).toThrow(/需要数字/);
+    expect(() => applyOverride(cfg, "mode=3")).toThrow(/需要字符串/);
+    // 唯一的例外：给 T1–T8 的阶梯新增 L / advise / M / H 级别
+    expect(applyOverride(cfg, "thresholds.T3.M=2").thresholds.T3).toEqual({ advise: 1, M: 2 });
+    expect(() => applyOverride(cfg, "thresholds.T3.X=2")).toThrow(/没有路径/);
+  });
+  test("每个 --set 的合法键都真的改变检测结果（不是只改了日志里的哈希）", async () => {
+    const hitsOf = async (assignment: string | null, drive: (s: Sim) => Promise<void>, rule: string) => {
+      const s = new Sim({ cfg: assignment ? applyOverride(defaultConfig(), assignment) : defaultConfig() });
+      await drive(s);
+      return s.hitsOf(rule).length;
+    };
+    // T3.M：给 T3 加一个 M 级阈值，第 1 次满足 advise 的同时也满足 M → 级别变了
+    const t3 = async (s: Sim) => {
+      await s.prompt("fix");
+      await s.edit("/work/proj/src/foo.py", "a", "b");
+      await s.bash("pytest", { out: PYTEST_PASS });
+    };
+    const s0 = new Sim();
+    await t3(s0);
+    const s1 = new Sim({ cfg: applyOverride(defaultConfig(), "thresholds.T3.M=1") });
+    await t3(s1);
+    expect(s0.hitsOf("T3")[0].sev).toBe("L");
+    expect(s1.hitsOf("T3")[0].sev).toBe("M");
+    // 原先写死在检测器里的阈值现在也能调：L3 需要 3 次 → 2 次
+    const l3 = async (s: Sim) => {
+      for (const f of ["a", "b"]) await s.bash(`python ${f}.py`, { fail: true, out: "Traceback (most recent call last):\n  File \"x.py\", line 3, in f\nKeyError: 'x'" });
+    };
+    expect(await hitsOf(null, l3, "L3")).toBe(0);
+    expect(await hitsOf("thresholds.L3_repeat=2", l3, "L3")).toBe(1);
+    // L6：读 3 次 → 2 次
+    const l6 = async (s: Sim) => {
+      for (let i = 0; i < 2; i++) await s.read("/work/proj/src/a.py");
+    };
+    expect(await hitsOf(null, l6, "L6")).toBe(0);
+    expect(await hitsOf("thresholds.L6_reads=2", l6, "L6")).toBe(1);
+    // S4 / S2 / L4 同理：键存在且被读取
+    const l4 = async (s: Sim) => {
+      for (const [o, n] of [["A", "B"], ["B", "A"]]) await s.edit("/work/proj/src/a.py", o, n);
+    };
+    expect(await hitsOf(null, l4, "L4")).toBe(0);
+    expect(await hitsOf("thresholds.L4_returns=1", l4, "L4")).toBe(1);
+  });
+  test("thresholdsForRule（写进日志）与配置一致，不再有字面量", async () => {
+    const { thresholdsForRule } = await import("../src/config.ts");
+    const cfg = applyOverride(defaultConfig(), "thresholds.L3_window=20");
+    expect(thresholdsForRule("L3", cfg)).toEqual({ repeat: 3, window_steps: 20 });
+    expect(thresholdsForRule("L1", applyOverride(cfg, "thresholds.L1_block_after=3"))).toEqual({ advise_after_failures: 2, block_after_failures: 3 });
+    expect(thresholdsForRule("S4", cfg)).toEqual({ subagents: 15, empty_run: 3 });
+    expect(thresholdsForRule("R3", cfg)).toMatchObject({ ratio: 0.85 });
   });
 });
 

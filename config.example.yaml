@@ -33,7 +33,20 @@ budgets:
 thresholds:
   L2_repeat: 4
   S1_readonly: 12
-  L1_advise: 2
+  L1_advise: 2                           # 连续失败 2 次 → advise
+  L1_block_after: 2                      # 前面已连续失败 2 次 → 第 3 次尝试在 pre 上 H
+  L2_window: 12
+  L2a_repeat: 8                          # 轮询类白名单（git status、gh run watch…）≥8 次才记 L
+  L3_repeat: 3
+  L3_window: 10
+  L4_returns: 2
+  L6_reads: 3
+  S2_phase_steps: 7                      # 仅回放观察
+  S4_subagents: 15
+  S4_empty_run: 3
+  R2_warn: 0.8                           # 需要 detect.session_budget_usd
+  R2_limit: 1
+  R3_ratio: 0.85
   T1: { advise: 2, H: 3 }
   T2: { advise: 3, M: 5 }
   T3: { advise: 1 }
