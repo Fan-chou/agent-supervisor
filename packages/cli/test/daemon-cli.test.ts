@@ -128,7 +128,7 @@ describe("sv install：只打印，不改文件", () => {
       const out = await new Response(p.stdout).text();
       expect(await p.exited).toBe(0);
       expect(out).toContain('id: "agent-supervisor"');
-      expect(out).toContain("还没有对照 @opencode/plugin 2.0.32 的类型核实");
+      expect(out).toContain("已对照 @opencode/plugin 2.0.32 的类型");
       expect(out).toContain("SV_OPENCODE_ENFORCE=1");
       expect(out).toContain("fail-open");
       expect(out).toBe((await opencodeInstallSnippet()) + "\n");

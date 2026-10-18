@@ -104,6 +104,7 @@ export function normalizeOpenCodeEvent(p: OpenCodePayload, o: { nextSeq: () => n
       out.events.push(e);
       break;
     }
+    case "prompt": // session.hook("prompt")：真正的 user 消息入口（V2 有这个钩子）；context 里扫 messages 只是它注册不上时的退路
     case "context": {
       // 每次请求模型前触发：本身不产生事件（只带模型名、作为注入点）；插件发现新的 user 消息时顺带带上，产生 prompt 事件。
       // origin 先标 user；我们自己注入的文本回显成 user 消息时由 tracker 改判为 supervisor（P0-6）。

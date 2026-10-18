@@ -113,6 +113,36 @@ function lastUserMessage(messages: Any): { id?: string; text: string } | undefin
   return undefined;
 }
 
+/** session.prompt 钩子里的 prompt（PromptInput.Prompt，形态未核实）：字符串 / {text} / {content} / 部件数组。取不到文本返回 undefined。 */
+function promptText(p: Any): string | undefined {
+  const fromParts = (parts: Any): string => (Array.isArray(parts) ? parts.map((x: Any) => (typeof x === "string" ? x : typeof x?.text === "string" ? x.text : "")).filter(Boolean).join("\n") : "");
+  let t = "";
+  if (typeof p === "string") t = p;
+  else if (typeof p?.text === "string") t = p.text;
+  else if (typeof p?.content === "string") t = p.content;
+  else t = fromParts(p) || fromParts(p?.parts) || fromParts(p?.content);
+  t = t.trim();
+  return t ? cap(t, 4000) : undefined;
+}
+
+/**
+ * 往 context 的 system（Array<SystemPart>）里追加一条建议。SystemPart 的真实形态没核实，所以只做两种有把握的：
+ * 元素本来就是字符串 → 推字符串；元素是带字符串 text 的对象 → 复制最后一个元素的形状，只换 text。其他情况（空数组、未知形态）返回 false，不改。
+ */
+function injectSystem(system: Any, t: string): boolean {
+  if (!Array.isArray(system) || !system.length) return false;
+  const last = system[system.length - 1];
+  if (typeof last === "string") {
+    system.push(t);
+    return true;
+  }
+  if (last && typeof last === "object" && typeof last.text === "string") {
+    system.push({ ...last, text: t });
+    return true;
+  }
+  return false;
+}
+
 // ---------- 真机核对用的载荷样本（SV_OPENCODE_DUMP=1，默认关；只写我们自己的目录，脱敏后落盘，0600/0700）----------
 
 const SHAPE_DEPTH = 5;
@@ -180,8 +210,10 @@ function enforceOpen(): boolean {
   }
 }
 
-function setup(ctx: Any): void {
+async function setup(ctx: Any): Promise<(() => Promise<void>) | void> {
   dump("setup", "setup", ctx, { registered: [] });
+  const registrations: Any[] = [];
+  let promptHooked = false;
   // 每个会话一份状态，全在内存里；重启即清空
   const preCall = new Map<string, { callId: string; deny?: string; done: boolean; ts: number }>(); // sessionID → 最近一次 tool.before（本地 X2 的拦截绑定到它）
   const lastUser = new Map<string, string>(); // sessionID → 上次上报的 user 消息 id/文本
@@ -197,25 +229,32 @@ function setup(ctx: Any): void {
     }
     dump(label, "exit", e); // exit 时的事件对象能看出我们有没有改到它（effect/message/system）
   };
-  const hook = (target: Any, name: string, f: (e: Any) => Promise<void>, label = name) => {
+  // V2 的 hook 注册返回 Promise<Registration>（@opencode/plugin 2.0.32 promise/registration.d.ts）：必须 await 并捕获拒绝，否则变成未处理的 rejection
+  const hook = async (target: Any, name: string, f: (e: Any) => Promise<void>, label = name): Promise<boolean> => {
     try {
       if (typeof target?.hook !== "function") {
         dump(label, "note", undefined, { registered: false, reason: "no .hook function on target" });
-        return;
+        return false;
       }
-      target.hook(name, guard(label, f));
+      const reg = await target.hook(name, guard(label, f));
+      if (reg && typeof reg.dispose === "function") registrations.push(reg);
       dump(label, "note", undefined, { registered: true });
+      return true;
     } catch (err) {
       dump(label, "note", undefined, { registered: false, reason: String((err as Error)?.message ?? err).slice(0, 200) });
-      /* 这个 hook 注册不上就算了：fail-open */
+      return false; /* 这个 hook 注册不上就算了：fail-open */
     }
   };
 
   // 拦截（主）：deny 必须带 message，否则 plain rejection 会结束当前 step。
   // 来源有二：本地 X2（tool.before 时判好，绑定到那次调用）和守护进程 outbox 里的 block/ask；两者都要过 enforceOpen() 这道闸。
-  hook(ctx?.permission, "evaluate", async (e) => {
+  await hook(ctx?.permission, "evaluate", async (e) => {
     const s = sid(e);
-    const pc = s ? preCall.get(s) : undefined;
+    let pc = s ? preCall.get(s) : undefined;
+    // evaluate 的 source 是 {type:"tool", messageID, id}（permission.d.ts 的 AssertInput）：id 就是工具调用 id，能把这次评估精确绑到某次 tool.before；
+    // 没有 source 时退回「该会话最近一次 tool.before」。两者对不上 = 不是我们判过的那次调用，放行。
+    const srcId = e?.source?.type === "tool" && typeof e.source.id === "string" ? e.source.id : undefined;
+    if (pc && srcId !== undefined && pc.callId !== srcId) pc = undefined;
     // 核对用的探针（SV_OPENCODE_PROBE=<子串>，默认关）：命中时拒绝，用来验证 deny/message/异步 hook 在真机上是否有效。只在 Jack 明确设置时才会拦。
     const probe = process.env.SV_OPENCODE_PROBE;
     if (probe && JSON.stringify(sample(e)).includes(probe)) {
@@ -241,28 +280,45 @@ function setup(ctx: Any): void {
   });
 
   // 建议（主）：只作用于这一次请求，不写入历史
-  hook(ctx?.session, "context", async (e) => {
+  // user 消息：V2 有专门的 session.hook("prompt")（SessionPrompt: sessionID/messageID/prompt/delivery），比从 messages 里翻靠谱；
+  // 注册成功后 context 里就不再扫 messages（messages 的元素类型来自 @opencode/ai，没有 vendor，形态未核实）。
+  promptHooked = await hook(ctx?.session, "prompt", async (e) => {
+    const s = sid(e);
+    const t = promptText(e?.prompt);
+    if (!s || !t) return;
+    const key = `${typeof e.messageID === "string" ? e.messageID : ""}\u0000${t}`;
+    if (key === lastUser.get(s)) return;
+    lastUser.set(s, key);
+    await post({ event: "prompt", sessionID: s, directory: dirOf(e, ctx), userMessage: { id: typeof e.messageID === "string" ? e.messageID : undefined, text: t } }, EVENT_TIMEOUT_MS);
+  });
+
+  // 建议（主）：只作用于这一次请求，不写入历史。
+  // e.system 是 Array<SystemPart>（不是字符串数组；SystemPart 的定义在 @opencode/ai，没有 vendor）：只在能确认元素形态时才注入（见 injectSystem），否则只记 dump、不改。
+  await hook(ctx?.session, "context", async (e) => {
     const s = sid(e);
     if (!s) return;
     const rep = repeat.get(s);
-    if (rep && rep.left > 0 && Array.isArray(e.system)) {
+    if (rep && rep.left > 0) {
       rep.left--;
-      e.system.push(rep.text);
+      if (!injectSystem(e.system, rep.text)) dump("context", "note", undefined, { injected: false, reason: "system part shape unknown" });
       return;
     }
-    const um = lastUserMessage(e.messages);
+    const um = promptHooked ? undefined : lastUserMessage(e.messages);
     const key = um ? `${um.id ?? ""}\u0000${um.text}` : undefined;
     const fresh = um && key !== lastUser.get(s);
     if (um && key) lastUser.set(s, key);
     const r = await post({ event: "context", sessionID: s, directory: dirOf(e, ctx), model: plain(e.model), agent: plain(e.agent), ...(fresh ? { userMessage: { id: um!.id, text: um!.text } } : {}) }, EVENT_TIMEOUT_MS);
     const t = text(r?.delivery ?? null);
-    if (!r || !t || r.delivery?.kind !== "advise" || !allowed(r.mode, "advise") || !Array.isArray(e.system)) return;
-    e.system.push(t);
+    if (!r || !t || r.delivery?.kind !== "advise" || !allowed(r.mode, "advise")) return;
+    if (!injectSystem(e.system, t)) {
+      dump("context", "note", undefined, { injected: false, reason: "system part shape unknown", wouldInject: true });
+      return; // 形态没核实 = 不注入（宁可没有建议，也不让模型请求带上形态错误的 system）
+    }
     repeat.set(s, { text: t, left: 1 });
   });
 
   // 观测：before 是 Pre 事件的来源（含完整参数），after 带明确的 completed/error 状态
-  hook(ctx?.tool, "execute.before", async (e) => {
+  await hook(ctx?.tool, "execute.before", async (e) => {
     const s = sid(e);
     const args = plain(e?.args ?? e?.input ?? e?.params);
     const tool = toolName(e);
@@ -279,7 +335,7 @@ function setup(ctx: Any): void {
     }
     await post({ event: "tool.before", sessionID: s, directory: dirOf(e, ctx), callID: callId(e), tool, args }, BEFORE_TIMEOUT_MS);
   });
-  hook(ctx?.tool, "execute.after", async (e) => {
+  await hook(ctx?.tool, "execute.after", async (e) => {
     const s = sid(e);
     if (s) {
       repeat.delete(s); // 下一次工具调用结束，旧建议不再重复
@@ -289,14 +345,26 @@ function setup(ctx: Any): void {
     const status = e?.status === "error" || e?.error ? "error" : "completed";
     await post({ event: "tool.after", sessionID: s, directory: dirOf(e, ctx), callID: callId(e), tool: toolName(e), args: plain(e?.args ?? e?.input ?? e?.params), status, result: plain(e?.result ?? e?.output), error: plain(e?.error) }, EVENT_TIMEOUT_MS);
   });
+
+  // setup 可以返回清理函数（promise/plugin.d.ts 的 Cleanup）：卸载时注销我们注册的全部 hook
+  return async () => {
+    for (const r of registrations.splice(0)) {
+      try {
+        await r.dispose();
+      } catch {
+        /* 忽略 */
+      }
+    }
+  };
 }
 
-// 注意：V2 要求写成 Plugin.define({ id, setup(ctx) })；导入路径以 OpenCode 当前文档为准，这里不猜包名，直接导出等价的对象。
+// 形态依据 @opencode/plugin 2.0.32 的 promise API：`Plugin.define({ id, setup(context) })`，`import { Plugin } from "@opencode/plugin"`；
+// define 只是类型层面的恒等函数，这里直接导出等价的对象，避免打包时依赖运行时解析 @opencode/plugin。
 export default {
   id: "agent-supervisor",
-  setup(ctx: Any) {
+  async setup(ctx: Any) {
     try {
-      setup(ctx);
+      return await setup(ctx);
     } catch {
       /* fail-open */
     }

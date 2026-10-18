@@ -108,8 +108,8 @@ export async function opencodePluginSource(): Promise<string> {
 export async function opencodeInstallSnippet(): Promise<string> {
   return [
     "# OpenCode V2 接入（只打印，不改任何文件；本命令不会读取或写入 ~/.config/opencode 等用户目录）",
-    "# 0) 只支持 OpenCode 2 的插件接口（V2）。下面的插件按设计文档（ctx.permission/session/tool.hook）写成，**还没有对照 @opencode/plugin 2.0.32 的类型核实**：",
-    "#    插件目录、加载方式、Plugin.define 的导入路径、hook 对象的字段形态都要核对（见 docs/opencode-verify.md）；形态对不上时插件会 fail-open（什么都不做）。",
+    "# 0) 只支持 OpenCode 2 的插件接口（V2）。下面的插件已对照 @opencode/plugin 2.0.32 的类型（promise API：Plugin.define({id, setup(context)})，import { Plugin } from \"@opencode/plugin\"）核对过钩子名和事件字段，**但还没有在真机上验证**：",
+    "#    插件目录与登记方式（配置里怎么写）类型里没有，要看 OpenCode 文档或由 Jack 决定；SystemPart、Permission.Effect、Location 等字段定义不在已 vendor 的类型里（见 docs/opencode-verify.md）；形态对不上时插件会 fail-open（什么都不做）。",
     "# 1) 启动守护进程：sv start   （默认 mode=shadow：只记录，永不拦截）",
     "# 2) 把下面的文件保存为 OpenCode 的插件文件（例如 <opencode 配置目录>/plugins/agent-supervisor.ts），并按文档把它登记到 OpenCode 配置里。",
     "#    它读 ~/.agent-supervisor/hook.json 找守护进程（只读我们自己的目录）；SV_HOME 可改位置。",

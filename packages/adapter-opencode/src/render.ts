@@ -11,7 +11,7 @@ export type { Delivery, DeliveryKind };
 export type OpenCodeHookPoint = "permission.evaluate" | "context";
 
 /** 守护进程能识别的全部 OpenCode 事件名（含只记录不输出的）。 */
-export type OpenCodeEventName = OpenCodeHookPoint | "tool.before" | "tool.after" | "session.created" | "interrupt";
+export type OpenCodeEventName = OpenCodeHookPoint | "tool.before" | "tool.after" | "session.created" | "interrupt" | "prompt";
 
 export type OpenCodeOutput = { effect: "deny"; message: string } | { system: string[] };
 

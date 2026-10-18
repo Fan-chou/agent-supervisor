@@ -23,7 +23,7 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true });
 });
 
-function drive(order: string[], opts: { skipRegister?: string } = {}) {
+async function drive(order: string[], opts: { skipRegister?: string } = {}) {
   const hooks = new Map<string, H>();
   const mk = (ns: string) => ({
     hook: (name: string, f: H) => {
@@ -31,7 +31,7 @@ function drive(order: string[], opts: { skipRegister?: string } = {}) {
       hooks.set(`${ns}.${name}`, f);
     },
   });
-  (plugin as any).setup({ permission: mk("permission"), session: mk("session"), tool: mk("tool") });
+  await (plugin as any).setup({ permission: mk("permission"), session: mk("session"), tool: mk("tool") });
   return { hooks, run: async (calls: number) => {
     for (let i = 0; i < calls; i++) {
       for (const step of order) {
@@ -49,7 +49,7 @@ const dumpText = () => {
 
 describe("opencode-report", () => {
   test("B→E→A：结论是当前假设成立；统计各钩子调用次数与字段", async () => {
-    const d = drive(["B", "E", "A"]);
+    const d = await drive(["B", "E", "A"]);
     await d.run(3);
     const rep = analyze(parseDump(dumpText()));
     expect(rep.orderings).toEqual({ BEA: 3 });
@@ -60,14 +60,14 @@ describe("opencode-report", () => {
     expect(formatReport(rep)).toContain("B→E→A");
   });
   test("E→B→A：报告明确指出 evaluate 先于 before，需要改设计", async () => {
-    const d = drive(["E", "B", "A"]);
+    const d = await drive(["E", "B", "A"]);
     await d.run(2);
     const rep = analyze(parseDump(dumpText()));
     expect(rep.orderings).toEqual({ EBA: 2 });
     expect(rep.verdicts.join("\n")).toMatch(/先于 execute\.before/);
   });
   test("没有 evaluate 的调用、注册失败的钩子、从未被调用的钩子都会在结论里出现", async () => {
-    const d = drive(["B", "A"], { skipRegister: "permission.evaluate" });
+    const d = await drive(["B", "A"], { skipRegister: "permission.evaluate" });
     await d.run(2);
     const rep = analyze(parseDump(dumpText()));
     expect(rep.orderings).toEqual({ BA: 2 });
@@ -77,7 +77,7 @@ describe("opencode-report", () => {
     expect(v).toContain("evaluate 注册失败");
   });
   test("探针 deny 生效时能在 exit 记录里看到 effect/message；闸门关时记 wouldDeny", async () => {
-    const d = drive(["B", "E", "A"]);
+    const d = await drive(["B", "E", "A"]);
     process.env.SV_OPENCODE_PROBE = "ls";
     await d.run(1);
     delete process.env.SV_OPENCODE_PROBE;
@@ -86,7 +86,7 @@ describe("opencode-report", () => {
     expect(rep.denyObserved[0]).toMatchObject({ hook: "evaluate", effect: "deny" });
   });
   test("CLI：sv opencode-report <文件> 能跑（文本 / json）；缺参数 → 2；坏行被跳过", async () => {
-    const d = drive(["B", "E", "A"]);
+    const d = await drive(["B", "E", "A"]);
     await d.run(1);
     const dir = join(home, "dumps");
     const file = join(dir, readdirSync(dir)[0]);

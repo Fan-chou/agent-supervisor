@@ -6,15 +6,18 @@ import { join } from "node:path";
 import plugin from "../plugin/agent-supervisor.ts";
 
 type Handler = (e: any) => unknown;
-function fakeCtx(opts: { broken?: boolean } = {}) {
+function fakeCtx(opts: { broken?: boolean; skip?: string[]; asyncReject?: string[] } = {}) {
   const hooks = new Map<string, Handler>();
+  const disposed: string[] = [];
   const mk = (ns: string) => ({
     hook: (name: string, f: Handler) => {
-      if (opts.broken) throw new Error("hook api changed");
+      if (opts.broken || opts.skip?.includes(`${ns}.${name}`)) throw new Error("hook api changed");
+      if (opts.asyncReject?.includes(`${ns}.${name}`)) return Promise.reject(new Error("registration rejected"));
       hooks.set(`${ns}.${name}`, f);
+      return Promise.resolve({ dispose: async () => void disposed.push(`${ns}.${name}`) }); // V2 的 hook 注册返回 Promise<Registration>
     },
   });
-  return { ctx: { permission: mk("permission"), session: mk("session"), tool: mk("tool"), location: { directory: "/work/proj" } }, hooks };
+  return { ctx: { permission: mk("permission"), session: mk("session"), tool: mk("tool"), location: { directory: "/work/proj" } }, hooks, disposed };
 }
 
 interface Seen {
@@ -62,21 +65,21 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true });
 });
 
-const setup = (ctx: any) => (plugin as any).setup(ctx);
+const setup = async (ctx: any) => (plugin as any).setup(ctx);
 const deliver = (kind: string, text: string, mode: string) => ({ ok: true, mode, delivery: { kind, text, deliveryId: "d1", ruleId: "L1" } });
 
 describe("OpenCode 插件（真实执行打印出来的源码）", () => {
-  test("导出 id 与 setup；注册四个 V2 hook", () => {
+  test("导出 id 与 setup；注册五个 V2 hook（evaluate、context、prompt、execute.before、execute.after）", async () => {
     expect((plugin as any).id).toBe("agent-supervisor");
     const { ctx, hooks } = fakeCtx();
-    setup(ctx);
-    expect([...hooks.keys()].sort()).toEqual(["permission.evaluate", "session.context", "tool.execute.after", "tool.execute.before"]);
+    await setup(ctx);
+    expect([...hooks.keys()].sort()).toEqual(["permission.evaluate", "session.context", "session.prompt", "tool.execute.after", "tool.execute.before"]);
   });
   test("闸门打开（mode=enforce 且 SV_OPENCODE_ENFORCE=1）：evaluate 收到 block → e.effect=deny 且带 message；其他字段不碰", async () => {
     startFake(() => deliver("block", "同一个失败命令已重复 3 次。", "enforce"));
     openGate();
     const { ctx, hooks } = fakeCtx();
-    setup(ctx);
+    await setup(ctx);
     const e: any = { sessionID: "s1", action: "bash", resources: ["git reset --hard"], metadata: { a: 1 } };
     await hooks.get("permission.evaluate")!(e);
     expect(e).toEqual({ sessionID: "s1", action: "bash", resources: ["git reset --hard"], metadata: { a: 1 }, effect: "deny", message: "同一个失败命令已重复 3 次。" });
@@ -86,7 +89,7 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
     startFake(() => deliver("block", "拦截", "enforce"));
     writeFileSync(join(home, "hook.json"), JSON.stringify({ mode: "enforce", port: server!.port }));
     const { ctx, hooks } = fakeCtx();
-    setup(ctx);
+    await setup(ctx);
     const e: any = { sessionID: "s1", action: "bash", resources: [] };
     await hooks.get("permission.evaluate")!(e);
     expect(e.effect).toBeUndefined();
@@ -105,7 +108,7 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
     };
     test("闸门关：危险命令 / 写 .env 都不拦（只观察）", async () => {
       const { ctx, hooks } = fakeCtx(); // 没有守护进程
-      setup(ctx);
+      await setup(ctx);
       expect((await run(hooks, "bash", { command: "git reset --hard HEAD~1" })).effect).toBeUndefined();
       expect((await run(hooks, "write", { filePath: "/work/proj/.env", content: "A=1" }, { call: "c2" })).effect).toBeUndefined();
     });
@@ -116,7 +119,7 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
       server!.stop(true);
       writeFileSync(join(home, "hook.json"), JSON.stringify({ mode: "enforce", port })); // 守护进程已不在
       const { ctx, hooks } = fakeCtx();
-      setup(ctx);
+      await setup(ctx);
       const a = await run(hooks, "bash", { command: "git reset --hard HEAD~1" });
       expect(a.effect).toBe("deny");
       expect(a.message).toContain("X2");
@@ -131,7 +134,7 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
       server!.stop(true);
       writeFileSync(join(home, "hook.json"), JSON.stringify({ mode: "enforce", port }));
       const { ctx, hooks } = fakeCtx();
-      setup(ctx);
+      await setup(ctx);
       await hooks.get("tool.execute.before")!({ sessionID: "s1", callID: "N", tool: "bash", args: { command: "git reset --hard" } });
       await hooks.get("tool.execute.after")!({ sessionID: "s1", callID: "N", tool: "bash", status: "completed" });
       const e1: any = { sessionID: "s1" };
@@ -145,13 +148,13 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
     });
     test("X2 内部出错 = 放行（args 是怪东西也不抛）", async () => {
       const { ctx, hooks } = fakeCtx();
-      setup(ctx);
+      await setup(ctx);
       for (const args of [null, undefined, 5, "str", { command: 7 }, { command: { a: 1 } }]) await hooks.get("tool.execute.before")!({ sessionID: "s1", callID: "x", tool: "bash", args });
     });
   });
   test("探针 SV_OPENCODE_PROBE（核对用，默认关）：事件里含该子串才 deny，用来验证 deny/message/异步 hook 在真机上是否有效", async () => {
     const { ctx, hooks } = fakeCtx();
-    setup(ctx);
+    await setup(ctx);
     const none: any = { sessionID: "s1", resources: ["touch /tmp/sv-probe-1"] };
     await hooks.get("permission.evaluate")!(none);
     expect(none.effect).toBeUndefined(); // 没设置探针 = 不拦
@@ -167,12 +170,12 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
   test("SV_OPENCODE_DUMP=1：落盘 setup/注册/每个 hook 的 enter/exit，含形状和脱敏样本（0600/0700）；默认不落盘", async () => {
     startFake();
     const { ctx, hooks } = fakeCtx();
-    setup(ctx);
+    await setup(ctx);
     await hooks.get("tool.execute.before")!({ sessionID: "s1", callID: "c1", tool: "bash", args: { command: "ls" } });
     expect(existsSync(join(home, "dumps"))).toBe(false);
     process.env.SV_OPENCODE_DUMP = "1";
     const f = fakeCtx();
-    setup(f.ctx);
+    await setup(f.ctx);
     await f.hooks.get("tool.execute.before")!({ sessionID: "s1", callID: "c9", tool: "bash", args: { command: "echo sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA" }, secret_token: "abcdef123456" });
     await f.hooks.get("session.context")!({ sessionID: "s1", system: ["x"], messages: [{ role: "user", content: "hi" }], model: { providerID: "p", modelID: "m" } });
     const dir = join(home, "dumps");
@@ -181,7 +184,7 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
     expect(statSync(join(dir, file)).mode & 0o777).toBe(0o600);
     const recs = readFileSync(join(dir, file), "utf8").trim().split("\n").map((l) => JSON.parse(l));
     expect(recs.some((r) => r.hook === "setup")).toBe(true);
-    expect(recs.filter((r) => r.phase === "note" && r.registered === true).map((r) => r.hook).sort()).toEqual(["context", "evaluate", "execute.after", "execute.before"]);
+    expect(recs.filter((r) => r.phase === "note" && r.registered === true).map((r) => r.hook).sort()).toEqual(["context", "evaluate", "execute.after", "execute.before", "prompt"]);
     const enter = recs.find((r) => r.hook === "execute.before" && r.phase === "enter");
     const exit = recs.find((r) => r.hook === "execute.before" && r.phase === "exit");
     expect(enter.shape).toMatchObject({ sessionID: "string", callID: "string", args: { command: "string" } });
@@ -196,7 +199,7 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
     for (const mode of ["shadow", "advise"]) {
       startFake(() => deliver("block", "拦截", mode));
       const { ctx, hooks } = fakeCtx();
-      setup(ctx);
+      await setup(ctx);
       const e: any = { sessionID: "s1", action: "bash", resources: [] };
       await hooks.get("permission.evaluate")!(e);
       expect(e.effect, mode).toBeUndefined();
@@ -205,7 +208,7 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
     }
     startFake(() => deliver("advise", "建议一条", "shadow"));
     const { ctx, hooks } = fakeCtx();
-    setup(ctx);
+    await setup(ctx);
     const c: any = { sessionID: "s1", system: ["base"], messages: [] };
     await hooks.get("session.context")!(c);
     expect(c.system).toEqual(["base"]); // shadow 下 advise 也不注入
@@ -214,7 +217,7 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
     let calls = 0;
     startFake(() => (calls++ === 0 ? deliver("advise", "先看第一条报错。", "advise") : { ok: true, delivery: null, mode: "advise" }));
     const { ctx, hooks } = fakeCtx();
-    setup(ctx);
+    await setup(ctx);
     const ctxHook = hooks.get("session.context")!;
     const c1: any = { sessionID: "s1", system: ["base"], messages: [] };
     const c2: any = { sessionID: "s1", system: ["base"], messages: [] };
@@ -228,18 +231,81 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
     expect(seen.length).toBe(2); // 重复注入那次不再问守护进程
 
     calls = 0;
-    const c4: any = { sessionID: "s1", system: [], messages: [] };
+    const c4: any = { sessionID: "s1", system: ["base"], messages: [] };
     await ctxHook(c4);
     await hooks.get("tool.execute.after")!({ sessionID: "s1", tool: "bash", status: "completed" });
-    const c5: any = { sessionID: "s1", system: [], messages: [] };
+    const c5: any = { sessionID: "s1", system: ["base"], messages: [] };
     await ctxHook(c5);
-    expect(c4.system.length).toBe(1);
-    expect(c5.system).toEqual([]);
+    expect(c4.system.length).toBe(2);
+    expect(c5.system).toEqual(["base"]);
+  });
+  test("context 注入只在能确认 system 元素形态时才做：对象部件复制最后一个的形状只换 text；空数组 / 未知形态 / 非数组都不改（宁可没有建议）", async () => {
+    startFake(() => deliver("advise", "建议一条", "advise"));
+    const { ctx, hooks } = fakeCtx();
+    await setup(ctx);
+    const h = hooks.get("session.context")!;
+    const part: any = { sessionID: "a", system: [{ type: "text", text: "base", cache: true }], messages: [] };
+    await h(part);
+    expect(part.system).toEqual([{ type: "text", text: "base", cache: true }, { type: "text", text: "建议一条", cache: true }]);
+    for (const [sid, system] of [["b", []], ["c", [42]], ["d", [{ nope: 1 }]], ["e", undefined], ["f", "str"]] as const) {
+      const e: any = { sessionID: sid, system, messages: [] };
+      const before = JSON.stringify(e);
+      await h(e);
+      expect(JSON.stringify(e), String(sid)).toBe(before);
+    }
+  });
+  test("session.prompt 钩子：user 消息文本（字符串 / {text} / 部件数组）以 event=prompt 上报，同一条不重复；注册成功后 context 不再扫 messages", async () => {
+    startFake();
+    const { ctx, hooks } = fakeCtx();
+    await setup(ctx);
+    const p = hooks.get("session.prompt")!;
+    await p({ sessionID: "s1", messageID: "m1", prompt: "修一下这个 bug", delivery: "queue" });
+    await p({ sessionID: "s1", messageID: "m1", prompt: "修一下这个 bug", delivery: "queue" }); // 重复
+    await p({ sessionID: "s1", messageID: "m2", prompt: { text: "再来" }, delivery: "queue" });
+    await p({ sessionID: "s1", messageID: "m3", prompt: [{ type: "text", text: "第一段" }, { type: "text", text: "第二段" }], delivery: "queue" });
+    await p({ sessionID: "s1", messageID: "m4", prompt: { weird: 1 }, delivery: "queue" }); // 取不到文本：不上报
+    const posts = seen.filter((x) => x.payload.event === "prompt");
+    expect(posts.map((x) => x.payload.userMessage)).toEqual([{ id: "m1", text: "修一下这个 bug" }, { id: "m2", text: "再来" }, { id: "m3", text: "第一段\n第二段" }]);
+    await hooks.get("session.context")!({ sessionID: "s1", system: ["b"], messages: [{ role: "user", id: "x", content: "不应被扫描" }] });
+    expect(seen.at(-1)!.payload.userMessage).toBeUndefined();
+  });
+  test("evaluate 的 source.id 把本地 X2 精确绑到那次调用：source.id 对不上就放行；对得上才（闸门开时）deny", async () => {
+    startFake();
+    openGate();
+    const port = server!.port;
+    server!.stop(true);
+    writeFileSync(join(home, "hook.json"), JSON.stringify({ mode: "enforce", port }));
+    const { ctx, hooks } = fakeCtx();
+    await setup(ctx);
+    await hooks.get("tool.execute.before")!({ sessionID: "s1", id: "call-A", tool: "bash", input: { command: "git reset --hard" } });
+    const other: any = { sessionID: "s1", action: "bash", resources: [], source: { type: "tool", messageID: "m", id: "call-OTHER" } };
+    await hooks.get("permission.evaluate")!(other);
+    expect(other.effect).toBeUndefined();
+    const mine: any = { sessionID: "s1", action: "bash", resources: [], source: { type: "tool", messageID: "m", id: "call-A" } };
+    await hooks.get("permission.evaluate")!(mine);
+    expect(mine.effect).toBe("deny");
+  });
+  test("注册返回被拒绝的 Promise → 不抛、不产生未处理的 rejection，其余 hook 照常注册；setup 返回清理函数，调用后注销全部 hook", async () => {
+    const f = fakeCtx({ asyncReject: ["session.context"] });
+    const cleanup = await setup(f.ctx);
+    expect([...f.hooks.keys()].sort()).toEqual(["permission.evaluate", "session.prompt", "tool.execute.after", "tool.execute.before"]);
+    expect(typeof cleanup).toBe("function");
+    await (cleanup as () => Promise<void>)();
+    expect(f.disposed.sort()).toEqual(["permission.evaluate", "session.prompt", "tool.execute.after", "tool.execute.before"]);
+  });
+  test("真实 V2 字段名：execute.before/after 用 id 和 input（不是 callID/args）；上报时归一成线格式", async () => {
+    startFake();
+    const { ctx, hooks } = fakeCtx();
+    await setup(ctx);
+    await hooks.get("tool.execute.before")!({ sessionID: "s1", agent: "build", messageID: "m1", id: "call-1", tool: "bash", input: { command: "ls" } });
+    await hooks.get("tool.execute.after")!({ sessionID: "s1", agent: "build", messageID: "m1", id: "call-1", tool: "bash", input: { command: "ls" }, status: "completed", result: { output: "ok" } });
+    expect(seen[0].payload).toMatchObject({ event: "tool.before", callID: "call-1", tool: "bash", args: { command: "ls" }, directory: "/work/proj" });
+    expect(seen[1].payload).toMatchObject({ event: "tool.after", callID: "call-1", status: "completed", result: { output: "ok" } });
   });
   test("context：只在 user 消息变化时带 userMessage；多种消息形态都能取到文本", async () => {
     startFake();
-    const { ctx, hooks } = fakeCtx();
-    setup(ctx);
+    const { ctx, hooks } = fakeCtx({ skip: ["session.prompt"] }); // 没有 prompt 钩子时才退回扫 messages
+    await setup(ctx);
     const h = hooks.get("session.context")!;
     const msgs = [{ role: "user", id: "u1", parts: [{ text: "修一下" }, { text: "这个 bug" }] }, { role: "assistant", content: "好" }];
     await h({ sessionID: "s1", system: [], messages: msgs, model: { providerID: "p", modelID: "m" } });
@@ -253,7 +319,7 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
   test("tool.before / tool.after：上报工具名、参数、callID、状态；error 状态带 error", async () => {
     startFake();
     const { ctx, hooks } = fakeCtx();
-    setup(ctx);
+    await setup(ctx);
     await hooks.get("tool.execute.before")!({ sessionID: "s1", callID: "c1", tool: "bash", args: { command: "ls" } });
     await hooks.get("tool.execute.after")!({ sessionID: "s1", callID: "c1", tool: "bash", args: { command: "ls" }, status: "error", error: { message: "boom" } });
     expect(seen[0].payload).toMatchObject({ event: "tool.before", sessionID: "s1", callID: "c1", tool: "bash", args: { command: "ls" }, directory: "/work/proj" });
@@ -261,7 +327,7 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
   });
   test("fail-open：守护进程不可达 / 超时 / HTTP 500 / 非 JSON / 没有 hook.json——任何 hook 都不抛异常、不改事件", async () => {
     const { ctx, hooks } = fakeCtx();
-    setup(ctx);
+    await setup(ctx);
     const run = async () => {
       const e: any = { sessionID: "s1", action: "bash", resources: [], system: ["b"], messages: [] };
       await hooks.get("permission.evaluate")!(e);
@@ -288,12 +354,12 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
     await run();
   });
   test("fail-open：hook API 形态变了（注册时抛异常 / ctx 缺字段 / 事件对象是 null）——setup 与 handler 都不抛", async () => {
-    expect(() => setup(fakeCtx({ broken: true }).ctx)).not.toThrow();
-    expect(() => setup({})).not.toThrow();
-    expect(() => setup(undefined)).not.toThrow();
+    await expect(setup(fakeCtx({ broken: true }).ctx)).resolves.toBeDefined();
+    await expect(setup({})).resolves.toBeDefined();
+    await expect(setup(undefined)).resolves.toBeDefined();
     startFake();
     const { ctx, hooks } = fakeCtx();
-    setup(ctx);
+    await setup(ctx);
     for (const h of hooks.values()) {
       await h(null);
       await h(undefined);
@@ -313,7 +379,7 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
     writeFileSync(join(home, "hook.json"), JSON.stringify({ port: server.port }));
     writeFileSync(join(home, "token"), "tok123\n");
     const { ctx, hooks } = fakeCtx();
-    setup(ctx);
+    await setup(ctx);
     await hooks.get("tool.execute.before")!({ sessionID: "s1", tool: "bash", args: {} });
     expect(auth).toBe("Bearer tok123");
   });

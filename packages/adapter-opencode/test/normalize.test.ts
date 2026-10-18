@@ -56,6 +56,13 @@ describe("OpenCode V2 插件事件 → Event（合成载荷）", () => {
     const b = n({ ...base, event: "context", model: "m-str", userMessage: { id: "u1", text: "请修复它" } });
     expect(b.events[0]).toMatchObject({ phase: "prompt", origin: "user", text: "请修复它", harness: "opencode", model: "m-str" });
   });
+  test("prompt（session.prompt 钩子）：产生 origin=user 的 prompt 事件，不是注入点；没有文本则不产生事件", () => {
+    const r = n({ ...base, event: "prompt", userMessage: { id: "m1", text: "请修复它" } });
+    expect(r.hookPoint).toBeNull();
+    expect(r.events[0]).toMatchObject({ phase: "prompt", origin: "user", text: "请修复它", harness: "opencode" });
+    expect(n({ ...base, event: "prompt", userMessage: { id: "m1", text: "" } }).events).toEqual([]);
+    expect(n({ ...base, event: "prompt" }).events).toEqual([]);
+  });
   test("session.created / interrupt → session / interrupt 事件；未知事件和缺字段不抛异常也不产生事件", () => {
     expect(n({ ...base, event: "session.created" }).events[0].phase).toBe("session");
     expect(n({ ...base, event: "interrupt" }).events[0]).toMatchObject({ phase: "interrupt", origin: "user" });
