@@ -127,3 +127,9 @@
    - **幂等与审计**：请求带 `Idempotency-Key`（同 key 同 body 返回同结果，不同 body 409）；每次写入记 actor、ts、请求摘要；批量接口一次最多 200 个目标，部分失败时逐项返回结果，整体 207。
    - **校验**：`POST /v1/config/validate` 只校验和 diff，**不应用**（把 mode 改成 enforce 要在返回里显式标 `enablesBlocking:true`）；回放/评估是后台任务，只读 transcript、不联网（`judge:"live"` 需显式开关），任务数有上限、可取消，结果落 `kind=replay|eval` 的 run。
    - **失败语义**：写接口失败只返回 4xx/5xx，不影响 hook 路径；写入用同一个 SQLite 连接（WAL + busy_timeout），写失败不重试风暴。
+
+## Jack 对 OpenCode 的决定（监督者转达；#74/#70/#73 的后续）
+88. **Jack 同意**：OpenCode 插件里加**本地 X2**（用 tool 执行前的参数判断危险命令/文件），不再只依赖守护进程（取代 #74 的「没有本地 X2」）。
+89. **Jack 同意**：OpenCode 在**真机核对通过前只观察、不拦截**——命中照记、打危险标记（`severity=dangerous`、`outcome=would_have_blocked`），但不 block；即 OpenCode 不开 enforce，本地 X2 同样受这条约束。
+90. **Jack 同意**：研究用 `session.prompt` 做收尾（Stop 的替代），**只出设计和测试，核实前不对外宣称可用**。
+91. **环境事实**：Jack 的 Mac 已装 OpenCode 2：npm 包 `@opencode/cli` 2.0.32（命令 `opencode`，v2.0.32）；旧的 `opencode-ai`（1.x）已卸；插件接口类型在 npm 包 `@opencode/plugin` 2.0.32（注意不是 `@opencode-ai/plugin`）；官方文档 https://opencode.ai/v2/docs（本轮允许只读访问，除此之外不联网）。据此逐项核对适配器依赖的钩子，结论见下一批决定。
