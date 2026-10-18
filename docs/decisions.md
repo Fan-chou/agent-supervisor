@@ -66,3 +66,7 @@
 
 ## Jack 的决定（监督者指示）
 41. **不要任何模型特定规则**：所有规则（含 T 组测试重跑）通用、只有一套阈值。已删除 GPT/默认 profile（代码 `config.ts`/检测器/`engine`/回放、`config.example.yaml`、`design.md` §6.3、测试）；配置里只有 `thresholds`，没有 `profiles` / `model_profiles`。模型名（`SessionStart.model`、`PostModelSwitch`、Codex 的 `model` 字段、OpenCode 的 context hook）只记录到日志，不参与判定；测试断言「换任意模型名，命中时间线完全一致」。**decisions #16 中的分档作废。** 统一后的初值：T1 advise@2 / H@3；T2 advise@3 / M@5；T3 advise 一次；T4 L@4 / advise@6；T5 L@2 / advise@3 / M@4；T6 advise@3；T7 advise；T8 L@10 / M@14；每轮预算全量测试 ≤3、验证类 ≤12。这些是初值，用 `sv replay --set thresholds.X=…` 校准。
+42. **日志（design §18）**：SQLite 为主、可选 JSONL 镜像/导出；保留期按写入时间 `logged_ts`（回放历史 transcript 不会被立刻清掉）；**被人工标注过的命中（及其决策/投递）不清理**，因为标注是人工成本；`runs` 记录当时生效的整套阈值/预算/规则配置、哈希和 `--set` 覆盖，用于对比调参；事件 JSON 正文、命令、输出、judge 请求响应、消息落盘前一律脱敏（测试里用真实形态的密钥断言整库 dump 找不到）；日志写入失败 fail-open。发现并修复了两个问题：事件 `body_json` 与命中 `detail_json` 最初没有脱敏；`redact` 会把 `prompt_tokens: 1200` 之类的纯数字统计字段当密钥抹掉（现在纯数字的值不算密钥）。
+43. **遵从（complied）的判定**：只对能说清「同样的做法」的规则定义——L1/L2/L3/T1/T6 看同一 `argsHash`，T2/T4/T5 看同一命令类别；投递后观察之后 3 次调用（`pre`），出现同样的 → 0，没有 → 1，窗口没走完 → NULL。其他规则不判定（NULL）。这是启发式，目的是复盘时有个量，不是严格因果。
+44. **误报率的来源**：只来自人工标注（`sv mark … fp|useful`，同一命中以最新一条为准）；没有标注就是 n/a，不编造。`sv eval` 的 precision/FDR 是另一套（对 `labels.yaml` 的会话级标注），两者互补。
+45. **模型名**：`events.model`、`hits.model`、`sessions.model`、`judge_calls.model` 都记录；`sv stats --by model` 事后看谁更容易触发什么。任何检测器/策略代码里都不读模型名（有测试：换任意模型名，命中时间线完全一致）。

@@ -383,7 +383,7 @@ Reply with ONLY one JSON object matching the schema below. No prose before or af
 - 不使用 `onFailure:"block"`：守护进程宕机时，它会把所有工具调用都拦下来。
 
 ## 10. 状态存储与日志
-- 数据放在 `~/.agent-supervisor/`：`state.db`（表：sessions、events、hits、verdicts、outbox、injections（origin 哈希）、plans）；还有 `logs/YYYY-MM-DD.jsonl`。
+- 数据放在 `~/.agent-supervisor/`：`state.db`（日志与运行状态，表结构见 **§18**；运行状态表 outbox、injections（origin 哈希）、plans 属于 M3）；可选 JSONL 镜像见 §18.1。
 - **脱敏**：落盘和发给 judge 之前，都先过密钥正则（`sk-`、`ghp_`、`github_pat_`、`AKIA`、`xox[bp]-`、`Bearer `、`-----BEGIN … KEY-----`、`*_KEY=`、`*_TOKEN=`、`password=`）。输出只保留头尾各 1k 字符。
 - 保留 14 天，自动清理。可以用 `sv status|tail|explain <session>` 查看。
 
@@ -422,7 +422,7 @@ agent-supervisor/
   README.md  config.example.yaml
   docs/research.md  docs/design.md  docs/review-opus.md
   packages/
-    core/        # event, normalize, cmdclass, failure-classifier, wsfp, plan-extract, detectors/*, policy, judge(client+parse+repair), outbox, store, redact
+    core/        # event, normalize, cmdclass, failure-classifier, wsfp, plan-extract, detectors/*, policy, judge(client+parse+repair), outbox, store/(schema, store, sink, queries), redact
     daemon/      # supervisord（UDS + HTTP/token, 协议版本）
     hook/        # sv-hook（bun --compile；内置 X2 + render 白名单）
     cli/         # sv: start/stop/status/tail/explain/replay/install（只打印配置片段与 launchd plist）
@@ -487,3 +487,60 @@ agent-supervisor/
 - judge 完全可配置：base_url、key 的环境变量名、model、按情况路由、请求参数、response_format 支持 auto 降级。默认指向 Magpie 的意图路由组，提示里不用任何模型专属特性，加上稳健解析与修复（§8）。
 - **新查证**：Magpie 源码支持 response_format json_schema，上游不支持时会自动降级（§8.2）。
 - 计划来源：默认自动提取，plan.md 覆盖，两样都没有时停用相关规则。Jack 已确认（§4.2）。
+
+**v2.1（Jack 的决定，2026-10-18）**
+- **不要任何模型特定规则**：所有规则（含 T 组）通用、只有一套阈值；删除 GPT/默认两个 profile 和 `model_profiles` 映射（§6.3、§6.2、`config.example.yaml`）。模型名只记录到日志（§18），不参与判定；是否某个模型更容易触发某条规则，事后用 `sv stats --by model` 看。T1 的第 3 次 H 对所有 agent 生效（仍要先同步复核工作区指纹，非 git 只 advise）。
+- **X2 的 `rm -rf` 口径确认**为窄化版本（§5.5）：`/`、`$HOME` 本身、仓库外路径、仓库根和 `.git`；仓库内普通子目录、`/tmp`、构建产物目录豁免；含未解析变量的路径放行。
+- **新增 §18 日志与可观测性**：结构化、可查询的 SQLite 日志（可选 JSONL 镜像/导出）、保留期可配置，覆盖事件、命中（规则/指纹/证据/阈值）、judge 请求响应（脱敏）、延迟/token/模型、决策与抑制原因、投递结果与遵从、用户覆盖；可产出按规则命中率/误报率统计，并通过 `sv replay --set` 调阈值。
+- 前端确定为 **MyGo native UI**（见 `docs/frontend-design.md`）。
+
+## 18. 日志与可观测性（v2.1 新增）
+目的：Jack 要在真实项目上用，日后复盘、调参。原则：**一切判定都留下可追溯的记录**，并且这些记录能直接回答「哪条规则吵、哪条规则准、阈值该往哪调」。
+
+### 18.1 存储
+- SQLite（`bun:sqlite`，WAL），默认 `~/.agent-supervisor/state.db`（`log.db`）；schema 带版本号（`schema_meta.schema_version`，当前 1；库比程序新则拒绝打开）。
+- 可选 **JSONL 镜像**：`log.jsonl_dir` 非空时，每条记录同时追加到 `<dir>/<table>-YYYY-MM-DD.jsonl`；随时可用 `sv export --out <dir>` 把所有表导出为 `<table>.jsonl`。
+- **保留期**：`log.retention_days`（默认 14，0 = 不清理），按写入时间 `logged_ts`（不是事件时间，所以回放历史 transcript 不会被立刻清掉）清理；**被人工标注过的命中及其决策/投递不清理**。`sv prune [--days N]` 手动清理；回放写库后自动按保留期清理一次。
+- **隐私**：所有正文（事件 JSON、命令、输出、prompt、judge 请求/响应、消息）落盘前都过 `redact()`；`log.store_event_bodies` / `log.store_judge_bodies` 为 false 时只保留指纹和统计字段。日志写入失败一律 fail-open（不影响监督，stderr 提示一次）。
+- 时间约定：`ts` = 事件发生时间（回放里是历史时间）；`logged_ts` = 写入时间。
+
+### 18.2 表
+| 表 | 一行是什么 | 关键列 |
+|---|---|---|
+| `runs` | 一次运行：`live`（守护进程一次启动）/ `replay` / `eval` | `kind, label, source, mode, judge_mode, thresholds_json, thresholds_hash, overrides_json`（**当时生效的整套阈值、预算、规则配置及其哈希，和命令行 `--set` 覆盖**，用来对比调参） |
+| `sessions` | 一个会话 | `run_id, session_id, harness, model, cwd, project, source_file, parent_session_id, calls` |
+| `events` | 每个事件（pre/post/prompt/stop/interrupt/compact/session） | `phase, origin, tool_use_id, model, tool_name, tool_kind, cmd_class, args_hash, norm_cmd, mutating, status, exit_code, err_fp, out_hash, ws_fp, context_tokens, body_json`（body 为脱敏后的完整 Event JSON） |
+| `hits` | 每次检测器命中 | `rule_id, sev, category, phase, call_index, key`（**指纹**：规则+指纹，冷却用）`, evidence_json`（证据事件 seq）`, observed_json`（实际观测值，如次数）`, threshold_json`（**该规则当时的阈值及自适应倍数**）`, detail_json, message, verified, observe_only, blockable, explicit, model` |
+| `judge_calls` | 每次 judge 调用（重试合并成一行） | `rule_ids, sync, route_model, model, status(ok/parse_fail/timeout/error), verdict, confidence, category, message_raw, latency_ms, prompt_tokens, completion_tokens, cached_tokens, cost_usd, retries, http_requests, format_level, format_downgraded, repairs_json, error, request_json, response_json`（请求/响应均脱敏） |
+| `decisions` | 策略对每个命中的决定 | `hit_id, judge_call_id, action(log/advise/block/ask/stop_continue/ignore/judge_off/skip), applied, mode, reason, suppressed_by`（结构化抑制/降级代码）`, message, would_block_if_verified, at_next_pre, counted` |
+| `deliveries` | 一条消息的投递结果 | `decision_id, rule_id, channel`（PreToolUse/PostToolBatch/Stop/asyncRewake…；回放里带 `replay:` 前缀）`, delivered, delivered_ts, expired_reason, text, watch_json, complied, compliance_note` |
+| `overrides` | 用户覆盖 | `kind`（`sv_off` / `sv_quiet` / `manual_allow` / `manual_reject` / `mark_false_positive` / `mark_useful`）`, target_type(session/hit/decision/judge_call), target_id, actor, note` |
+| `adapter_health` | 适配器 → 守护进程的连接成功/失败 | `harness, ok, error`（§1 的「静默失效」监控） |
+
+- `suppressed_by` 取值：`user_off, user_quiet, observe_only, cooldown, category_dedupe, l_once, consecutive_cap, unverified_ws, judge_merged, judge_budget, judge_cooldown, paused, fail_open, stop_budget, block_downgraded`。
+- **遵从**（`deliveries.complied`）：对可判定的规则（L1/L2/L3/T1/T6 看同一调用、T2/T4/T5 看同一类别），投递后看之后 3 次调用里 agent 有没有继续同样的做法：继续 → 0，没有 → 1；窗口没走完 → NULL 并写明原因。
+- **用户覆盖**：prompt 里的 `#sv off/quiet` 自动记录；`sv mark <hit-id> fp|useful` 标误报/有用（同一命中以最新一条为准）；`sv override <decision-id> allow|reject` 手动放行/驳回。
+
+### 18.3 查询与命令
+实现见 `packages/core/src/store/queries.ts`，命令见 `packages/cli/src/stats.ts`：
+| 问题 | 命令 | 要点 |
+|---|---|---|
+| 每条规则命中了多少、多频繁 | `sv stats [--by rule] [--run N] [--label L] [--since 7d]` | 命中数、触发会话数、**每 100 次调用命中数**、触发会话占比、L/M/H 分布 |
+| 每条规则准不准 | 同上 | **误报率 = 已标注命中里被标为误报的比例**；另有「生效数」「被各类原因抑制的数量」「遵从率」 |
+| 哪个模型更容易触发什么 | `sv stats --by model` | 每个模型的调用数、各规则命中数和每 100 调用命中数——模型名只在这里用 |
+| judge 值不值 | `sv stats --by judge` | 按 model：调用、ignore 率、`judge_parse_fail` 率、超时/出错、p50/p95 延迟、token、成本、重试、response_format 降级次数 |
+| 某个会话怎么样 | `sv stats --by session` | 调用数、L/M/H、报警数、judge 次数 |
+| 一次命中的完整链路 | `sv explain <hit-id>` | 命中（阈值、观测值、指纹）→ 证据事件 → 决策（含抑制原因）→ judge → 投递与遵从 → 人工标注 |
+| 阈值调多少合适 | `sv replay <dir> --log --label X --set thresholds.T1.H=4`，再 `sv stats --compare A,B` | 每次回放把**当时生效的阈值集合**记入 `runs`；对比两次的命中、报警、拦截变化；配合 §12 的 labels 与 `sv eval` 看 precision/recall |
+| 有哪些运行 | `sv stats --by runs` | 标签、模式、judge 模式、阈值哈希、覆盖项 |
+
+典型调参循环：
+1. 在一批历史会话上跑基线：`sv replay <dir> --judge=mock --log --label base`；
+2. 换阈值再跑：`… --label t1h4 --set thresholds.T1.H=4`（`--set` 可重复；配置里 `thresholds.*`、`budgets.*`、`detect.*` 都可覆盖）；
+3. `sv stats --compare <base>,<t1h4>` 看变化；用 `sv mark` 给有代表性的命中标误报/有用；
+4. `sv stats --by rule --run <id>` 看误报率与遵从率；`sv eval labels.yaml --set …` 看对人工标注的 precision/recall 与首次报警延迟。
+
+### 18.4 写入点（谁在什么时候写）
+- 守护进程（M3）或回放：`Engine.feed()` 每处理一条事件调用一次 `LogSink.onFeed`，在**一个事务**里写入事件、judge 调用、命中、决策、投递，并更新遵从观察窗口与 `#sv` 覆盖；`Engine.close()` 结算未走完的窗口。
+- judge 客户端在返回值里带上 `meta`（延迟、token、重试、response_format 等级与降级、修复列表、脱敏后的请求/响应），由引擎包装 judge 时收集。
+- 适配器连接健康由守护进程在每次适配器请求/失败时写入 `adapter_health`。
