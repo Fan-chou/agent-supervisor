@@ -44,13 +44,18 @@
 - §3.5 契约测试（Claude 部分）：`packages/adapter-claude/src/render.ts`（白名单 + `sanitize` 兜底，PreToolUse/PostToolUse/PostToolUseFailure/PostToolBatch/Stop 各一格）；`test/contract/claude/*.json` 共 18 个手写 fixture（不是从 render 生成的）+ 不变量测试（只有白名单字段、不泄漏 ruleId/deliveryId/expires、Post 类事件绝不出现 permissionDecision/decision、deny/ask 不带 additionalContext、Stop 遵守 `stop_hook_active`、600 字符截断、空输出）。X2 的真实输出与 fixture 文案做交叉校验。
 - 复盘修复（advisor 复核后）：vitest watch 判定改看命令自己的 `CI=` 赋值；回放输出（JSON 与文本）整体脱敏；X2 改为跟随 mode；时间线新增 `callIndex`。
 
-**测试结果**：`bun test` 636 通过 / 0 失败（16 个文件）；`tsc --noEmit` 无错误。全部测试不发网络请求（judge 测试里 `fetch` 被陷阱）。
+**测试结果**：`bun test` 639 通过 / 0 失败（16 个文件）；`tsc --noEmit` 无错误。全部测试不发网络请求（judge 测试里 `fetch` 被陷阱）。
 
 **偏离 / 需要 Jack 确认**
 - 误报率口径取 per-alarm（FDR），见 decisions #31。
 - X2 跟随 mode（#20）。
 - **这一阶段没有做 outbox 原子领取**（属于 M3 的 store/outbox，design §3.4/P0-8），也没有做守护进程、`--judge=live`、sv-hook、Codex/OpenCode 的 render 契约测试。
 - 合成样本与真实 transcript 的差异、30 个会话的人工标注与阈值校准都还没做（需要 Jack 的数据）。
+
+### 复核后的修正（M2 收尾前）
+- **冷却不再把重复拦截放行**（decisions #38–40）：L1/T1 被拦的调用重试时不再落进冷却；默认 5 秒间隔下 L1/T1 依次是 block、block、advise、skip；重复拦截沿用此前的判断，不重复问 judge；T1 的 advise 遵守「10 步或 5 分钟」冷却。两个连续拦截上限测试不再靠 `dt: 700_000` 绕开冷却。
+- **首次报警延迟只取窗口内的报警**（decisions #32）：早于窗口的噪声报警不再让延迟变小。
+- 最终：`bun test` 639 通过 / 0 失败；`tsc --noEmit` 无错误。
 
 ## 前端设计文档（完成，仅文档）
 `docs/frontend-design.md`：按更新后的 CLAUDE.md，框架已定为 **MyGo native UI**，因此没有做 native / Naive UI 的方案对比，也没有「请 Jack 确认」那一句。内容：信息架构；5 个页面（实时会话、事件与事故时间线、Judge 裁决、规则与配置、回放结果）的 ASCII 线框与每页的空/错误状态；守护进程要提供的 API 表（UDS / HTTP+token，协议版本头，v1 唯一的写接口是会话静音）；以 JSON Schema 为唯一来源、Go 结构体生成、共享黄金样例的类型复用方案；SSE（HTTP）/ NDJSON（UDS）实时推送，`since` 断线续传与 `reset`；UI 状态机与重连退避、Go 侧 Store 与 10 Hz 合并；可访问性（并把「GPU 自绘界面可能没有系统无障碍树」写成风险项）；隐私展示规则；以及**需在 MyGo 上验证的清单**（表格虚拟化、自绘图形、文本选择复制、输入法、系统无障碍、焦点管理、缩放与深浅色、线程模型、通知、体积与内存、打包）。**没有编造 MyGo 的组件名或 API，也没有给出体积/内存数字**（本阶段不联网、未实测）。

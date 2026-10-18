@@ -143,8 +143,12 @@ export function computeReport(inputs: SessionInput[], opts: { window?: number; b
       if (ts.some((t) => inWindow(t, label, window))) rs.tpSessions++;
       else rs.fpSessions++;
       if (label.outcome === "derailed") {
-        const first = ts.reduce((a, b) => (b.callIndex < a.callIndex ? b : a));
-        ruleLatencies.set(id, [...(ruleLatencies.get(id) ?? []), first.callIndex - (label.derailStep as number)]);
+        // 只取窗口内的第一条：窗口之前的命中已经算 FP（虚假警报），不能反过来让延迟看起来更好
+        const inWin = ts.filter((t) => inWindow(t, label, window));
+        if (inWin.length) {
+          const first = inWin.reduce((a, b) => (b.callIndex < a.callIndex ? b : a));
+          ruleLatencies.set(id, [...(ruleLatencies.get(id) ?? []), first.callIndex - (label.derailStep as number)]);
+        }
       }
     }
     for (const id of label.expectedRules ?? []) {
@@ -167,7 +171,7 @@ export function computeReport(inputs: SessionInput[], opts: { window?: number; b
     if (label.outcome === "derailed") {
       const real = alarms.filter((t) => inWindow(t, label, window));
       if (real.length) {
-        firstAlarm = Math.min(...alarms.map((t) => t.callIndex)) - (label.derailStep as number);
+        firstAlarm = Math.min(...real.map((t) => t.callIndex)) - (label.derailStep as number);
         alarmLatencies.push(firstAlarm);
         derailedDetected++;
       } else missed++;

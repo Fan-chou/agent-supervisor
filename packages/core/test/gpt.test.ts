@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { pickProfile, defaultConfig, resolveConfig, loadConfigFile } from "../src/config.ts";
-import { PYTEST_FAIL, PYTEST_PASS, Sim } from "./sim.ts";
+import { PYTEST_FAIL, PYTEST_PASS, Sim, cfgWith } from "./sim.ts";
 
 const GPT = { model: "gpt-5-codex", harness: "codex" as const };
 
@@ -104,16 +104,16 @@ describe("T1 没改动就重跑同一条测试命令", () => {
     expect(pre3.hits.find((x) => x.ruleId === "T1")?.sev).toBe("M");
   });
   test("连续拦截上限：第 3 次拦截降级为 advise（T1 受限）", async () => {
-    const s = new Sim(GPT);
+    const s = new Sim({ ...GPT, cfg: cfgWith({ mode: "enforce" }) });
     await s.prompt("fix");
     for (let i = 0; i < 2; i++) await s.bash("pytest -q", { out: PYTEST_PASS, ws: "A" });
     const actions: string[] = [];
     for (let i = 0; i < 4; i++) {
-      const [pre] = await s.bash("pytest -q", { out: PYTEST_PASS, ws: "A", dt: 700_000 });
+      // 默认 5 秒间隔：冷却不能把重复的拦截放行
+      const [pre] = await s.bash("pytest -q", { out: PYTEST_PASS, ws: "A" });
       actions.push(pre.decisions.find((x) => x.hit.ruleId === "T1" && x.hit.sev === "H")?.action ?? "-");
     }
-    expect(actions.slice(0, 2)).toEqual(["block", "block"]);
-    expect(actions[2]).toBe("advise");
+    expect(actions).toEqual(["block", "block", "advise", "skip"]);
   });
 });
 

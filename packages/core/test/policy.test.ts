@@ -135,22 +135,41 @@ describe("policy：H 级与上限", () => {
     expect(d.action).toBe("advise");
     expect(d.reason).toContain("未核实");
   });
-  test("连续拦截上限 ≤2：同一调用第 3 次被拦的请求降级为 advise；换一个调用后重置", async () => {
-    const s = new Sim({ ...gpt, cfg: enforce, dt: 700_000 });
+  test("连续拦截上限 ≤2（默认 5 秒间隔，不靠拉开时间绕开冷却）：block、block、advise；之后放行；换一个调用后重置", async () => {
+    const s = new Sim({ ...gpt, cfg: enforce });
     await s.prompt("fix");
     for (let i = 0; i < 2; i++) await s.bash("pytest tests/a.py", { fail: true, out: PYTEST_FAIL(), ws: "A" });
     const acts: string[] = [];
     for (let i = 0; i < 4; i++) {
+      // 被拦的重试也要继续被拦：冷却不能把 block 放行
       const [pre] = await s.bash("pytest tests/a.py", { fail: true, out: PYTEST_FAIL(), ws: "A" });
       acts.push(pre.decisions.find((x) => x.hit.ruleId === "L1" && x.hit.sev === "H")?.action ?? "-");
     }
-    // 前两次拦截，之后降级（cooldown 之外时间已拉开）
-    expect(acts.slice(0, 2)).toEqual(["block", "block"]);
-    expect(acts[2]).toBe("advise");
-    // 换成别的调用（被放行）→ 计数重置
+    expect(acts).toEqual(["block", "block", "advise", "skip"]);
+    // 换成别的调用（被放行）→ 计数重置，再次尝试同一调用又会被拦
     await s.bash("ls", { out: "x" });
     const [pre] = await s.bash("pytest tests/a.py", { fail: true, out: PYTEST_FAIL(), ws: "A" });
     expect(pre.decisions.find((x) => x.hit.ruleId === "L1" && x.hit.sev === "H")?.action).toBe("block");
+  });
+  test("重复被拦时不重复问 judge、不烧预算（沿用此前的拦截判断）", async () => {
+    const calls: unknown[] = [];
+    const s = new Sim({ ...gpt, cfg: enforce, judge: mockJudge({ calls: calls as never, rules: { L1: { verdict: "block", confidence: 0.95 } } }) });
+    await s.prompt("fix");
+    for (let i = 0; i < 2; i++) await s.bash("pytest tests/a.py", { fail: true, out: PYTEST_FAIL(), ws: "A" });
+    const acts: string[] = [];
+    for (let i = 0; i < 2; i++) acts.push((await s.bash("pytest tests/a.py", { fail: true, out: PYTEST_FAIL(), ws: "A" }))[0].decisions.find((x) => x.hit.ruleId === "L1" && x.hit.sev === "H")?.action ?? "-");
+    expect(acts).toEqual(["block", "block"]);
+    // 同步 judge 只问了一次（另有一次异步的是 M 级 L1 命中）
+    expect(s.engine.policy.judgeLog.filter((j) => j.sync && j.ruleId === "L1" && j.result === "ok")).toHaveLength(1);
+  });
+  test("judge 放行（ignore）之后，同一指纹的重试在冷却里直接放行，不重复问", async () => {
+    const s = new Sim({ ...gpt, cfg: enforce, judge: mockJudge({ rules: { L1: { verdict: "ignore" } } }) });
+    await s.prompt("fix");
+    for (let i = 0; i < 2; i++) await s.bash("pytest tests/a.py", { fail: true, out: PYTEST_FAIL(), ws: "A" });
+    const a3 = (await s.bash("pytest tests/a.py", { fail: true, out: PYTEST_FAIL(), ws: "A" }))[0].decisions.find((x) => x.hit.ruleId === "L1" && x.hit.sev === "H")!;
+    const a4 = (await s.bash("pytest tests/a.py", { fail: true, out: PYTEST_FAIL(), ws: "A" }))[0].decisions.find((x) => x.hit.ruleId === "L1" && x.hit.sev === "H")!;
+    expect(a3.action).toBe("ignore");
+    expect(a4.action).toBe("skip");
   });
   test("Stop 续跑：P3 每会话最多 2 次，之后降级为 advise", async () => {
     const s = new Sim({ judge: mockJudge(), cfg: enforce, dt: 100_000 });
@@ -180,8 +199,14 @@ describe("policy：H 级与上限", () => {
     const [pre2] = await s.bash("pytest -q", { out: PYTEST_PASS });
     expect(pre1.decisions.some((d) => d.hit.ruleId === "T1")).toBe(false);
     expect(pre2.decisions.find((d) => d.hit.ruleId === "T1")?.action).toBe("advise");
+    // §6.3：advise 一次后冷却 10 步或 5 分钟——第 3 次无改动重跑落在冷却里，不再发第二条 advise
     const [pre3] = await s.bash("pytest -q", { out: PYTEST_PASS });
-    expect(pre3.decisions.find((d) => d.hit.ruleId === "T1")?.action).toBe("advise"); // key 含 attempt 序号
+    expect(pre3.decisions.find((d) => d.hit.ruleId === "T1")?.action).toBe("skip");
+    expect(pre3.decisions.find((d) => d.hit.ruleId === "T1")?.reason).toContain("冷却");
+    // 步数和时间都过了窗口（10 步且 5 分钟）后可以再提醒一次
+    for (let i = 0; i < 10; i++) await s.bash(`echo filler ${i}`, { out: "f" + i, dt: 60_000 });
+    const [pre4] = await s.bash("pytest -q", { out: PYTEST_PASS, ws: undefined });
+    expect(pre4.decisions.find((d) => d.hit.ruleId === "T1")?.action).toBe("advise");
   });
 });
 

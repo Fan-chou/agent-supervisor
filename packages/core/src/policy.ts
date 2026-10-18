@@ -46,6 +46,7 @@ export class Policy {
   private lastJudgeTs = -Infinity;
   private lastJudgeByCategory = new Map<string, number>();
   private lastFired = new Map<string, { stepCount: number; ts: number }>();
+  private blockedAt = new Map<string, { stepCount: number; ts: number }>();
   private lastAdviseByCategory = new Map<string, number>();
   private lAdviseCount = new Map<string, number>();
   private consecutiveBlocks = 0;
@@ -55,7 +56,7 @@ export class Policy {
   /** R4 抽查间隔减半的截止步数 / 暂停标记。 */
   r4BoostUntilStep = -1;
   paused = false; // judge done=true：暂停 R4 和 P4，直到下一次 M 级命中
-  readonly judgeLog: { ruleId: string; result: JudgeResult["kind"]; model?: string; verdict?: string }[] = [];
+  readonly judgeLog: { ruleId: string; result: JudgeResult["kind"]; model?: string; verdict?: string; sync?: boolean }[] = [];
 
   constructor(
     private readonly cfg: Config,
@@ -81,6 +82,13 @@ export class Policy {
 
   private markFired(h: Hit, e: Event): void {
     this.lastFired.set(h.key, { stepCount: this.s.steps.length, ts: e.ts });
+  }
+
+  /** 此前对同一 key 的 pre 拦截判断是否仍在有效期内（与冷却用同一组窗口：10 步 / 5 分钟，两个条件同时满足）。 */
+  private blockStillValid(h: Hit, e: Event): boolean {
+    const prev = this.blockedAt.get(h.key);
+    if (!prev) return false;
+    return this.s.steps.length - prev.stepCount < this.cfg.budgets.rule_cooldown_steps && e.ts - prev.ts < this.cfg.budgets.rule_cooldown_s * 1000;
   }
 
   /** 处理一条事件上产生的全部命中。 */
@@ -132,6 +140,10 @@ export class Policy {
 
     if (h.sev === "L") return this.localLevel(e, h, base);
 
+    // 能在 pre 上拦截的 H 命中：冷却只挡「放行类」结局（advise / ignore），不挡 block——
+    // 否则被拦的调用一重试就落进冷却被放行，「连续拦截 ≤2」会变成 ≤1。冷却在 hardLevel 里按结局处理。
+    if (h.sev === "H" && h.blockable && h.phase === "pre") return this.hardLevel(e, h, judge, base);
+
     if (this.cooledDown(h, e)) return base("skip", "同规则同指纹冷却中");
 
     if (h.sev === "H") return this.hardLevel(e, h, judge, base);
@@ -166,13 +178,29 @@ export class Policy {
       return m[0];
     }
     const capped = isCountRule(h.ruleId) && !h.explicit;
-    if (capped && this.consecutiveBlocks >= this.cfg.budgets.max_consecutive_blocks) {
+    const capNow = capped && this.consecutiveBlocks >= this.cfg.budgets.max_consecutive_blocks;
+    const verified = h.verified === true;
+    const gateOk = verified || !!this.opts.trustInferredUnchanged;
+    // 之前已经对同一个调用做过「拦截」判断（含 judge 的判断）：沿用，不再重复问 judge、不烧预算
+    if (gateOk && !capNow && this.blockStillValid(h, e)) {
+      return {
+        hit: h,
+        action: "block",
+        reason: "沿用此前对同一调用的拦截判断（指纹已复核）",
+        message: h.message,
+        applied: this.modeApplies("block"),
+        wouldBlockIfVerified: !verified,
+        counted: capped,
+      };
+    }
+    // 放行类结局（降级 advise、judge 放行）之后的冷却：10 步或 5 分钟内同一指纹不再重复提示，调用直接放行
+    if (this.cooledDown(h, e)) return base("skip", "同规则同指纹冷却中（此前已放行/降级）");
+    if (capNow) {
       this.markFired(h, e);
       return base("advise", `连续拦截已达上限（${this.cfg.budgets.max_consecutive_blocks}），降级为 advise`, { message: h.message, applied: this.modeApplies("advise") });
     }
     // 拦截前必须确认工作区指纹：L1/T1 只有「核实过没改动」才允许按规则拦截
-    const verified = h.verified === true;
-    if (!verified && !this.opts.trustInferredUnchanged) {
+    if (!gateOk) {
       this.markFired(h, e);
       return base("advise", "工作区指纹未核实（非 git/超时/无指纹），只给建议", { message: h.message, wouldBlockIfVerified: true, applied: this.modeApplies("advise") });
     }
@@ -182,11 +210,12 @@ export class Policy {
       this.judgeCalls++;
       this.lastJudgeTs = e.ts;
       jr = await judge({ hits: [h], sync: true, session: this.s });
-      this.judgeLog.push({ ruleId: h.ruleId, result: jr.kind, model: jr.model, verdict: jr.kind === "ok" ? jr.out.verdict : undefined });
+      this.judgeLog.push({ ruleId: h.ruleId, result: jr.kind, model: jr.model, verdict: jr.kind === "ok" ? jr.out.verdict : undefined, sync: true });
     }
     const jsum = jr ? { kind: jr.kind, verdict: jr.kind === "ok" ? jr.out.verdict : undefined, confidence: jr.kind === "ok" ? jr.out.confidence : undefined, model: jr.model } : undefined;
     const doBlock = (reason: string): Decision => {
-      this.markFired(h, e);
+      // block 不写冷却记录（否则重试会被放行，且上限触发后降级出来的 advise 也会被它挡掉）；只缓存判断结果
+      this.blockedAt.set(h.key, { stepCount: this.s.steps.length, ts: e.ts });
       return base("block", reason, { message: h.message, judge: jsum, applied: this.modeApplies("block"), wouldBlockIfVerified: !verified, counted: capped });
     };
     if (jr && jr.kind === "ok") {
@@ -264,7 +293,7 @@ export class Policy {
       if (v.verdict === "block" && v.confidence >= this.cfg.judge.block_confidence && !isX && lead.category !== "unsafe") {
         const capped = this.consecutiveBlocks >= this.cfg.budgets.max_consecutive_blocks;
         if (!capped) {
-          out.push(mk(lead, "block", "judge 判 block 且置信度达标", { message: f.text, judge: jsum, applied: this.modeApplies("block"), atNextPre: lead.phase !== "pre", counted: true }));
+          out.push(mk(lead, "block", "judge 判 block 且置信度达标", { message: f.text, judge: jsum, applied: this.modeApplies("block"), atNextPre: lead.phase !== "pre", counted: lead.phase === "pre" }));
           continue;
         }
       }

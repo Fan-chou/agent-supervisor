@@ -52,9 +52,14 @@
     - 候选类：`judge_off`（M 级，judge 关闭时「待 judge」）——只在 `--judge=off` 时出现，让每条规则的 precision 在没有 judge 时也可见，不参与门槛。
     - `observeOnly`、只记录的 L 级、`skip`、`ignore` 不计入报警。FDR 之外同时给出「有拦截的 ok 会话占比」。门槛里 `null`（没有报警）显示为 n/a，不算通过。
     - **口径说明**：§12.7 写的是「误报率」，没有说是 per-alarm 还是 per-benign-call；这里取 per-alarm（FDR），并给出 per-ok-session 的占比供对照。**请 Jack 确认口径**。
-32. **首次报警延迟**：跑偏会话里，第一条「报警类」决策（block/ask/stop_continue/advise/judge_off）的 `callIndex − derail_step`，可以为负（提前报）。规则级同理（第一条该规则的非观察命中）。汇总 min/median/mean/max 和漏报数（跑偏会话没有任何报警）。
+32. **首次报警延迟**：跑偏会话里，**窗口内**（`callIndex ≥ derail_step − window`）第一条「报警类」决策（block/ask/stop_continue/advise/judge_off）的 `callIndex − derail_step`，可以为负（在窗口内提前报）。窗口之前的报警已经算 FP，**不参与**延迟（否则噪声越早，延迟数字越好看）；只有窗口前报警的会话算漏报。规则级同理（窗口内该规则的第一条非观察命中）。汇总 min/median/mean/max 和漏报数（跑偏会话没有任何报警）。
 33. **judge 统计**：每会话和汇总都报 judge 调用数、按 model 的 ignore 率 / 解析失败率 / 超时 / 出错。成本需要 usage，live 之前为 n/a。
 34. **提示 A/B**：`runEval` 接受 `judgeFactory(style)`，对 `recall` 与 `ignore_default` 各跑一遍并输出差异表。`--judge=mock` 下两种写法结果相同（mock 不读提示），所以这一阶段只验证管道；真正比较要等 live（M3）。
 35. **judge 响应修复边界**：`message_to_agent` 超过 600 字符是*修复*（截断）而不是失败；非 ignore 但 message 为空是失败（`message-required`）。confidence 缺失给 0.5（低于拦截门槛 0.8，不会因此拦截）；(1,100] 的数值当百分数。未知 category 映射为 `other`。
 36. **`<untrusted>`**：命令、输出、计划、本地提示都放进 `<untrusted>`；块外的文字（用户 prompt 等）也做脱敏并转义 `<untrusted`；转义后内容里不可能再出现真正的闭合标签。命令/输出/编辑文本/prompt/计划在进入 judge 请求前全部过 `redact()`。
 37. **契约测试（§3.5）的位置**：`render()` 放在 `packages/adapter-claude/src/render.ts`（以后 sv-hook 直接复用），测试放 `test/contract/`，每一格一个固定 fixture JSON，做深比较。本阶段只做 Claude 部分。
+
+## 复核后补充
+38. **冷却只挡「放行类」结局，不挡 pre 阶段的 block**：L1/T1 的 H 命中（可在 pre 拦截）不先过冷却门——否则被拦的调用一重试就落进同 key 冷却而被放行，「连续拦截 ≤2」会变成 ≤1，第 2 次尝试连 advise 都没有。现在的流程：沿用此前的拦截判断（`blockedAt`，10 步 / 5 分钟）→ 冷却（只有 advise/ignore 结局写冷却记录）→ 连续拦截上限（≥2 时降级 advise 并写冷却）→ 指纹核实 → 同步 judge。block 本身不写冷却记录，只缓存判断，所以重复被拦时不会重复问 judge、不烧预算；默认 5 秒间隔下同一调用依次是 block、block、advise、skip（放行）。
+39. **T1 的 key 不含 attempt 序号**（`T1:<normCmd>` 用于 advise，`T1H:<normCmd>` 用于 H）：这样 §6.3 的「advise 一次后冷却 10 步或 5 分钟」才生效。
+40. **M 级 judge 的 block 判断（post 阶段命中）不计入连续拦截计数**，因为它还没有真正拦住任何调用（`atNextPre=true`，要等下一个 pre）。「把待执行的拦截带到下一个 pre」的机制属于 M3（outbox/daemon），这一阶段未做。

@@ -71,7 +71,9 @@ export const T1: Detector = (e, ctx) => {
   if (!level) return [];
   const msg = `工作区自上次运行 \`${short(a.normCmd)}\` 以来没有变化，上次结果：${summaryOf(lastStep)}。`;
   return emit(e, ctx, "T1", level, msg, {
-    key: `T1:${a.normCmd}:${attempt}`,
+    // key 只含规则 + 指纹（不含 attempt 序号），这样 §6.3 的「advise 一次后冷却 10 步或 5 分钟」才生效；
+    // H 与 advise 用不同的 key，互不影响冷却
+    key: level === "H" ? `T1H:${a.normCmd}` : `T1:${a.normCmd}`,
     blockable: level === "H",
     verified,
     evidence: runs.slice(-nPrev).map((r) => s.steps[r.stepIdx].seq),

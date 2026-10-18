@@ -93,6 +93,23 @@ describe("指标口径", () => {
     expect(r.rules.L1.firstAlarmLatency).toMatchObject({ n: 2, min: -1, max: 3 });
     expect(r.latency.firstAlarm).toMatchObject({ n: 2, min: -1, median: 1, max: 3 });
   });
+  test("窗口之前的早报是 FP，不能拉低首次报警延迟（噪声越早，数字不能越好看）", () => {
+    const r = computeReport([
+      { label: L({ id: "d", outcome: "derailed", derailStep: 10 }), result: result([entry({ ruleId: "L1", callIndex: 3 }), entry({ ruleId: "L1", callIndex: 12 })]) },
+    ]);
+    // 会话算检出（第 12 步的报警在窗口内），延迟 +2，而不是 3−10=−7
+    expect(r.sessions[0].firstAlarmLatency).toBe(2);
+    expect(r.sessions[0].missed).toBe(false);
+    expect(r.rules.L1.firstAlarmLatency).toMatchObject({ n: 1, min: 2, max: 2 });
+    expect(r.latency.firstAlarm).toMatchObject({ min: 2, max: 2 });
+    // 第 3 步那条按命中级计为 FP
+    expect(r.rules.L1).toMatchObject({ hitTP: 1, hitFP: 1, tpSessions: 1, fpSessions: 0 });
+    expect(r.classes.advisory).toMatchObject({ alarms: 2, tp: 1, fp: 1 });
+    // 只有窗口之前的报警 → 漏报，没有延迟数字
+    const early = computeReport([{ label: L({ id: "d", outcome: "derailed", derailStep: 10 }), result: result([entry({ ruleId: "L1", callIndex: 3 })]) }]);
+    expect(early.sessions[0]).toMatchObject({ missed: true, firstAlarmLatency: null });
+    expect(early.rules.L1.firstAlarmLatency.n).toBe(0);
+  });
   test("报警分类：observeOnly、log、skip、ignore 不计入；FDR 与门槛", () => {
     const mk = (action: string, callIndex: number, extra: Partial<TimelineEntry> = {}) => entry({ ruleId: "R", callIndex, action: action as never, ...extra });
     const r = computeReport([
