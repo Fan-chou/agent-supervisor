@@ -67,7 +67,7 @@ export function probePlan(dir: string, repoRoot: string): string[] {
     "  2) 终端 B：./run-observe.sh                     （OpenCode 在本项目里启动，SV_OPENCODE_DUMP=1；不设 SV_OPENCODE_ENFORCE）",
     "     先确认插件被加载：./report.sh 里「五个钩子都注册成功」。如果 .sv-home/dumps 里没有任何记录 = 登记写法不对（opencode.json 的字段/文件名未经类型确认），停下来告诉我，不要往全局配置里放。",
     "  3) 让 agent 依次：列文件并读 README；新建 notes.txt 再改成两行；运行 false 再 echo ok；用 todowrite 列三步计划；Esc 中断一次；再开第二个会话。",
-    "  4) ./report.sh 看：钩子字段、BEA/EBA/BA 计数、evaluate 的 source、interrupt 事件是否到达（插件已订阅 session.execution.interrupted）、context 的 system 元素。",
+    "  4) ./report.sh 看：钩子字段、BEA/EBA/BA 计数、evaluate 的 source、「中断事件」一节（Esc 后应有 reason=user，插件订阅 session.execution.interrupted）、context 的 system 元素。",
     `  5) 探针：退出后 ./run-probe.sh，让 agent 只执行一条 touch /tmp/${PROBE_STRING}。预期被拒绝且 agent 看到「agent-supervisor 探针」。做完退出（环境变量只在这个脚本里，不残留）。`,
     "  6) 本地 X2（仍不拦）：在 ./run-observe.sh 里让 agent 执行 git reset --hard HEAD；看 .sv-home 里 dump 的 wouldDeny 备注和守护进程的 /v1/danger/events。",
     `  7) 把 ./report.sh 的文本输出和 opencode --version 发回来（已脱敏，发之前自己扫一眼）。`,
