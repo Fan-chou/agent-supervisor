@@ -51,6 +51,11 @@ export interface ShellInfo {
 export interface EditInfo {
   files: string[];
   contentHashes?: Record<string, string>;
+  /** 编辑前的内容哈希（回放里由 old_string 近似），L4 振荡检测用。 */
+  beforeHashes?: Record<string, string>;
+  /** 被替换/新写入的文本片段（截断到 4k），X1 判断用；落盘前脱敏。 */
+  oldText?: string;
+  newText?: string;
   /** 本次编辑净删除的行数（P6 用，取不到就不填）。 */
   deletedLines?: number;
   addedLines?: number;
@@ -88,6 +93,8 @@ export interface Event {
   /** §4.3 工作区指纹；"non-git" / "timeout" 是特殊值。 */
   wsFingerprint?: string;
   text?: string;
-  /** 回放用：用量信息（R2/R3）。 */
+  /** 会话工作目录（session 事件上给出，后续事件沿用）。 */
+  cwd?: string;
+  /** 用量信息（R2/R3）。 */
   usage?: { inputTokens?: number; outputTokens?: number; costUsd?: number; contextTokens?: number };
 }
