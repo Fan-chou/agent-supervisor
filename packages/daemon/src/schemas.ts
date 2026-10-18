@@ -100,7 +100,40 @@ const StreamMessage = obj(
 );
 const Timeline = obj({ runId: int, entries: arr({ $ref: "#/$defs/TimelineEntry" }), hasMore: bool });
 
-const DEFS: Record<string, S> = { Decision, TimelineCall, TimelineEvent, TimelineHit, TimelineEntry, Hit, SessionSummary, DangerEvent, DangerStats, RuleStat, Run, Status, Delivery, StreamMessage, Timeline };
+const JudgeCall = obj({
+  id: int,
+  runId: int,
+  sessionId: str,
+  harness: nul(str),
+  ts: int,
+  ruleIds: arr(str),
+  sync: bool,
+  routeModel: nul(str),
+  model: nul(str),
+  status: str,
+  verdict: nul(str),
+  confidence: nul(num),
+  category: nul(str),
+  latencyMs: nul(num),
+  promptTokens: nul(num),
+  completionTokens: nul(num),
+  cachedTokens: nul(num),
+  costUsd: nul(num),
+  retries: nul(num),
+  formatDowngraded: bool,
+  error: nul(str),
+});
+const JudgeCallList = obj({
+  calls: arr({ $ref: "#/$defs/JudgeCall" }),
+  nextCursor: nul(int),
+  totals: obj({ calls: int, ok: int, failed: int, parseFail: int, promptTokens: num, completionTokens: num, cachedTokens: num, costUsd: nul(num), latencyP50: nul(num), latencyP95: nul(num) }),
+});
+const JudgeCallDetail = obj(
+  { id: int, reason: nul(str), messageRaw: nul(str), httpRequests: nul(num), formatLevel: nul(str), repairs: arr(str), bodiesStored: bool, hits: arr({ type: "object" }), decisions: arr({ type: "object" }), deliveries: arr({ type: "object" }) },
+  ["id", "repairs", "bodiesStored", "hits", "decisions", "deliveries"],
+);
+
+const DEFS: Record<string, S> = { Decision, TimelineCall, TimelineEvent, TimelineHit, TimelineEntry, Hit, SessionSummary, DangerEvent, DangerStats, RuleStat, Run, Status, Delivery, StreamMessage, Timeline, JudgeCall, JudgeCallList, JudgeCallDetail };
 export const SCHEMA_NAMES = Object.keys(DEFS).filter((n) => !["TimelineCall", "TimelineEvent", "TimelineHit"].includes(n));
 
 /** 返回自包含的 Schema（$defs 里带上所有定义，$ref 就地可解析）；未知名字返回 null。 */

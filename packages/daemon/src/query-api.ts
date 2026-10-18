@@ -6,8 +6,10 @@ import {
   dangerEvents,
   dangerStats,
   explainHit,
+  judgeCallDetail,
   judgeStats,
   listHits,
+  listJudgeCalls,
   listRuns,
   modelRuleStats,
   resolveRuns,
@@ -124,7 +126,7 @@ export function handleQuery(db: Database, method: string, u: URL, now: number = 
     return s ? ok(s) : notFound(`schema ${m[1]}`);
   }
 
-  const known = /^\/v1\/(sessions|hits|runs|rules\/stats|judge-calls\/stats|danger\/(stats|events))(\/|\.csv$|$)/.test(p);
+  const known = /^\/v1\/(sessions|hits|runs|rules\/stats|judge-calls(?:\/(?:stats|export\.csv|\d+))?|danger\/(stats|events))(\/|\.csv$|$)/.test(p);
   if (!known) return null;
   const sc = scopeOf(db, u);
   if (isReply(sc)) return sc;
@@ -198,6 +200,34 @@ export function handleQuery(db: Database, method: string, u: URL, now: number = 
     return p.endsWith(".csv") ? csv(rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, v])))) : ok({ by: byModel ? "model" : "rule", rows });
   }
   if (p === "/v1/judge-calls/stats") return ok({ rows: judgeStats(db, sc) });
+  if (p === "/v1/judge-calls" || p === "/v1/judge-calls/export.csv") {
+    const cursor = int(q.get("cursor"));
+    const limit = int(q.get("limit"));
+    if (cursor === "bad" || limit === "bad") return bad("cursor / limit 需要是整数");
+    const sync = q.get("sync");
+    if (sync && sync !== "true" && sync !== "false") return bad("sync 只能是 true | false");
+    const cache = q.get("cache");
+    if (cache && cache !== "include" && cache !== "exclude") return bad("cache 只能是 include | exclude");
+    const r = listJudgeCalls(db, sc, {
+      harness: q.get("harness") ?? undefined,
+      model: q.get("model") ?? undefined,
+      routeModel: q.get("route_model") ?? undefined,
+      rule: q.get("rule") ?? undefined,
+      verdict: q.get("verdict") ?? undefined,
+      status: q.get("status") ?? undefined,
+      sync: sync ? sync === "true" : undefined,
+      q: q.get("q") ?? undefined,
+      cursor,
+      cache: (cache as "include" | "exclude" | null) ?? undefined,
+      limit: p.endsWith(".csv") ? Math.min(limit ?? 500, 500) : limit,
+    });
+    return p.endsWith(".csv") ? csv(r.calls.map((c) => ({ ...c, ruleIds: c.ruleIds.join(" ") })) as unknown as Record<string, unknown>[]) : ok(r);
+  }
+  m = /^\/v1\/judge-calls\/(\d+)$/.exec(p);
+  if (m) {
+    const d = judgeCallDetail(db, Number(m[1]));
+    return d ? ok(d) : notFound(`judge 调用 ${m[1]}`);
+  }
   if (p === "/v1/danger/stats") return ok(dangerStats(db, sc));
   if (p === "/v1/danger/events" || p === "/v1/danger/events.csv") {
     let events = dangerEvents(db, sc);

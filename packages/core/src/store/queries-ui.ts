@@ -3,7 +3,7 @@
 import type { Database } from "bun:sqlite";
 import { _internal as qi, type Scope } from "./queries.ts";
 
-const { where, q, LATEST_LABEL } = qi;
+const { where, q, LATEST_LABEL, pct } = qi;
 const clampLimit = (n: number | undefined, def: number, max: number) => Math.max(1, Math.min(max, Math.floor(Number.isFinite(n) ? (n as number) : def)));
 
 /** 会话所在的运行：显式给了就用它，否则取包含该会话的最新一次运行。 */
@@ -355,6 +355,177 @@ export function sessionChildren(db: Database, sessionId: string, runId?: number)
   const run = sessionRun(db, sessionId, runId);
   if (run === null) return [];
   return q<Record<string, unknown>>(db, "SELECT run_id, session_id, harness, model, project, calls, started_ts, ended_ts, parent_session_id FROM sessions WHERE run_id = ? AND parent_session_id = ? ORDER BY started_ts, session_id", [run, sessionId]);
+}
+
+// ---------- judge 调用（列表 / 详情；正文只在详情里） ----------
+
+export interface JudgeCallRow {
+  id: number;
+  runId: number;
+  sessionId: string;
+  harness: string | null;
+  ts: number;
+  ruleIds: string[];
+  sync: boolean;
+  routeModel: string | null;
+  model: string | null;
+  status: string;
+  verdict: string | null;
+  confidence: number | null;
+  category: string | null;
+  latencyMs: number | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  cachedTokens: number | null;
+  costUsd: number | null;
+  retries: number | null;
+  formatDowngraded: boolean;
+  error: string | null;
+}
+
+export interface JudgeCallFilter {
+  harness?: string;
+  model?: string;
+  routeModel?: string;
+  /** 调用涉及的规则（rule_ids 里包含）。 */
+  rule?: string;
+  verdict?: string;
+  status?: string;
+  sync?: boolean;
+  /** 在 reason / message_raw / category / error 里做子串匹配。 */
+  q?: string;
+  /** 只取 id 小于它的（倒序翻页）。 */
+  cursor?: number;
+  limit?: number;
+  /** include（默认）= 提示词 token 含缓存命中部分；exclude = 扣掉缓存命中。只影响 totals.promptTokens。 */
+  cache?: "include" | "exclude";
+}
+
+export interface JudgeTotals {
+  calls: number;
+  ok: number;
+  failed: number;
+  parseFail: number;
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens: number;
+  /** 上游没返回 usage 时为 null（不估算）。 */
+  costUsd: number | null;
+  latencyP50: number | null;
+  latencyP95: number | null;
+}
+
+const jcFrom = `FROM judge_calls j LEFT JOIN sessions s ON s.run_id = j.run_id AND s.session_id = j.session_id`;
+
+function jcWhere(scope: Scope, f: JudgeCallFilter): { sql: string; args: (number | string)[] } {
+  const w = where(scope);
+  const cond = [w.sql.replace(/\b(run_id|ts|session_id)\b/g, "j.$1")];
+  const args = [...w.args];
+  const eq = (col: string, v: string | undefined) => v && (cond.push(`${col} = ?`), args.push(v));
+  eq("s.harness", f.harness);
+  eq("j.model", f.model);
+  eq("j.route_model", f.routeModel);
+  eq("j.verdict", f.verdict);
+  eq("j.status", f.status);
+  if (f.sync !== undefined) (cond.push("j.sync = ?"), args.push(f.sync ? 1 : 0));
+  if (f.rule) (cond.push("(',' || j.rule_ids || ',') LIKE ? ESCAPE '\\'"), args.push(`%,${f.rule.replace(/[\\%_]/g, (c) => "\\" + c)},%`));
+  if (f.q) {
+    const like = `%${f.q.replace(/[\\%_]/g, (c) => "\\" + c)}%`;
+    cond.push("(j.reason LIKE ? ESCAPE '\\' OR j.message_raw LIKE ? ESCAPE '\\' OR j.category LIKE ? ESCAPE '\\' OR j.error LIKE ? ESCAPE '\\')");
+    args.push(like, like, like, like);
+  }
+  return { sql: cond.join(" AND "), args };
+}
+
+const jcRow = (r: Record<string, unknown>): JudgeCallRow => ({
+  id: r.id as number,
+  runId: r.run_id as number,
+  sessionId: r.session_id as string,
+  harness: (r.harness as string) ?? null,
+  ts: r.ts as number,
+  ruleIds: String(r.rule_ids ?? "").split(",").filter(Boolean),
+  sync: r.sync === 1,
+  routeModel: (r.route_model as string) ?? null,
+  model: (r.model as string) ?? null,
+  status: r.status as string,
+  verdict: (r.verdict as string) ?? null,
+  confidence: (r.confidence as number) ?? null,
+  category: (r.category as string) ?? null,
+  latencyMs: (r.latency_ms as number) ?? null,
+  promptTokens: (r.prompt_tokens as number) ?? null,
+  completionTokens: (r.completion_tokens as number) ?? null,
+  cachedTokens: (r.cached_tokens as number) ?? null,
+  costUsd: (r.cost_usd as number) ?? null,
+  retries: (r.retries as number) ?? null,
+  formatDowngraded: r.format_downgraded === 1,
+  error: (r.error as string) ?? null,
+});
+
+/** 列表（不含请求/响应正文）+ 同一筛选条件下的合计；最新在前，id 游标。 */
+export function listJudgeCalls(db: Database, scope: Scope = {}, f: JudgeCallFilter = {}): { calls: JudgeCallRow[]; nextCursor: number | null; totals: JudgeTotals } {
+  const w = jcWhere(scope, f);
+  const limit = clampLimit(f.limit, 100, 500);
+  const rows = q<Record<string, unknown>>(
+    db,
+    `SELECT j.id, j.run_id, j.session_id, s.harness AS harness, j.ts, j.rule_ids, j.sync, j.route_model, j.model, j.status, j.verdict, j.confidence, j.category, j.latency_ms, j.prompt_tokens, j.completion_tokens, j.cached_tokens, j.cost_usd, j.retries, j.format_downgraded, j.error
+       ${jcFrom} WHERE ${w.sql}${f.cursor !== undefined ? " AND j.id < ?" : ""} ORDER BY j.id DESC LIMIT ?`,
+    [...w.args, ...(f.cursor !== undefined ? [f.cursor] : []), limit + 1],
+  );
+  const page = rows.slice(0, limit).map(jcRow);
+  // 合计：与列表同一筛选条件（不受游标和 limit 影响）
+  const all = q<Record<string, unknown>>(db, `SELECT j.status, j.latency_ms, j.prompt_tokens, j.completion_tokens, j.cached_tokens, j.cost_usd ${jcFrom} WHERE ${w.sql}`, w.args);
+  const sum = (k: string) => all.reduce((a, r) => a + (Number(r[k]) || 0), 0);
+  const lat = all.map((r) => Number(r.latency_ms)).filter((x) => Number.isFinite(x) && x > 0);
+  const costs = all.filter((r) => r.cost_usd !== null && r.cost_usd !== undefined);
+  const prompt = sum("prompt_tokens");
+  const cached = sum("cached_tokens");
+  const totals: JudgeTotals = {
+    calls: all.length,
+    ok: all.filter((r) => r.status === "ok").length,
+    failed: all.filter((r) => r.status !== "ok").length,
+    parseFail: all.filter((r) => r.status === "parse_fail").length,
+    promptTokens: f.cache === "exclude" ? Math.max(0, prompt - cached) : prompt,
+    completionTokens: sum("completion_tokens"),
+    cachedTokens: cached,
+    costUsd: costs.length ? Math.round(costs.reduce((a, r) => a + Number(r.cost_usd), 0) * 10000) / 10000 : null,
+    latencyP50: pct(lat, 0.5),
+    latencyP95: pct(lat, 0.95),
+  };
+  return { calls: page, nextCursor: rows.length > limit ? page[page.length - 1].id : null, totals };
+}
+
+const parseJson = (s: unknown): unknown => {
+  if (typeof s !== "string") return null;
+  try {
+    return JSON.parse(s);
+  } catch {
+    return s; // 不是 JSON（例如原始文本）就原样给
+  }
+};
+
+/** 详情：列表字段 + 请求/响应（已在写入时脱敏；`store_judge_bodies=false` 时为 null）+ 修复记录 + 关联的命中 / 决策 / 投递。不存在返回 null。 */
+export function judgeCallDetail(db: Database, id: number) {
+  const r = q<Record<string, unknown>>(db, `SELECT j.*, s.harness AS harness ${jcFrom} WHERE j.id = ?`, [id])[0];
+  if (!r) return null;
+  const decisions = q<Record<string, unknown>>(db, "SELECT * FROM decisions WHERE judge_call_id = ? ORDER BY id", [id]);
+  const decIds = decisions.map((d) => d.id as number);
+  const hitIds = [...new Set(decisions.map((d) => d.hit_id as number))];
+  const hits = hitIds.length ? q<Record<string, unknown>>(db, `SELECT id, rule_id, sev, severity, category, seq, ts, message FROM hits WHERE id IN (${hitIds.map(() => "?").join(",")}) ORDER BY id`, hitIds) : [];
+  const deliveries = decIds.length ? q<Record<string, unknown>>(db, `SELECT id, decision_id, channel, delivered, delivered_ts, expired_reason, text, complied FROM deliveries WHERE decision_id IN (${decIds.map(() => "?").join(",")}) ORDER BY id`, decIds) : [];
+  return {
+    ...jcRow(r),
+    reason: (r.reason as string) ?? null,
+    messageRaw: (r.message_raw as string) ?? null,
+    httpRequests: (r.http_requests as number) ?? null,
+    formatLevel: (r.format_level as string) ?? null,
+    repairs: parseJson(r.repairs_json) ?? [],
+    request: parseJson(r.request_json),
+    response: parseJson(r.response_json),
+    bodiesStored: r.request_json !== null || r.response_json !== null,
+    hits,
+    decisions: decisions.map((d) => ({ id: d.id, hitId: d.hit_id, action: d.action, applied: d.applied === 1, mode: d.mode ?? null, outcome: d.outcome ?? null, message: d.message ?? null })),
+    deliveries,
+  };
 }
 
 // ---------- 会话活动（recent 排序 / state 过滤） ----------
