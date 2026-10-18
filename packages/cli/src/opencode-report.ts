@@ -16,9 +16,13 @@ export interface DumpRecord {
   source?: string;
   withheld?: string;
   error?: string;
+  /** event.subscribe 收到 session.execution.interrupted 时记的原因（user|shutdown|superseded|inactivity|?）。 */
+  interrupt?: string;
 }
 
 export interface Report {
+  /** 订阅到的 interrupted 事件按原因计数（核对 Esc 是否产生 reason=user；不影响拦截门槛）。 */
+  interrupts: Record<string, number>;
   records: number;
   /** setup 时 ctx 的形状（名字和类型，不含值）。 */
   ctxShape: unknown;
@@ -79,13 +83,14 @@ export function parseDump(text: string): DumpRecord[] {
 }
 
 export function analyze(recs: DumpRecord[], now: number = Date.now()): Report {
-  const rep: Report = { records: recs.length, ctxShape: undefined, registered: {}, hooks: {}, orderings: {}, verdicts: [], denyObserved: [], wouldDeny: 0, gate: { passed: false, checks: [] } };
+  const rep: Report = { interrupts: {}, records: recs.length, ctxShape: undefined, registered: {}, hooks: {}, orderings: {}, verdicts: [], denyObserved: [], wouldDeny: 0, gate: { passed: false, checks: [] } };
   const setup = recs.find((r) => r.phase === "setup");
   rep.ctxShape = setup?.shape;
   const enterAt = new Map<string, DumpRecord[]>();
   for (const r of recs) {
     if (r.phase === "note" && r.registered !== undefined) rep.registered[r.hook] = { ok: r.registered, reason: r.reason };
     if (r.phase === "note" && r.wouldDeny) rep.wouldDeny++;
+    if (r.phase === "note" && typeof r.interrupt === "string") rep.interrupts[r.interrupt] = (rep.interrupts[r.interrupt] ?? 0) + 1;
     if (r.phase === "note" && r.error) (rep.hooks[r.hook] ??= { calls: 0, avgMs: null, fields: {}, errors: 0 }).errors++;
     if (r.phase === "enter") {
       const h = (rep.hooks[r.hook] ??= { calls: 0, avgMs: null, fields: {}, errors: 0 });
@@ -174,6 +179,8 @@ export function formatReport(rep: Report): string {
   L.push("", "## ctx 形状（setup）", JSON.stringify(rep.ctxShape ?? null, null, 1));
   L.push("", "## 钩子注册");
   for (const [k, v] of Object.entries(rep.registered)) L.push(`- ${k}: ${v.ok ? "已注册" : "失败 — " + (v.reason ?? "")}`);
+  const ints = Object.entries(rep.interrupts);
+  L.push("", `## 中断事件（event.subscribe → session.execution.interrupted）：${ints.length ? ints.map(([k, v]) => `reason=${k} × ${v}`).join("，") : "没有收到（Esc 之后仍没有 = 订阅没生效或 Esc 不产生该事件）"}`);
   L.push("", "## 各钩子被调用情况（顶层字段 → 出现次数）");
   for (const [k, v] of Object.entries(rep.hooks)) L.push(`- ${k}: 调用 ${v.calls} 次，平均耗时 ${v.avgMs === null ? "?" : v.avgMs.toFixed(1)} ms，异常 ${v.errors}；字段 ${JSON.stringify(v.fields)}`);
   L.push("", "## 一次调用里的触发顺序（B=execute.before E=permission.evaluate A=execute.after）");

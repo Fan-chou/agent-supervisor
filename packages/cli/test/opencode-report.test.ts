@@ -105,4 +105,23 @@ describe("opencode-report", () => {
     expect(await main(["opencode-report"])).toBe(2);
     expect(parseDump("not json\n{\"n\":1,\"ts\":1,\"hook\":\"x\",\"phase\":\"enter\"}\n").length).toBe(1);
   });
+  test("中断订阅：registered 要拿到可迭代对象才记；每个 interrupted 事件（任何原因）记一笔并按原因计数；订阅抛错记 registered=false；不影响五个钩子的门槛检查", async () => {
+    const hooks = new Map<string, H>();
+    const mk = (ns: string) => ({ hook: (name: string, f: H) => void hooks.set(`${ns}.${name}`, f) });
+    const evs = [{ type: "session.execution.interrupted", data: { sessionID: "s1", reason: "user" } }, { type: "session.execution.interrupted", data: { sessionID: "s1", reason: "shutdown" } }, { type: "session.text.delta", data: {} }];
+    await (plugin as any).setup({ permission: mk("permission"), session: mk("session"), tool: mk("tool"), event: { subscribe: () => (async function* () { for (const e of evs) yield e; })() } });
+    const dir = join(home, "dumps");
+    const file = join(dir, readdirSync(dir)[0]);
+    for (let i = 0; i < 100 && !/shutdown/.test(readFileSync(file, "utf8")); i++) await new Promise((r) => setTimeout(r, 10));
+    const rep = analyze(parseDump(readFileSync(file, "utf8")));
+    expect(rep.interrupts).toEqual({ user: 1, shutdown: 1 });
+    expect(rep.registered["event.subscribe"]).toEqual({ ok: true, reason: undefined });
+    expect(formatReport(rep)).toContain("reason=user × 1");
+    expect(rep.gate.checks.find((c) => c.id === "hooks_registered")?.ok).toBe(true); // 额外的 event.subscribe 记录不改变「五个钩子」的检查
+    // 订阅抛错：registered=false 并带原因，且仍不影响五个钩子的门槛检查
+    await (plugin as any).setup({ permission: mk("permission"), session: mk("session"), tool: mk("tool"), event: { subscribe: () => { throw new Error("boom"); } } });
+    const rep2 = analyze(parseDump(readFileSync(file, "utf8")));
+    expect(rep2.registered["event.subscribe"]).toEqual({ ok: false, reason: "boom" });
+    expect(rep2.gate.checks.find((c) => c.id === "hooks_registered")?.ok).toBe(true);
+  });
 });

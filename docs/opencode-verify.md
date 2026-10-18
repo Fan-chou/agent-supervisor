@@ -34,8 +34,8 @@ sv opencode-probe-project <目录> --apply    # Jack 同意后才创建
 ```
 测试项目里：`opencode.json`（项目级配置，`plugins` 指向项目内插件）、`.opencode/plugins/agent-supervisor.ts`、`start-daemon.sh`（shadow，数据目录 `.sv-home`）、`run-observe.sh`、`run-probe.sh`、`report.sh`，并 `git init` + 一次提交。
 
-1. **启动**：终端 A `./start-daemon.sh`；终端 B `./run-observe.sh`（`SV_OPENCODE_DUMP=1`，脚本里 `unset SV_OPENCODE_ENFORCE`）。先 `./report.sh` 确认插件被加载（五个钩子注册成功 + `event.subscribe` 注册）。dump 为空 = 登记写法不对，停下来，**不要往全局配置里放**。
-2. **只读观察**：让 agent 依次做：列文件并读 README；新建 notes.txt 再改成两行；运行 `false` 再 `echo ok`；用 todowrite 列三步计划；Esc 中断一次；再开第二个会话。然后 `./report.sh`。看：各钩子字段；`BEA`/`EBA`/`BA` 计数（#5、#6）；`evaluate` 的 `source` 形状；`context` 的 `system` 元素；`prompt` 的 `prompt` 形状；`location`（#4）；Esc 之后守护进程是否收到 `interrupt`（#10）。
+1. **启动**：终端 A `./start-daemon.sh`；终端 B `./run-observe.sh`（`SV_OPENCODE_DUMP=1`，脚本里 `unset SV_OPENCODE_ENFORCE`）。先 `./report.sh` 确认插件被加载（「钩子注册」里五个钩子 + `event.subscribe` 都是「已注册」；`event.subscribe` 失败只是少了中断信号，不影响拦截门槛）。dump 为空 = 登记写法不对，停下来，**不要往全局配置里放**。
+2. **只读观察**：让 agent 依次做：列文件并读 README；新建 notes.txt 再改成两行；运行 `false` 再 `echo ok`；用 todowrite 列三步计划；Esc 中断一次；再开第二个会话。然后 `./report.sh`。看：各钩子字段；`BEA`/`EBA`/`BA` 计数（#5、#6）；`evaluate` 的 `source` 形状；`context` 的 `system` 元素；`prompt` 的 `prompt` 形状；`location`（#4）；报告「中断事件」一节：Esc 之后应出现 `reason=user × N`（#10）；守护进程侧的事件里也应有 phase=interrupt。
 3. **sessionID/id 配对**：报告字段列里 before/after 的 `sessionID`、`id` 次数应相等。
 4. **context 注入可见性**（可选）：advise 模式下造一条建议，看模型是否体现、历史里是否没有。
 5. **探针（Jack 已批准，decisions #106）**：退出后 `./run-probe.sh`（`SV_OPENCODE_PROBE=sv-probe-deny`），让 agent 执行**一条**无害命令 `touch /tmp/sv-probe-deny`。预期：被拒绝，agent 看到的原因含「agent-supervisor 探针」，会话没有整体中断。验证 #1、#7。环境变量只在这个脚本里，不残留。

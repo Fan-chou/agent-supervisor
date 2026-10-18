@@ -38,7 +38,7 @@ export function checkProbeDir(dir: string, o: { home?: string; repoRoot: string;
 /** 要创建的文件。pluginSource 是 `sv install opencode` 同一份自包含插件。 */
 export function probeFiles(o: { repoRoot: string; pluginSource: string }): ProbeFile[] {
   const sv = `bun ${JSON.stringify(join(resolve(o.repoRoot), "packages/cli/src/sv.ts"))}`;
-  const sh = (body: string): ProbeFile["content"] => `#!/bin/sh\nset -e\ncd "$(dirname "$0")"\nexport SV_HOME="$PWD/.sv-home"\nunset SV_OPENCODE_ENFORCE # 核对通过前绝不拦截，即使外层 shell 里设过\n${body}\n`;
+  const sh = (body: string): ProbeFile["content"] => `#!/bin/sh\nset -e\ncd "$(dirname "$0")"\nexport SV_HOME="$PWD/.sv-home"\nunset SV_OPENCODE_ENFORCE SV_OPENCODE_PROBE # 核对通过前绝不拦截；探针只在 run-probe.sh 里显式打开，即使外层 shell 里设过也不继承\n${body}\n`;
   return [
     { path: PROBE_MARKER, mode: 0o644, content: "agent-supervisor OpenCode 真机核对用的测试项目；可以整个删除。\n" },
     // 登记方式：@opencode/schema 的 Config 有 `plugins: Array<string | {package, options?}>`，本地路径由 @opencode/plugin 的 localSource(spec, directory) 解析。配置文件名 opencode.json 是 OpenCode 的惯例，类型里没有——第一次启动看 dump 里有没有 setup 记录来确认。

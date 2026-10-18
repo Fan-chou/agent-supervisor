@@ -346,12 +346,23 @@ async function setup(ctx: Any): Promise<(() => Promise<void>) | void> {
   const sub = ctx?.event?.subscribe;
   if (typeof sub === "function") {
     void (async () => {
+      let events: AsyncIterable<Any>;
       try {
-        for await (const ev of sub.call(ctx.event, { signal: abort.signal }) as AsyncIterable<Any>) {
+        events = sub.call(ctx.event, { signal: abort.signal }) as AsyncIterable<Any>;
+        if (!events || typeof (events as Any)[Symbol.asyncIterator] !== "function") throw new Error("subscribe() did not return an async iterable");
+      } catch (err) {
+        dump("event.subscribe", "note", undefined, { registered: false, reason: String((err as Error)?.message ?? err).slice(0, 200) });
+        return;
+      }
+      dump("event.subscribe", "note", undefined, { registered: true }); // 拿到可迭代对象才算订阅成功
+      try {
+        for await (const ev of events) {
           try {
-            if (ev?.type !== "session.execution.interrupted" || ev?.data?.reason !== "user") continue;
+            if (ev?.type !== "session.execution.interrupted") continue;
+            const reason = typeof ev?.data?.reason === "string" ? ev.data.reason : "?";
+            dump("event.subscribe", "note", undefined, { interrupt: reason, sessionID: sid(ev.data) }); // 核对用：每个 interrupted 事件（任何原因）都记一笔，报告里按原因计数
             const s = sid(ev.data);
-            if (s) await post({ event: "interrupt", sessionID: s, directory: dirOf(ev, ctx) }, EVENT_TIMEOUT_MS);
+            if (reason === "user" && s) await post({ event: "interrupt", sessionID: s, directory: dirOf(ev, ctx) }, EVENT_TIMEOUT_MS);
           } catch {
             /* 单个事件处理失败不影响订阅 */
           }
@@ -360,7 +371,6 @@ async function setup(ctx: Any): Promise<(() => Promise<void>) | void> {
         /* 订阅断了就算了：只是少了中断信号，fail-open */
       }
     })();
-    dump("event.subscribe", "note", undefined, { registered: true });
   } else dump("event.subscribe", "note", undefined, { registered: false, reason: "no event.subscribe on context" });
 
   // setup 可以返回清理函数（promise/plugin.d.ts 的 Cleanup）：卸载时注销我们注册的全部 hook

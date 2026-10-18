@@ -35,7 +35,7 @@ describe("sv opencode-probe-project（测试项目准备；decisions #113）", (
       expect(by[n].mode).toBe(0o755);
       expect(by[n].content).toContain('SV_HOME="$PWD/.sv-home"');
     }
-    expect(by["run-observe.sh"].content).not.toContain("SV_OPENCODE_PROBE");
+    expect(by["run-observe.sh"].content).not.toContain("SV_OPENCODE_PROBE=");
     expect(by["run-probe.sh"].content).toContain("SV_OPENCODE_PROBE=sv-probe-deny");
     expect(by["start-daemon.sh"].content).toContain("--mode shadow");
     for (const f of files) {
@@ -53,6 +53,31 @@ describe("sv opencode-probe-project（测试项目准备；decisions #113）", (
     expect(r.code).toBe(0);
     expect(r.lines.join("\n")).toContain("dry-run");
     expect(existsSync(d)).toBe(false);
+  });
+  test("生成的脚本真的能跑（macOS /bin/sh）：语法合法；run-observe / run-probe 在外层已 export SV_OPENCODE_ENFORCE=1 时仍把它去掉；SV_HOME 指向项目内 .sv-home；DUMP 两个都开，PROBE 只在 probe 里", async () => {
+    const base = tmp();
+    const d = join(base, "probe");
+    expect((await runOpencodeProbeProject([d], { apply: true }, { repoRoot: REPO, home: tmp() })).code).toBe(0);
+    for (const n of ["start-daemon.sh", "run-observe.sh", "run-probe.sh", "report.sh"]) expect(Bun.spawnSync(["sh", "-n", join(d, n)]).exitCode, n).toBe(0);
+    const stub = join(base, "bin");
+    mkdirSync(stub);
+    writeFileSync(join(stub, "opencode"), '#!/bin/sh\nenv\necho "ARGS=$*"\n', { mode: 0o755 });
+    const run = (script: string) => {
+      const r = Bun.spawnSync([join(d, script), "--flag"], { cwd: tmp(), env: { PATH: `${stub}:/usr/bin:/bin`, SV_OPENCODE_ENFORCE: "1", SV_OPENCODE_PROBE: "leak", HOME: base } });
+      expect(r.exitCode, script + r.stderr.toString()).toBe(0);
+      return r.stdout.toString().split("\n");
+    };
+    const obs = run("run-observe.sh");
+    const probe = run("run-probe.sh");
+    const real = (p: string) => (Bun.spawnSync(["realpath", p]).stdout.toString().trim());
+    for (const [name, out] of [["observe", obs], ["probe", probe]] as const) {
+      expect(out.filter((l) => l.startsWith("SV_HOME=")).map((l) => real(l.slice(8))), name).toEqual([real(join(d, ".sv-home"))]);
+      expect(out.some((l) => l.startsWith("SV_OPENCODE_ENFORCE=")), name).toBe(false);
+      expect(out, name).toContain("SV_OPENCODE_DUMP=1");
+      expect(out, name).toContain("ARGS=--flag");
+    }
+    expect(obs.some((l) => l.startsWith("SV_OPENCODE_PROBE="))).toBe(false);
+    expect(probe).toContain("SV_OPENCODE_PROBE=sv-probe-deny");
   });
   test("--apply：在目录里创建文件（脚本可执行、插件是打包后的自包含文件）、git 初始化一次提交；重复 apply 不动 .git；陌生非空目录被拒绝", async () => {
     const base = tmp();

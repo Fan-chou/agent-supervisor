@@ -276,7 +276,8 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
       },
     };
     const cleanup: any = await setup(f.ctx);
-    await new Promise((r) => setTimeout(r, 50));
+    for (let i = 0; i < 100 && !seen.some((x) => x.payload.event === "interrupt"); i++) await new Promise((r) => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 20)); // 再给后面的（应被忽略的）事件一点时间，免得漏判
     expect(seen.filter((x) => x.payload.event === "interrupt").map((x) => x.payload.sessionID)).toEqual(["s1"]);
     await cleanup();
     expect(aborted).toBe(true);
