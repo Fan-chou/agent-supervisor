@@ -520,7 +520,7 @@ agent-supervisor/
 
 - `suppressed_by` 取值：`user_off, user_quiet, observe_only, cooldown, category_dedupe, l_once, consecutive_cap, unverified_ws, judge_merged, judge_budget, judge_cooldown, paused, fail_open, stop_budget, block_downgraded`。
 - **遵从**（`deliveries.complied`）：对可判定的规则（L1/L2/L3/T1/T6 看同一调用、T2/T4/T5 看同一类别），投递后看之后 3 次调用里 agent 有没有继续同样的做法：继续 → 0，没有 → 1；窗口没走完 → NULL 并写明原因。
-- **用户覆盖**：prompt 里的 `#sv off/quiet` 自动记录；`sv mark <hit-id> fp|useful` 标误报/有用（同一命中以最新一条为准）；`sv override <decision-id> allow|reject` 手动放行/驳回。
+- **用户覆盖**：prompt 里的 `#sv off/quiet` 自动记录；`sv mark <hit-id> fp|useful` 标误报/有用（同一命中以最新一条为准）；`sv override <decision-id> allow|reject` 记录一笔人工放行/驳回——**只记录，永远不影响实时策略和之后的判断**（§19）。这三类写入都只来自 CLI/prompt，前端不写。
 
 ### 18.3 查询与命令
 实现见 `packages/core/src/store/queries.ts`，命令见 `packages/cli/src/stats.ts`：
@@ -596,3 +596,10 @@ SELECT suppressed_by, outcome, COUNT(*) FROM decisions WHERE rule_id = 'T1' GROU
 ### 18.7 已知的数据来源缺口（M3 填）
 - `sessions.parent_session_id`（视图里子 agent 的展开）目前**没有写入方**：回放读取器默认丢弃 sidechain，所以回放里为空；线上由 M3 适配器在收到子 agent 事件时填写。
 - `adapter_health`、`kind='live'` 的运行记录、`deliveries.channel` 的真实通道（asyncRewake 等）同样要等 M3 的守护进程与适配器；回放里通道带 `replay:` 前缀、遵从为模拟。
+
+## 19. 前端边界（v2.2，Jack 2026-10-18 23:41 的决定；与前文冲突时以此为准）
+1. **前端只读**：界面上没有 override / approve / deny 按钮，守护进程也没有 override、标注、批量静音、回放/评估触发的写入接口。看会话、时间线、命中、judge 调用、规则统计、生效配置、危险记录，全部只读（`GET`、`/v1/stream`、CSV 导出）。
+2. **唯一可改的是规则**，路径尽量小：`PUT /v1/rules/{id}`，只能改某条规则的启用/停用和它自己的阈值；校验通过后写回 `<home>/rules.local.json`，对**之后新建的会话**生效；X2 受保护（不能停用）；不能借此改 `mode`、judge、预算、日志等任何别的配置。`POST /v1/config/validate` 只校验和 diff，不应用。
+3. **人工处理只记录**：`manual_allow` / `manual_reject`（以及标注 `mark_*`）如果出现，只在 `overrides` 表追加一行，供复盘；永远不进入检测器、策略、outbox、hook 的任何判断，不回溯改变已发生的拦截。`#sv off/quiet` 是 prompt 里的会话内指令，另当别论。
+4. **不做 incidents 聚合**：时间线上每条规则命中单独显示，相邻同类（category）命中也不合并；没有 `/incidents` 接口。
+5. 之所以这样收：监督器的判断不能被一个可以随手点的界面绕开或悄悄改变；规则编辑是唯一的、有校验有审计的入口。
