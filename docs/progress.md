@@ -75,3 +75,10 @@
 - 已提交：CLAUDE.md 前端段落；单一阈值（去掉 GPT/默认 profile）；SQLite 结构化日志 + sv stats/mark/explain/override/export/prune；design §18 + changelog v2.1；frontend-design v2。rm -rf 窄化规则在 decisions #21 已标为 Jack 确认。
 - 本提交为 WIP（监督者代提交）：eval 写日志、阈值扫描（sweep）、redact/检测器/config 调整；bun test 679/0，tsc 通过。eval logging/sweep 的测试尚未补完（中断时正在写）。
 - 待办（.supervisor-run/msg4.txt）：#20 标为 Jack 已确认（X2 跟随 mode，shadow 不拦截）；shadow 下 X2 记录 severity=dangerous、outcome=would_have_blocked，sv stats 按危险统计；frontend 加危险徽标/筛选/会话危险计数/"本应拦截"指示器。之后继续 M3。
+
+## shadow 下的危险标记（Jack 确认 #20 之后）
+- 确认：上一条的 5 项（前端 CLAUDE.md 单独提交、rm -rf 口径确认并同步 design、删除模型分档、日志与可观测性、前端文档第二版）均已完成并提交；advisor 复核后的修复也已完成（`--set` 严格校验、写死阈值进 `thresholds`、脱敏例外收窄、`sv eval --sweep/--log`、design §18.6 可执行 SQL 与 §18.7 数据缺口）。
+- #20 标记为 Jack 已确认，X2 行为不变。
+- 日志 schema v2：X2 命中 `severity='dangerous'` + 类别/对象/原因，决策 `outcome`（`would_have_blocked` ≠ `blocked`），旧库自动补列；`sv stats --by danger`、`--by session`（⚠危险 / 本应拦截 / 已拦截三列，`--sort-danger`）、`--by rule` 带结局分布；回放文本 `⚠` + `◌ 本应拦截·未生效`，`summary.dangerous`。
+- design.md：v2.1 changelog 新增一条，§18.5–18.7；frontend-design.md：各视图的危险徽标/筛选、会话危险数与排序、「本应拦截」指示器及视觉规范（§7.5）、API 字段（§9.1）。
+- 测试：`bun test` 687+ 通过 / 0 失败；`tsc --noEmit` 无错误。

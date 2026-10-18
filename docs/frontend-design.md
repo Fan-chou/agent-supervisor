@@ -7,6 +7,7 @@
 - UI 只通过 TS core 守护进程（`supervisord`）的**本地鉴权 API**通信：UDS（`~/.agent-supervisor/sock`，0600）优先，或 127.0.0.1 HTTP + token（`~/.agent-supervisor/token`，0600）。UI 不读 SQLite、不读 transcript、不读 `.env`。
 - **本文不假设 MyGo 的任何具体组件名或 API**（本阶段不联网、没有实测）。线框只描述信息与交互；依赖 MyGo 能力的地方集中列在 §11「需在 MyGo 上验证的清单」。
 - **写操作的范围**：标注类（标误报/有用、手动放行/驳回某次决策、会话静音/恢复、批量标注已复盘）和「新建回放」。**配置本身只读**（查看生效配置 + 校验草稿，不应用）；改 `mode`/阈值仍通过编辑 `config.yaml` 或 `sv replay --set` 试算。
+- **shadow 是纯观察、完全不拦截；危险操作（X2）必须被记录并醒目标记。** UI 要让人一眼分清三件事：**危险**（发生了什么危险操作）、**本应拦截**（shadow 等不生效时，规则本来会拦——没有真的拦）、**已拦截**（enforce 下真的拦了）。三者的视觉和文案必须明显不同，见 §7.5。
 - 所有展示的命令、输出、prompt、judge 请求/响应、消息都是**脱敏后**的文本（守护进程落盘和对外输出时已过 `redact()`）。UI 没有「显示原文」开关；复制出的文本与屏幕一致。
 
 ## 1. 信息架构
@@ -31,8 +32,8 @@
 | `runs` | 回放结果（运行列表、对比）、所有页面的「数据来源」筛选 |
 | `sessions` | 实时会话（分组、子 agent）、事件与事故的头部 |
 | `events` | 事件与事故（时间线左栏/详情） |
-| `hits` | 事件与事故（命中子行）、规则统计与标注、命中详情 |
-| `decisions` | 命中详情（处置与抑制原因）、规则统计（处置分布） |
+| `hits` | 事件与事故（命中子行）、规则统计与标注、命中详情；`severity='dangerous'` → 所有视图的「危险」徽标/筛选/计数 |
+| `decisions` | 命中详情（处置与抑制原因）、规则统计（处置分布）；`outcome` → 「本应拦截 / 已拦截」指示器 |
 | `judge_calls` | Judge 裁决列表/详情、Judge 路由、规则统计的 judge 部分 |
 | `deliveries` | 命中详情（送达与遵从）、规则统计（遵从率） |
 | `overrides` | 实时会话（静音状态）、规则统计与标注（误报/有用）、命中详情（标注历史） |
@@ -53,10 +54,10 @@
 
 ```
 ┌ 实时会话 ────────────────────────────────────────────────────────── [导出 CSV] [刷新 ●实时] ┐
-│ 状态 [live idle ended ▾]  harness [全部▾]  被监督模型 [全部▾]  日期 [近 24 小时 ▾]  搜索 [____] │
-│ 合计：项目 4 · 会话 17（live 2）· 调用 1,284 · 命中 L 61 / M 18 / H 3 · 已静音 1              │
+│ 状态 [live idle ended ▾]  仅有危险 ☐  排序 [最近活动 ▾ / 危险数 ▾]  harness [全部▾]  被监督模型 [全部▾]  日期 [近 24 小时 ▾]  搜索 [____] │
+│ 合计：项目 4 · 会话 17（live 2）· 调用 1,284 · 命中 L 61 / M 18 / H 3 · ⚠危险 3（◌本应拦截 3 · ■已拦截 0）· 已静音 1              │
 ├──────────────────────────────────────────────────────────────────────────────────────────────┤
-│ ☐  状态  会话/项目                    harness  模型              调用  命中(L/M/H) 最近处置      静音 │
+│ ☐  状态  会话/项目                    harness  模型              调用  命中(L/M/H) ⚠危险 最近处置      静音 │
 │ ▾ ~/dev/agent-supervisor  (5 个会话 · live 2)                                  合计 412  21/6/1     │
 │ ☐  ● live  claude-7f3a…               claude   claude-sonnet-5-5   132   5 / 2 / 0   advise 2m前  –  │
 │ ☐    ▸ 子 agent ×3（Explore, Plan, general）                                                       │
@@ -73,10 +74,11 @@
 - **子 agent**：`parent_session_id` 非空的会话归到父会话下，点 `▸ 子 agent ×N` 展开；子 agent 的命中计入父会话合计，但展开后可单独看。
 - **状态定义**：live = 最近 60 秒有事件；idle = 超过 60 秒无事件；ended = 收到结束信号或超过 30 分钟无事件。
 - **列**：状态、会话 id（缩写）、harness、被监督 agent 的模型（**只展示，不参与判定**）、已完成调用数、L/M/H 命中数、最近一次处置（动作 + 相对时间 + 是否生效）、静音状态（`#sv off/quiet` 或 UI 静音）。
+- **危险列（⚠）**：每个会话（以及项目分组行、顶部合计）显示危险次数 `danger.total`；有「本应拦截」的显示 `⚠ 3 ◌3`（虚线描边的 ◌ 计数，表示 shadow 下没有真的拦），真实拦截的显示 `⚠ 3 ■3`；没有危险显示灰色 `·`。**表头可点击按危险数排序**，筛选条有「仅有危险」开关；分组默认按组内危险数合计把有危险的项目排前面（可切回按最近活动）。
 - **批量操作**：静音 quiet / off、恢复、标记已复盘（写一条 `overrides`，仅用于筛选「未复盘」）、用选中会话新建回放（跳到视图 7 并预填路径）、导出所选 CSV。静音确认框说明「X2 本地规则不受 `#sv off` 影响」。
 - 选中单个会话时右侧出现**会话摘要**：计划（来源、当前步骤）、预算用量（judge n/12、连续拦截 n/2、Stop 续跑 n/2、冷却中的规则）、最近 5 条命中、`sv replay <源文件>` 与恢复会话命令（可复制，见 §4 详情页）。
 
-**调用的 API**：`GET /v1/sessions?group=project&state=&harness=&model=&q=&since=&until=`（分组结果，含 L/M/H 计数、最近处置、静音）、`GET /v1/sessions/{id}`（摘要）、`GET /v1/sessions/{id}/children`（子 agent）、`POST /v1/sessions/batch`（`{ids, action: mute_quiet|mute_off|unmute|mark_reviewed}`）、`GET /v1/sessions/export.csv`（同筛选条件）、`GET /v1/stream`（`session|hit|decision|status` 增量）。
+**调用的 API**：`GET /v1/sessions?group=project&state=&harness=&model=&q=&since=&until=&has_danger=true&sort=recent|danger_desc`（每个会话和分组带 `danger: {total, wouldHaveBlocked, enforced}`，见 §9.1）（分组结果，含 L/M/H 计数、最近处置、静音）、`GET /v1/sessions/{id}`（摘要）、`GET /v1/sessions/{id}/children`（子 agent）、`POST /v1/sessions/batch`（`{ids, action: mute_quiet|mute_off|unmute|mark_reviewed}`）、`GET /v1/sessions/export.csv`（同筛选条件）、`GET /v1/stream`（`session|hit|decision|status` 增量）。
 
 | 状态 | 表现 |
 |---|---|
@@ -92,8 +94,8 @@
 
 ```
 ┌ claude-7f3a… · ~/dev/agent-supervisor · claude-sonnet-5-5 · shadow ──── [实时跟随 ●] [回到底部] [导出 CSV] ┐
-│ 级别 [L M H]  规则 [全部▾]  处置 [全部▾]  类型 [调用|提示|Stop|中断▾]  只看有命中 ☐   搜索 [______]        │
-│ 合计：调用 132 · 命中 L5/M2/H0 · 处置 advise 2 · judge 2 次 · 抑制 cooldown 3                             │
+│ 级别 [危险 L M H]  ⚠仅危险 ☐  结局 [本应拦截 已拦截 ▾]  规则 [全部▾]  处置 [全部▾]  类型 [调用|提示|Stop|中断▾]  只看有命中 ☐   搜索 [______]        │
+│ 合计：调用 132 · 命中 L5/M2/H0 · ⚠危险 2（◌本应拦截 2）· 处置 advise 2 · judge 2 次 · 抑制 cooldown 3                             │
 ├────────────────────────────────────────┬─────────────────────────────────────────────────────────────────┤
 │ +00:06 #2 shell  sed -n 1,40p …        │ #4 shell  pytest -q                  post · ok · exit 0         │
 │ +00:10 #3 patch  src/parser.py         │ 命令（脱敏）pytest -q                                            │
@@ -108,13 +110,14 @@
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 - **左栏**：按「调用」（pre+post 合并）排列，命中和处置作为缩进子行挂在对应调用下；H 命中用图标 + 色块（不只靠颜色）。
+- **危险徽标与「本应拦截」指示器**：X2 命中所在的调用行加整行左侧色条和 `⚠ 危险` 徽标（类别：env / key / ci / rm / git，如 `⚠ 危险·git`），子行写出对象与原因（如「git reset --hard — 可能丢失未提交的工作」）。子行末尾的结局指示器区分三种情况：`◌ 本应拦截（shadow，未生效）`、`◌ 本应要求确认（shadow，未生效）`、`■ 已拦截` / `■ 已要求确认`。视觉规范见 §7.5；调用本身在 shadow 下仍然成功执行了，所以调用行状态是 ✓，危险徽标和指示器是叠加在上面的。会话头部显示累计 `⚠ 危险 N · ◌ 本应拦截 M · ■ 已拦截 K`，点击只看危险。
 - **右栏**：选中项详情——脱敏命令/文件列表/输出头尾、分类、`mutating`、工作区指纹、退出码来源；命中块显示**规则、级别、阶段、阈值（命中时的取值与自适应倍数）、观测值、证据调用、处置与抑制原因**，并可就地「标误报/标有用」。
 - **事故条**：同会话内相邻、同类（category）的命中聚合；点击展开成命中列表，再点滚动到对应调用。
 - **迷你时间条**：整场会话的命中分布（横轴调用序号，竖线颜色/高度表示 sev），点击跳转；做不到自绘时退化为文本 `▁▂▅▇`（§11 第 2 项）。
 - **实时跟随**：新事件自动追加；向上滚动自动暂停并显示「有 N 条新事件 ↓」。
 - 回放视图复用本页：来源标记「回放 · run 3 · base · 文件名」，没有实时跟随，处置栏显示 `wouldBlockIfVerified`、`atNextPre` 等回放标注。
 
-**调用的 API**：`GET /v1/sessions/{id}`（头部）、`GET /v1/sessions/{id}/timeline?since_seq=&before_seq=&limit=`（调用 + 命中 + 处置合并视图）、`GET /v1/sessions/{id}/events?phase=&q=`（原始事件）、`GET /v1/sessions/{id}/incidents`、`GET /v1/sessions/{id}/timeline.csv`、`POST /v1/hits/{id}/mark`、`GET /v1/stream?sessions={id}`。
+**调用的 API**：`GET /v1/sessions/{id}`（头部，含 `danger`）、`GET /v1/sessions/{id}/timeline?since_seq=&before_seq=&limit=&severity=dangerous&outcome=`（条目带 `severity` / `outcome` / `danger*` 字段，见 §9.1）（调用 + 命中 + 处置合并视图）、`GET /v1/sessions/{id}/events?phase=&q=`（原始事件）、`GET /v1/sessions/{id}/incidents`、`GET /v1/sessions/{id}/timeline.csv`、`POST /v1/hits/{id}/mark`、`GET /v1/stream?sessions={id}`。
 
 | 状态 | 表现 |
 |---|---|
@@ -133,7 +136,7 @@
 ```
 ┌ Judge 裁决 ─────────────────────────────────────────────────────────────────────── [导出 CSV] ┐
 │ harness [全部▾] 被监督模型 [全部▾] judge 模型 [全部▾] 规则 [全部▾] 裁决 [ignore advise block parse_fail ▾] │
-│ 状态 [ok parse_fail timeout error ▾]  同步/异步 [全部▾]  日期 [近 7 天 ▾]  搜索 [会话/规则/错误…____]     │
+│ 状态 [ok parse_fail timeout error ▾]  会话含危险 ☐  同步/异步 [全部▾]  日期 [近 7 天 ▾]  搜索 [会话/规则/错误…____]     │
 │ 合计（含缓存 ▣ / 不含缓存 ☐）：调用 214 · ok 201 · ignore 43% · parse_fail 3.3% · 超时 0.5%              │
 │       prompt tokens 1.82M（含缓存 0.61M）· completion 96k · 平均延迟 5.8s · p95 14.2s · 成本 $3.41        │
 ├──────────────────────────────────────────────────────────────────────────────────────────────────────┤
@@ -147,6 +150,7 @@
 ```
 - 顶部筛选与 Magpie 的 Usage 页对应：**agent → harness 与被监督模型**；**账号/key → judge 模型与路由**（只显示 `api_key_env` 变量名，不显示 key）；**日期区间选择器**；**搜索**；**CSV 导出**。
 - **合计条**带「**含/不含缓存**」切换：含缓存时 prompt tokens 计入 `cached_tokens`，不含则扣除；成本同步变化（有 `cost_usd` 时按记录求和，没有时显示 n/a，不估算）。
+- **危险**：X2 是适配器本地规则，**从不送 judge**，所以 judge 列表里没有危险的行；列表只提供「会话含危险」筛选和行首的会话危险徽标（`⚠ N`），方便从裁决跳到该会话的危险记录。
 - 列「结果」把策略后的真实结局讲清楚：`已送达 / 未生效(shadow) / 降级 / 被冷却挡掉 / fail-open 放行 / 当作 ignore`。
 - 概览按**被调用的 judge 模型**统计 ignore 率与 `judge_parse_fail` 率，超阈值（初值 15%，样本 ≥10）显示警告（design §8.5：长期解析失败要提示调整路由组）。
 
@@ -227,7 +231,8 @@
 │ L1    同一调用连续失败   M→H   2 advise / 第 3 次尝试 H        ●     12       8%     71%       │
 │ T1    无改动重跑同命令    L→H   2 advise / 3 H                ●     31       –      40%       │
 │ T2    无编辑的全量测试    L→M   3 advise / 5 M                ●     9        –      –         │
-│ X2    危险操作           H     本地拦截（deny/ask）           ●     2        0%     –         │
+│ X2    ⚠危险操作          H     本地拦截（deny/ask）           ●     2        0%     –         │
+│       （shadow：只记录，◌本应拦截；enforce：■拦截）                                         │
 │ S2    阶段停滞           –     仅回放观察                     ◌     –        –      –         │
 ├────────────────────────────────────────────────────────────────────────────────────────────┤
 │ 选中 T1：说明 · 出处 · 触发条件（工作区指纹三态 verified/inferred/changed）                     │
@@ -253,7 +258,7 @@
 **目的**：回答「哪条规则吵、哪条准、阈值该往哪调」——直接对应 `sv stats` 与 §18.3 的查询；并且是**标注误报的主要入口**。
 
 ```
-┌ 规则统计与标注 ─────────────────── [规则] [按模型] [待复盘命中] ──────────────────── [导出 CSV] ┐
+┌ 规则统计与标注 ─────────────────── [规则] [按模型] [待复盘命中] [⚠危险] ─────────────── [导出 CSV] ┐
 │ 数据 [live ▾ / run 3 base ▾]  日期 [近 14 天 ▾]  规则 [全部▾]  级别 [全部▾]  搜索 [____]         │
 │ 合计：调用 3,904 · 会话 41 · 命中 312 · 已标注 58（误报 21 / 有用 37）· 总体误报率 36%           │
 ├───────────────────────────────────────────────────────────────────────────────────────────────┤
@@ -271,13 +276,14 @@
 └───────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 - **规则表**就是 `sv stats --by rule` 的可视化：命中数、触发会话数、**每 100 次调用命中数**、触发会话占比、L/M/H 分布、生效数、人工标注数、**误报率（只来自人工标注，没有标注显示 n/a）**、**遵从率**（被建议/拦截后 agent 没继续同样做法的比例，只对可判定规则有值）、处置分布与**被抑制原因分布**（冷却/预算/连续拦截上限/指纹未核实/用户静音…）。
+- **⚠ 危险**页签（= `sv stats --by danger`）：顶部 `⚠ 危险 N · ◌ 本应拦截 M（未生效）· ■ 已拦截 K`，按类别（env/key/ci/rm/git）和按会话计数，下面逐条列出（时间、会话、类别、对象、原因、结局、mode、被监督模型），可按会话/类别筛选，点一条进命中详情；这里是「shadow 周之后决定要不要打开 enforce」的主要依据，所以 **◌ 本应拦截** 的数量与明细是醒目的第一块内容。规则表里 X2 行带「危险」徽标，结局分布列显示 `would_have_blocked×N / blocked×N`。
 - **按模型**页签 = `sv stats --by model`：每个被监督模型的调用数与各规则每 100 调用命中数——**模型名在这里只用来事后观察**，页面上没有任何按模型改变阈值的入口。
 - **待复盘命中**页签：还没有标注的命中，按规则/级别排序；逐条标「误报 / 有用」（可附备注），支持多选批量。标注写入 `overrides`，立刻反映到误报率；被标注的命中**不会被保留期清理**。
 - **手动放行 / 驳回**：对某次决策记 `manual_allow` / `manual_reject`（只记录意图，供复盘；不会回溯改变已发生的拦截）。
 - 命中行点开 → **命中详情**（explain）：命中（阈值、观测值、指纹）→ 证据调用 → 决策（含抑制原因）→ judge 调用（链接到视图 3 详情）→ 投递与遵从 → 标注历史；同样有可复制的 `sv explain <id>`。
 - 每个规则行有「试算」入口：生成 `sv replay … --set …` 命令；回放后的两次运行在视图 7 并排对比。
 
-**调用的 API**：`GET /v1/rules/stats?by=rule|model&run=&label=&since=&until=`、`GET /v1/hits?rule=&sev=&label=unlabeled|false_positive|useful&run=&session=&since=&until=&cursor=`、`GET /v1/hits/{id}`（explain 链路）、`POST /v1/hits/{id}/mark`（`{label:"false_positive"|"useful"|"none", note}`）、`POST /v1/hits/mark`（批量）、`POST /v1/decisions/{id}/override`（`{kind:"allow"|"reject", note}`）、`GET /v1/rules/stats.csv`、`GET /v1/hits/export.csv`。
+**调用的 API**：`GET /v1/rules/stats?by=rule|model&run=&label=&since=&until=`、`GET /v1/hits?rule=&sev=&severity=dangerous&outcome=&label=unlabeled|false_positive|useful&run=&session=&since=&until=&cursor=`、`GET /v1/hits/{id}`（explain 链路）、`POST /v1/hits/{id}/mark`（`{label:"false_positive"|"useful"|"none", note}`）、`POST /v1/hits/mark`（批量）、`POST /v1/decisions/{id}/override`（`{kind:"allow"|"reject", note}`）、`GET /v1/danger/stats`、`GET /v1/danger/events`、`GET /v1/rules/stats.csv`、`GET /v1/hits/export.csv`。
 
 | 状态 | 表现 |
 |---|---|
@@ -286,6 +292,20 @@
 | 样本太少 | 某规则命中 <10 或已标注 <5 时，误报率旁加灰色「样本少」标记 |
 | 标注写入失败 | 该行显示失败原因并保持原标注，可重试 |
 | 数据来源选了回放 run | 页首标「回放 · run 3 · base · 阈值哈希 …」，遵从率列标「模拟」 |
+
+### 7.5 危险（⚠）与「本应拦截」的视觉规范
+shadow 下没有任何东西被真的拦住，所以界面绝不能让「本应拦截」看起来像「已经拦住了」。三种状态用**不同的形状、边框、颜色和文案**，且不只靠颜色（可访问性，见 §12.2）：
+
+| 状态 | 含义 | 图标 | 样式 | 固定文案 |
+|---|---|---|---|---|
+| **⚠ 危险** | 发生了 X2 危险操作（不论 mode） | 实心三角 ⚠ | 实心红色徽标 + 整行左侧实线色条 | `危险·<类别>`（env/key/ci/rm/git） |
+| **◌ 本应拦截** | shadow / advise 模式下规则本来会拦，**没有生效** | 空心圆 ◌ | **虚线描边**、琥珀色、斜体、浅色斜纹底（看上去是「未兑现」） | `本应拦截（shadow，未生效）`；ask 类写 `本应要求确认（shadow，未生效）` |
+| **■ 已拦截** | enforce 下真的拦了 / 要求了确认 | 实心方块 ■ | **实心**深红填充、白字（看上去是「已兑现」） | `已拦截` / `已要求确认` |
+
+- 危险行永远有 ⚠ 徽标；其结局指示器（◌ 或 ■）紧跟其后。同一行出现 `⚠ 危险·git  ◌ 本应拦截（shadow，未生效）`，读者不可能误以为已拦住。
+- 顶栏常驻一个危险计数器：`⚠ 今日危险 3 · ◌ 本应拦截 3 · ■ 已拦截 0`（点击进视图 6 的危险页签）。mode 为 shadow 时计数器旁固定写「shadow：纯观察，未拦截」。
+- 列表里的徽标可点击 = 把筛选设为「仅危险」；键盘可达（见 §12.2）；屏幕阅读器朗读文案用上表「固定文案」。
+- 普通（非危险）规则在 shadow 下的「未生效」仍用较弱的灰色 `shadow:不生效` 小标签，不与上面三种混用。
 
 ## 8. 视图 7：回放结果（Replay & Eval）
 **目的**：浏览 `sv replay` / `sv eval` 的产出——运行列表、对比两套阈值、命中时间线、每条规则的 precision/recall 和首次报警延迟、两个误报率门槛。
@@ -339,6 +359,7 @@
 | `GET /v1/sessions/{id}/timeline` · `…/events` · `…/incidents` · `…/timeline.csv` | 视图 2 |
 | `GET /v1/hits` · `GET /v1/hits/{id}` · `POST /v1/hits/{id}/mark` · `POST /v1/hits/mark` · `GET /v1/hits/export.csv` | 视图 2、6 |
 | `POST /v1/decisions/{id}/override` | 视图 6（手动放行/驳回） |
+| `GET /v1/danger/stats` · `GET /v1/danger/events` · `GET /v1/danger/events.csv` | 视图 6（⚠ 危险页签）、顶栏危险计数 |
 | `GET /v1/judge-calls` · `GET /v1/judge-calls/{id}` · `GET /v1/judge-calls/stats` · `GET /v1/judge-calls/export.csv` | 视图 3 |
 | `GET /v1/judge/routes` | 视图 4 |
 | `GET /v1/rules` · `GET /v1/config` · `POST /v1/config/validate` | 视图 5 |
@@ -348,7 +369,14 @@
 | `GET /v1/stream` | 实时推送（§10） |
 | `GET /v1/schema/{name}` | JSON Schema（开发/校验） |
 
-### 9.1 类型复用：JSON Schema 是唯一来源
+### 9.1 危险相关的 API 字段
+- **命中 / 时间线条目**（`Hit`、`TimelineEntry`）：`severity`（`low|medium|high|dangerous`；X2 恒为 `dangerous`）、`dangerous: boolean`、`dangerCategory`（`env|key|ci|rm|git`）、`dangerSubject`（被写的文件 / 被删的路径 / 命令，已脱敏）、`dangerReason`、`outcome`、`applied`、`mode`。
+- **决策**（`Decision`）：`outcome ∈ blocked | would_have_blocked | asked | would_have_asked | continued | would_have_continued | advised | would_have_advised | null`（没有面向 agent 的动作时为 null）。**`would_have_*` 就是「本应拦截」指示器的数据来源，`blocked`/`asked` 才是「已拦截」。**
+- **会话摘要**（`SessionSummary`，分组行同样带）：`danger: { total, wouldHaveBlocked, enforced }`；列表接口支持 `has_danger=true` 与 `sort=danger_desc`。
+- **`GET /v1/danger/stats`**：`{ total, wouldHaveBlocked, enforced, byCategory: {git: n, …}, byOutcome: {…}, bySession: [{runId, sessionId, dangerous, wouldHaveBlocked, enforced}] }`（对应 `dangerStats`）；**`GET /v1/danger/events`**：逐条 `{hitId, runId, sessionId, ts, callIndex, category, subject, reason, action, outcome, mode, model}`（对应 `dangerEvents`），支持 `session / category / outcome / since / until` 过滤和 `.csv` 导出。
+- **`GET /v1/status`** 增加 `danger: { today: {total, wouldHaveBlocked, enforced}, mode }`，供顶栏计数器使用；**流消息** `hit` / `decision` 带同样的字段，危险命中到达时 UI 立即更新计数器与会话行。
+
+### 9.2 类型复用：JSON Schema 是唯一来源
 Go 侧无法直接复用 TS 类型：
 1. 在 TS 侧为这些类型维护 **带版本号的 JSON Schema**（`schema/v1/*.schema.json`，M3 随守护进程建立）：`Event`、`Hit`、`Decision`、`JudgeCall`、`Delivery`、`Override`、`Run`、`SessionSummary`、`TimelineEntry`、`RuleStat`、`ReplayResult`、`EvalReport`、`Status`、`StreamMessage`、`Config`。守护进程的响应在测试里按 schema 校验。
 2. Go 结构体由这些 Schema **生成**（生成器选型由 MyGo 项目构建系统决定），生成物不手改。
