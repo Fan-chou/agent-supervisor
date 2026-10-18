@@ -1,0 +1,358 @@
+// 前端用的只读查询（frontend-design §3、§12）：会话时间线、原始事件、命中列表、子 agent。
+// 风格同 queries.ts：SQL 全部写在这里，方便审阅；只读，不改任何数据。
+import type { Database } from "bun:sqlite";
+import { _internal as qi, type Scope } from "./queries.ts";
+
+const { where, q, LATEST_LABEL } = qi;
+const clampLimit = (n: number | undefined, def: number, max: number) => Math.max(1, Math.min(max, Math.floor(Number.isFinite(n) ? (n as number) : def)));
+
+/** 会话所在的运行：显式给了就用它，否则取包含该会话的最新一次运行。 */
+export function sessionRun(db: Database, sessionId: string, runId?: number): number | null {
+  if (runId !== undefined) return (db.query("SELECT run_id FROM sessions WHERE run_id = ? AND session_id = ?").get(runId, sessionId) as { run_id: number } | null)?.run_id ?? null;
+  return (db.query("SELECT MAX(run_id) AS r FROM sessions WHERE session_id = ?").get(sessionId) as { r: number | null } | null)?.r ?? null;
+}
+
+export interface TimelineDecision {
+  id: number;
+  action: string;
+  applied: boolean;
+  mode: string | null;
+  outcome: string | null;
+  suppressedBy: string | null;
+  wouldBlockIfVerified: boolean;
+  atNextPre: boolean;
+  message: string | null;
+}
+
+export type TimelineEntry =
+  | {
+      type: "call";
+      /** pre 的 seq（只有 post 的调用用 post 的 seq）。UI 用它作为主键：同一调用的 post 到达时会带着同一个 seq 再出现一次。 */
+      seq: number;
+      postSeq: number | null;
+      ts: number;
+      toolUseId: string | null;
+      tool: string | null;
+      kind: string | null;
+      cmdClass: string | null;
+      normCmd: string | null;
+      mutating: boolean | null;
+      /** ok / fail / unknown / pending；还没有 post 为 pending。 */
+      status: string;
+      exitCode: number | null;
+      errFp: string | null;
+      model: string | null;
+    }
+  | { type: "event"; seq: number; ts: number; phase: string; origin: string | null; model: string | null }
+  | {
+      type: "hit";
+      seq: number;
+      ts: number;
+      hitId: number;
+      ruleId: string;
+      sev: string;
+      severity: string | null;
+      dangerous: boolean;
+      dangerCategory: string | null;
+      dangerSubject: string | null;
+      dangerReason: string | null;
+      category: string | null;
+      phase: string | null;
+      callIndex: number | null;
+      message: string | null;
+      observeOnly: boolean;
+      decisions: TimelineDecision[];
+      outcome: string | null;
+      applied: boolean;
+    };
+
+export interface TimelineOpts {
+  runId?: number;
+  /** 只要 seq 大于它的（实时跟随）。 */
+  sinceSeq?: number;
+  /** 只要 seq 小于它的，并取最靠近它的 limit 条（向上翻页）。 */
+  beforeSeq?: number;
+  limit?: number;
+  /** 给了 severity / outcome 就只返回满足条件的命中（不含调用与事件）。 */
+  severity?: string;
+  outcome?: string;
+}
+
+export interface Timeline {
+  runId: number;
+  entries: TimelineEntry[];
+  /** 这个方向上还有没返回的条目。 */
+  hasMore: boolean;
+}
+
+function decisionsOf(db: Database, hitIds: number[]): Map<number, TimelineDecision[]> {
+  const out = new Map<number, TimelineDecision[]>();
+  if (!hitIds.length) return out;
+  const rows = q<Record<string, unknown>>(db, `SELECT * FROM decisions WHERE hit_id IN (${hitIds.map(() => "?").join(",")}) ORDER BY id`, hitIds);
+  for (const d of rows) {
+    const list = out.get(d.hit_id as number) ?? [];
+    list.push({
+      id: d.id as number,
+      action: d.action as string,
+      applied: d.applied === 1,
+      mode: (d.mode as string) ?? null,
+      outcome: (d.outcome as string) ?? null,
+      suppressedBy: (d.suppressed_by as string) ?? null,
+      wouldBlockIfVerified: d.would_block_if_verified === 1,
+      atNextPre: d.at_next_pre === 1,
+      message: (d.message as string) ?? null,
+    });
+    out.set(d.hit_id as number, list);
+  }
+  return out;
+}
+
+function callEntry(first: Record<string, unknown>, post: Record<string, unknown> | undefined): TimelineEntry {
+  const res = post ?? (first.phase === "post" ? first : undefined);
+  return {
+    type: "call",
+    seq: first.seq as number,
+    postSeq: res ? (res.seq as number) : null,
+    ts: first.ts as number,
+    toolUseId: (first.tool_use_id as string) ?? null,
+    tool: (first.tool_name as string) ?? null,
+    kind: (first.tool_kind as string) ?? null,
+    cmdClass: (first.cmd_class as string) ?? null,
+    normCmd: (first.norm_cmd as string) ?? null,
+    mutating: first.mutating === null || first.mutating === undefined ? null : first.mutating === 1,
+    status: res ? ((res.status as string) ?? "unknown") : "pending",
+    exitCode: res ? ((res.exit_code as number) ?? null) : null,
+    errFp: res ? ((res.err_fp as string) ?? null) : null,
+    model: (first.model as string) ?? null,
+  };
+}
+
+/** 调用（pre+post 按 tool_use_id 合并）+ 命中 + 处置的合并视图，按 seq 升序。会话不存在返回 null。 */
+export function sessionTimeline(db: Database, sessionId: string, opts: TimelineOpts = {}): Timeline | null {
+  const runId = sessionRun(db, sessionId, opts.runId);
+  if (runId === null) return null;
+  const limit = clampLimit(opts.limit, 200, 1000);
+  const tail = opts.beforeSeq !== undefined && opts.sinceSeq === undefined;
+  const cond: string[] = ["run_id = ?", "session_id = ?"];
+  const args: (number | string)[] = [runId, sessionId];
+  if (opts.sinceSeq !== undefined) (cond.push("seq > ?"), args.push(opts.sinceSeq));
+  if (opts.beforeSeq !== undefined) (cond.push("seq < ?"), args.push(opts.beforeSeq));
+  const order = tail ? "DESC" : "ASC";
+  const entries: TimelineEntry[] = [];
+
+  // ----- 命中（带处置）-----
+  const hcond = [...cond];
+  const hargs = [...args];
+  if (opts.severity) (hcond.push("severity = ?"), hargs.push(opts.severity));
+  const hits = q<Record<string, unknown>>(db, `SELECT * FROM hits WHERE ${hcond.join(" AND ")} AND observe_only = 0 ORDER BY seq ${order}, id ${order} LIMIT ?`, [...hargs, limit + 1]);
+  const decs = decisionsOf(db, hits.map((h) => h.id as number));
+  const hitEntries = hits.map((h): TimelineEntry => {
+    const ds = decs.get(h.id as number) ?? [];
+    return {
+      type: "hit",
+      seq: h.seq as number,
+      ts: h.ts as number,
+      hitId: h.id as number,
+      ruleId: h.rule_id as string,
+      sev: h.sev as string,
+      severity: (h.severity as string) ?? null,
+      dangerous: h.severity === "dangerous",
+      dangerCategory: (h.danger_category as string) ?? null,
+      dangerSubject: (h.danger_subject as string) ?? null,
+      dangerReason: (h.danger_reason as string) ?? null,
+      category: (h.category as string) ?? null,
+      phase: (h.phase as string) ?? null,
+      callIndex: (h.call_index as number) ?? null,
+      message: (h.message as string) ?? null,
+      observeOnly: false,
+      decisions: ds,
+      outcome: (ds.find((d) => d.outcome) ?? ds[0])?.outcome ?? null,
+      applied: ds.some((d) => d.applied),
+    };
+  });
+  const filteredHits = opts.outcome ? hitEntries.filter((h) => h.type === "hit" && h.decisions.some((d) => d.outcome === opts.outcome)) : hitEntries;
+
+  if (opts.severity || opts.outcome) {
+    entries.push(...filteredHits);
+  } else {
+    // ----- 事件：pre/post 合并成「调用」；其余（prompt/stop/session…）原样 -----
+    const evs = q<Record<string, unknown>>(db, `SELECT * FROM events WHERE ${cond.join(" AND ")} ORDER BY seq ${order} LIMIT ?`, [...args, limit + 1]);
+    const ids = [...new Set(evs.map((e) => e.tool_use_id).filter((x): x is string => typeof x === "string"))];
+    const partners = new Map<string, Record<string, unknown>[]>();
+    if (ids.length) {
+      for (const r of q<Record<string, unknown>>(db, `SELECT * FROM events WHERE run_id = ? AND session_id = ? AND tool_use_id IN (${ids.map(() => "?").join(",")}) ORDER BY seq`, [runId, sessionId, ...ids])) {
+        const k = r.tool_use_id as string;
+        partners.set(k, [...(partners.get(k) ?? []), r]);
+      }
+    }
+    const seen = new Set<string>();
+    for (const e of evs) {
+      if (e.phase !== "pre" && e.phase !== "post") {
+        entries.push({ type: "event", seq: e.seq as number, ts: e.ts as number, phase: e.phase as string, origin: (e.origin as string) ?? null, model: (e.model as string) ?? null });
+        continue;
+      }
+      const id = e.tool_use_id as string | null;
+      if (!id) {
+        entries.push(callEntry(e, undefined));
+        continue;
+      }
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const pair = partners.get(id) ?? [];
+      const pre = pair.find((p) => p.phase === "pre");
+      const post = pair.find((p) => p.phase === "post");
+      entries.push(pre ? callEntry(pre, post) : callEntry(post ?? e, undefined)); // 实时跟随时，旧调用的 post 到达会以 pre 的 seq 再出现一次
+    }
+    entries.push(...filteredHits);
+  }
+  entries.sort((a, b) => a.seq - b.seq || (a.type === "hit" ? 1 : 0) - (b.type === "hit" ? 1 : 0));
+  let out = entries;
+  let hasMore = hits.length > limit || (out.length > limit);
+  if (out.length > limit) out = tail ? out.slice(out.length - limit) : out.slice(0, limit);
+  if (!out.length) hasMore = false;
+  return { runId, entries: out, hasMore };
+}
+
+export interface RawEvent {
+  runId: number;
+  sessionId: string;
+  seq: number;
+  ts: number;
+  phase: string;
+  origin: string | null;
+  toolUseId: string | null;
+  tool: string | null;
+  kind: string | null;
+  cmdClass: string | null;
+  normCmd: string | null;
+  status: string | null;
+  exitCode: number | null;
+  errFp: string | null;
+  model: string | null;
+}
+
+/** 原始事件（不合并）。q 在 norm_cmd / tool_name 里做子串匹配（LIKE，特殊字符已转义）。 */
+export function sessionEvents(db: Database, sessionId: string, opts: { runId?: number; phase?: string; q?: string; sinceSeq?: number; limit?: number } = {}): { runId: number; events: RawEvent[]; hasMore: boolean } | null {
+  const runId = sessionRun(db, sessionId, opts.runId);
+  if (runId === null) return null;
+  const limit = clampLimit(opts.limit, 200, 1000);
+  const cond = ["run_id = ?", "session_id = ?"];
+  const args: (number | string)[] = [runId, sessionId];
+  if (opts.phase) (cond.push("phase = ?"), args.push(opts.phase));
+  if (opts.sinceSeq !== undefined) (cond.push("seq > ?"), args.push(opts.sinceSeq));
+  if (opts.q) {
+    cond.push("(norm_cmd LIKE ? ESCAPE '\\' OR tool_name LIKE ? ESCAPE '\\')");
+    const like = `%${opts.q.replace(/[\\%_]/g, (c) => "\\" + c)}%`;
+    args.push(like, like);
+  }
+  const rows = q<Record<string, unknown>>(db, `SELECT * FROM events WHERE ${cond.join(" AND ")} ORDER BY seq LIMIT ?`, [...args, limit + 1]);
+  const events = rows.slice(0, limit).map(
+    (e): RawEvent => ({
+      runId,
+      sessionId,
+      seq: e.seq as number,
+      ts: e.ts as number,
+      phase: e.phase as string,
+      origin: (e.origin as string) ?? null,
+      toolUseId: (e.tool_use_id as string) ?? null,
+      tool: (e.tool_name as string) ?? null,
+      kind: (e.tool_kind as string) ?? null,
+      cmdClass: (e.cmd_class as string) ?? null,
+      normCmd: (e.norm_cmd as string) ?? null,
+      status: (e.status as string) ?? null,
+      exitCode: (e.exit_code as number) ?? null,
+      errFp: (e.err_fp as string) ?? null,
+      model: (e.model as string) ?? null,
+    }),
+  );
+  return { runId, events, hasMore: rows.length > limit };
+}
+
+export interface HitRow {
+  id: number;
+  runId: number;
+  sessionId: string;
+  seq: number;
+  ts: number;
+  ruleId: string;
+  sev: string;
+  severity: string | null;
+  dangerous: boolean;
+  category: string | null;
+  phase: string | null;
+  message: string | null;
+  model: string | null;
+  /** 最新一条有结局的处置（没有结局取最新一条）。 */
+  action: string | null;
+  outcome: string | null;
+  applied: boolean;
+  /** false_positive | useful | null（最新一条标注）。 */
+  label: string | null;
+}
+
+export interface HitFilter {
+  rule?: string;
+  sev?: string;
+  severity?: string;
+  outcome?: string;
+  /** unlabeled | false_positive | useful */
+  label?: string;
+  /** 只取 id 小于它的（按 id 倒序翻页）。 */
+  cursor?: number;
+  limit?: number;
+}
+
+/** 命中列表：最新在前，用 id 游标分页；nextCursor 为 null 表示没有更多。不含 observe_only 的命中。 */
+export function listHits(db: Database, scope: Scope = {}, f: HitFilter = {}): { hits: HitRow[]; nextCursor: number | null } {
+  const w = where(scope);
+  const args: (number | string)[] = [...w.args];
+  const cond = [w.sql.replace(/\b(run_id|ts|session_id)\b/g, "h.$1"), "h.observe_only = 0"];
+  if (f.rule) (cond.push("h.rule_id = ?"), args.push(f.rule));
+  if (f.sev) (cond.push("h.sev = ?"), args.push(f.sev));
+  if (f.severity) (cond.push("h.severity = ?"), args.push(f.severity));
+  if (f.cursor !== undefined) (cond.push("h.id < ?"), args.push(f.cursor));
+  if (f.label === "unlabeled") cond.push("ll.kind IS NULL");
+  else if (f.label === "false_positive") cond.push("ll.kind = 'mark_false_positive'");
+  else if (f.label === "useful") cond.push("ll.kind = 'mark_useful'");
+  if (f.outcome) (cond.push("EXISTS (SELECT 1 FROM decisions d WHERE d.hit_id = h.id AND d.outcome = ?)"), args.push(f.outcome));
+  const limit = clampLimit(f.limit, 100, 500);
+  const rows = q<Record<string, unknown>>(
+    db,
+    `SELECT h.*, ll.kind AS label_kind,
+            (SELECT d.action FROM decisions d WHERE d.hit_id = h.id ORDER BY (d.outcome IS NULL), d.id DESC LIMIT 1) AS d_action,
+            (SELECT d.outcome FROM decisions d WHERE d.hit_id = h.id ORDER BY (d.outcome IS NULL), d.id DESC LIMIT 1) AS d_outcome,
+            (SELECT MAX(d.applied) FROM decisions d WHERE d.hit_id = h.id) AS d_applied
+       FROM hits h LEFT JOIN (${LATEST_LABEL}) ll ON ll.hit_id = h.id
+      WHERE ${cond.join(" AND ")} ORDER BY h.id DESC LIMIT ?`,
+    [...args, limit + 1],
+  );
+  const page = rows.slice(0, limit).map(
+    (h): HitRow => ({
+      id: h.id as number,
+      runId: h.run_id as number,
+      sessionId: h.session_id as string,
+      seq: h.seq as number,
+      ts: h.ts as number,
+      ruleId: h.rule_id as string,
+      sev: h.sev as string,
+      severity: (h.severity as string) ?? null,
+      dangerous: h.severity === "dangerous",
+      category: (h.category as string) ?? null,
+      phase: (h.phase as string) ?? null,
+      message: (h.message as string) ?? null,
+      model: (h.model as string) ?? null,
+      action: (h.d_action as string) ?? null,
+      outcome: (h.d_outcome as string) ?? null,
+      applied: h.d_applied === 1,
+      label: h.label_kind === "mark_false_positive" ? "false_positive" : h.label_kind === "mark_useful" ? "useful" : null,
+    }),
+  );
+  return { hits: page, nextCursor: rows.length > limit ? page[page.length - 1].id : null };
+}
+
+/** 某会话的子 agent 会话（sessions.parent_session_id）。目前没有适配器填这一列，所以通常为空。 */
+export function sessionChildren(db: Database, sessionId: string, runId?: number): Record<string, unknown>[] {
+  const run = sessionRun(db, sessionId, runId);
+  if (run === null) return [];
+  return q<Record<string, unknown>>(db, "SELECT run_id, session_id, harness, model, project, calls, started_ts, ended_ts, parent_session_id FROM sessions WHERE run_id = ? AND parent_session_id = ? ORDER BY started_ts, session_id", [run, sessionId]);
+}

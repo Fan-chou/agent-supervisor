@@ -30,6 +30,7 @@ function where(scope: Scope, opts: { ts?: string } = {}): W {
   return { sql: parts.length ? parts.join(" AND ") : "1=1", args };
 }
 
+export const _internal = { get where() { return where; }, get q() { return q; }, get LATEST_LABEL() { return LATEST_LABEL; } };
 const q = <T>(db: Database, sql: string, args: (number | string)[] = []) => db.query(sql).all(...(args as never[])) as T[];
 
 /** 把 --run 3 / --label foo 解析成 run id 列表。 */

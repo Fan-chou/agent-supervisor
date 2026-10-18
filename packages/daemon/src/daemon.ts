@@ -7,10 +7,11 @@ import { dirname, join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   Engine, LogStore, Outbox, StoreSink, beginRun, truncate, checkPrecondition, computeWsFingerprint, createJudgeClient, expandHome, loadInjectionHashes, loadPlan, parsePlanMd, saveInjection, savePlan, wsToString,
-  type Config, type Decision, type Delivery, type JudgeFn, type OutboxKind, type Precondition, type StepRecord, type JudgeClient,
+  outcomeOf, type Config, type Decision, type Delivery, type JudgeFn, type OutboxKind, type Precondition, type StepRecord, type JudgeClient,
 } from "@sv/core";
 import { normalizeClaudeHook, type ClaudeHookPayload } from "../../adapter-claude/src/index.ts";
 import { handleCompare, handleQuery } from "./query-api.ts";
+import { StreamHub, type StreamFormat, type StreamType } from "./stream.ts";
 import { normalizeOpenCodeEvent, type OpenCodePayload } from "../../adapter-opencode/src/index.ts";
 import { normalizeCodexHook, type CodexHookPayload } from "../../adapter-codex/src/index.ts";
 
@@ -33,6 +34,8 @@ export interface DaemonOptions {
   idleEvictMs?: number;
   /** 测试用：不创建 UDS，只用 TCP。 */
   noUnix?: boolean;
+  /** /v1/stream 心跳间隔（毫秒），默认 15000；测试用。 */
+  streamHeartbeatMs?: number;
 }
 
 export interface HookResponse {
@@ -93,6 +96,7 @@ export class Daemon {
   readonly startedAt: number;
   port?: number;
   private servers: { stop(force?: boolean): void | Promise<void> }[] = [];
+  readonly stream: StreamHub;
   private sessions = new Map<string, Runtime>();
   private pendingDeferred = new Set<Promise<unknown>>();
   private lastHealthOk = new Map<string, number>();
@@ -114,6 +118,7 @@ export class Daemon {
     this.store = new LogStore(opts.dbPath ?? (opts.home ? join(this.home, "state.db") : this.cfg.log.db), { jsonlDir: this.cfg.log.jsonl_dir, storeEventBodies: this.cfg.log.store_event_bodies, storeJudgeBodies: this.cfg.log.store_judge_bodies, now: this.now });
     this.outbox = new Outbox(this.store, this.now);
     this.startedAt = this.now();
+    this.stream = new StreamHub(this.now, { heartbeatMs: opts.streamHeartbeatMs }, this.startedAt);
     if (opts.judge) this.judge = opts.judge;
     else if (this.cfg.judge.enabled) {
       this.judgeClient = createJudgeClient({ cfg: this.cfg.judge });
@@ -159,7 +164,7 @@ export class Daemon {
   }
 
   private async listen(): Promise<void> {
-    const handler = (viaUnix: boolean) => (req: Request) => this.route(req, viaUnix);
+    const handler = (viaUnix: boolean) => (req: Request, server: { timeout(r: Request, s: number): void }) => this.route(req, viaUnix, server);
     if (this.socketPath) {
       mkdirSync(dirname(this.socketPath), { recursive: true, mode: 0o700 });
       if (existsSync(this.socketPath)) {
@@ -194,7 +199,7 @@ export class Daemon {
 
   // ---------- HTTP 路由 ----------
 
-  private async route(req: Request, viaUnix: boolean): Promise<Response> {
+  private async route(req: Request, viaUnix: boolean, server?: { timeout(r: Request, s: number): void }): Promise<Response> {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "x-sv-protocol": String(PROTOCOL), "x-sv-daemon-version": DAEMON_VERSION } });
     let harness: HookHarness | "claude" = "claude"; // 出错时记到哪个适配器的健康度上（请求体里带了 harness 就用它）
     try {
@@ -205,8 +210,10 @@ export class Daemon {
       if (req.method === "GET" && url.pathname === "/v1/hello") return json(200, { protocol: PROTOCOL, version: DAEMON_VERSION, mode: this.cfg.mode, startedAt: this.startedAt });
       if (req.method === "GET" && url.pathname === "/v1/status") return json(200, this.status());
       // 前端的只读查询（不在 hook 路径上；出错只是这一次查询 500，被 catch 住）
+      if (req.method === "GET" && url.pathname === "/v1/stream") return this.openStream(req, url, viaUnix, server);
       try {
         const q = handleQuery(this.store.db, req.method, url) ?? handleCompare(this.store.db, req.method, url);
+        if (q?.contentType) return new Response(String(q.body), { status: q.status, headers: { "content-type": q.contentType, "x-sv-protocol": String(PROTOCOL) } });
         if (q) return json(q.status, q.body);
       } catch (err) {
         // 查询失败只影响这一次查询：不算适配器故障，也不动 hook 路径
@@ -228,6 +235,37 @@ export class Daemon {
       // fail-open：内部错误不能让 agent 被卡住；返回 200 + 空决定，同时记一条适配器健康异常
       this.safeHealth(harness as string, false, `daemon_error: ${String((err as Error)?.message ?? err)}`);
       return json(200, { ok: false, protocol: PROTOCOL, delivery: null, hookPoint: null, mode: this.cfg.mode, error: "internal" } satisfies HookResponse);
+    }
+  }
+
+  /** 推送：只带轻量字段（不含命令/输出正文）；publish 永不抛异常。 */
+  private publishRecord(rt: Runtime, rec: StepRecord): void {
+    const e = rec.event;
+    this.stream.publish("event", { sessionId: rt.sessionId, harness: rt.harness, runId: this.runId, seq: e.seq, phase: e.phase, tool: e.tool?.name, status: e.result?.status, model: e.model });
+    for (const h of rec.hits) this.stream.publish("hit", { sessionId: rt.sessionId, runId: this.runId, seq: h.seq, ruleId: h.ruleId, sev: h.sev, category: h.category, dangerous: !!h.x2 });
+    this.publishDecisions(rt, rec.decisions);
+  }
+
+  private publishDecisions(rt: Runtime, ds: Decision[]): void {
+    for (const d of ds) this.stream.publish("decision", { sessionId: rt.sessionId, runId: this.runId, seq: d.hit.seq, ruleId: d.hit.ruleId, action: d.action, applied: d.applied, outcome: d.outcome ?? outcomeOf(d) ?? null, dangerous: !!d.hit.x2 });
+  }
+
+  /** GET /v1/stream：HTTP 默认 SSE，UDS 默认 NDJSON（?format=sse|ndjson 可覆盖）。只读；出错不影响 hook 路径。 */
+  private openStream(req: Request, url: URL, viaUnix: boolean, server?: { timeout(r: Request, s: number): void }): Response {
+    try {
+      server?.timeout(req, 0); // 长连接：不要被 Bun 的空闲超时（默认 10 秒）掐掉
+      const fmt = url.searchParams.get("format");
+      const format: StreamFormat = fmt === "sse" || fmt === "ndjson" ? fmt : viaUnix ? "ndjson" : "sse";
+      const csvSet = (k: string) => {
+        const v = url.searchParams.get(k);
+        return v ? new Set(v.split(",").filter(Boolean)) : undefined;
+      };
+      const types = csvSet("types");
+      if (types) for (const t of types) if (!["session", "event", "hit", "decision", "delivery", "status", "heartbeat", "reset"].includes(t)) return new Response(JSON.stringify({ error: { code: "bad_request", message: `未知的消息类型 ${t}`, retryable: false } }), { status: 400, headers: { "content-type": "application/json" } });
+      const since = url.searchParams.get("since") ?? req.headers.get("last-event-id") ?? undefined;
+      return this.stream.open({ since, format, filter: { sessions: csvSet("sessions"), types: types as Set<StreamType> | undefined }, first: () => ({ mode: this.cfg.mode, runId: this.runId, sessions: this.sessions.size }), signal: req.signal });
+    } catch (err) {
+      return new Response(JSON.stringify({ error: { code: "stream_failed", message: String((err as Error)?.message ?? err).slice(0, 200), retryable: true } }), { status: 500, headers: { "content-type": "application/json" } });
     }
   }
 
@@ -299,6 +337,7 @@ export class Daemon {
     if (cwd) engine.tracker.cwd = cwd;
     rt = { harness, sessionId, engine, sink, seq: 0, chain: Promise.resolve(), lastActive: this.now(), ids, planChecked: false };
     this.sessions.set(key, rt);
+    this.stream.publish("session", { sessionId, harness, runId: this.runId, model: rt.model });
     return rt;
   }
 
@@ -359,6 +398,7 @@ export class Daemon {
       await this.attachFingerprint(rt, e);
       const rec = await rt.engine.feed(e, { deferJudge: true });
       records.push(rec);
+      this.publishRecord(rt, rec);
       // OpenCode：tool.before 只收事件，拦截决定一律进 outbox，等同一次调用的 permission.evaluate 来领（deny 只能在 evaluate 上给）
       direct = direct ?? (rt.harness === "opencode" ? null : this.fromDecisions(rt, rec, norm.stopHookActive));
       this.queueApplied(rt, rec, rec.decisions, direct, norm.stopHookActive);
@@ -449,6 +489,7 @@ export class Daemon {
     const p = rt.engine
       .runDeferred(rec)
       .then((late) => {
+        this.publishDecisions(rt, late);
         this.queueApplied(rt, rec, late, null, false);
       })
       .catch((err) => {
@@ -479,6 +520,7 @@ export class Daemon {
       const emitted = truncate(row.text);
       const delivery: Delivery = { kind, text: emitted, ruleId: row.rule_id ?? undefined, deliveryId: row.delivery_id, createdAtSeq: row.created_seq ?? undefined };
       this.outbox.markDelivered(row.id, this.claimer, hookPoint);
+      this.stream.publish("delivery", { sessionId: rt.sessionId, deliveryId: row.delivery_id, kind, ruleId: row.rule_id ?? undefined, hookPoint });
       if (row.decision_id) this.store.markDeliverySentByDecision(row.decision_id, hookPoint, this.now());
       saveInjection(this.store, rt.sessionId, emitted, this.now());
       rt.engine.tracker.registry.register(emitted);
@@ -492,6 +534,7 @@ export class Daemon {
     // 来自 outbox 的已经在 fromOutbox 里确认过；这里处理 fromDecisions 的直接送出
     const row = this.store.db.query("SELECT id FROM outbox WHERE delivery_id = ?").get(d.deliveryId ?? "") as { id: number } | null;
     if (row) return;
+    this.stream.publish("delivery", { sessionId: rt.sessionId, deliveryId: d.deliveryId, kind: d.kind, ruleId: d.ruleId, hookPoint });
     saveInjection(this.store, rt.sessionId, d.text, this.now()); // d.text 已经是截断后的输出文本（toDelivery）
     rt.engine.tracker.registry.register(d.text);
     const decId = Number(String(d.deliveryId ?? "").split("-").pop());
@@ -525,6 +568,7 @@ export class Daemon {
     if (this.stopped) return;
     this.stopped = true;
     if (this.evictTimer) clearInterval(this.evictTimer);
+    this.stream.close();
     for (const s of this.servers) await s.stop(true);
     // 给后台 judge 一点时间收尾，然后关闭每个会话的引擎（结算遵从观察窗口）并结束 run
     await Promise.race([Promise.allSettled([...this.pendingDeferred]), new Promise((r) => setTimeout(r, 2000))]);

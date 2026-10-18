@@ -144,3 +144,11 @@
 - 测试 `packages/daemon/test/query-api.test.ts`（7 个）：对着真实 daemon 日志查询；shadow 下危险是 would_have_blocked 而非 blocked；参数校验；故意破坏表证明 500 不计入 adapter_health 且恢复后正常；HTTP 无 token 401。
 - **测试结果**：`bun test` 927 通过 / 0 失败（36 个文件），`tsc --noEmit` 无错误。
 - **没做**：见 #79 的清单（timeline/hits 列表需要新查询，是下一步；`/v1/stream`、写入类、schema）。
+
+## 前端只读查询 API 第二批（完成）
+- 新查询 `core/store/queries-ui.ts`（`sessionTimeline / sessionEvents / listHits / sessionChildren / sessionRun`）+ 测试 `core/test/queries-ui.test.ts`（10 个：合并/pending/分页/过滤/标注/危险 outcome）。
+- 端点（`daemon/src/query-api.ts`）：`/v1/sessions/{id}/timeline|events|children`、`/v1/hits`（游标分页+过滤）、各 `.csv` 导出（公式注入防护）、`/v1/schema/{name}`（`daemon/src/schemas.ts`）；测试 `query-api2.test.ts`（真实响应按 Schema 校验）。
+- `GET /v1/stream`（`daemon/src/stream.ts`）：NDJSON/SSE、过滤、游标续传、reset、心跳、慢订阅者断开；daemon 在 hook 处理处 publish（session/event/hit/decision/delivery，轻量字段）。测试 `stream.test.ts`（12 个，含 publish 内部损坏时 hook 仍 200）。
+- 决定见 decisions #80–87；写入类接口只出了设计（#87），没有实现。
+- **测试结果**：`bun test` 957 通过 / 0 失败（39 个文件）；`tsc --noEmit` 无错误。不联网，不读 `~/.codex`、`~/.claude`、`.env`。
+- **没做**：见 #86（incidents、judge-calls 明细、rules/config/replays/eval/overrides、children 实际数据）、Schema 的 Go 生成与黄金样例。
