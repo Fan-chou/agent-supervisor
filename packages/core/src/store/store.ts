@@ -34,9 +34,18 @@ export class LogStore {
     const p = path === ":memory:" ? path : resolve(expandHome(path));
     if (p !== ":memory:") mkdirSync(dirname(p), { recursive: true });
     this.db = new Database(p, { create: true });
-    this.db.run("PRAGMA journal_mode = WAL");
-    this.db.run("PRAGMA synchronous = NORMAL");
+    // busy_timeout 必须最先设：多个进程同时打开同一个库时，切 WAL 模式本身就可能遇到 SQLITE_BUSY（BUSY_RECOVERY）
     this.db.run("PRAGMA busy_timeout = 3000");
+    for (let i = 0; ; i++) {
+      try {
+        this.db.run("PRAGMA journal_mode = WAL");
+        break;
+      } catch (err) {
+        if (i >= 8 || !/locked|busy/i.test(String((err as Error)?.message ?? err))) throw err;
+        Bun.sleepSync(25 * (i + 1));
+      }
+    }
+    this.db.run("PRAGMA synchronous = NORMAL");
     this.jsonlDir = opts.jsonlDir ? resolve(expandHome(opts.jsonlDir)) : null;
     this.storeEventBodies = opts.storeEventBodies ?? true;
     this.storeJudgeBodies = opts.storeJudgeBodies ?? true;

@@ -444,7 +444,7 @@ agent-supervisor/
 
 ## 16. 待定问题
 1. ~~计划来源规则（§4.2）~~：Jack 已于 2026-10-18 确认默认自动提取。
-2. Codex：钩子能不能收到 `update_plan`？rollout 里 function_call_output 的写入延迟有多大？
+2. Codex：钩子能不能收到 `update_plan`？rollout 里 function_call_output 的写入延迟有多大？**【M4 后仍未决，需要真机】** 适配器已支持 update_plan（若收到）；用 `SV_HOOK_DUMP=1` 跑一次 Codex 会话即可回答前者；后者要读 `~/.codex/sessions`，需 Jack 授权（decisions #60）。
 3. OpenCode V2：synthetic 的 `resume` 和 `id` 语义；`execute.before` 普通 throw 的效果；context hook 里同一条建议注入几次合适；本地存储格式。
 4. 路由组里各个模型的 JSON 解析失败率。sync 路由到快模型是否足够准？
 5. 拦截门槛 confidence 0.8 要用回放校准。
