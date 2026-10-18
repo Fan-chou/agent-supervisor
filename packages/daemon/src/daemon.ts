@@ -63,6 +63,8 @@ interface Runtime {
   ids: WeakMap<Decision, { decisionId: number; deliveryRowId?: number }>;
   planStamp?: unknown;
   planChecked: boolean;
+  /** OpenCode：最近一次 tool.before 的 callID（拦截决定要绑定到它，见 Precondition.callId）。 */
+  lastPreId?: string;
 }
 
 const DIRECT_AT_PRE: OutboxKind[] = ["block", "ask", "advise"];
@@ -344,6 +346,7 @@ export class Daemon {
     let direct: Delivery | null = null;
     const records: StepRecord[] = [];
     for (const e of norm.events) {
+      if (rt.harness === "opencode" && e.phase === "pre") rt.lastPreId = e.toolUseId ?? "";
       await this.attachFingerprint(rt, e);
       const rec = await rt.engine.feed(e, { deferJudge: true });
       records.push(rec);
@@ -413,6 +416,8 @@ export class Daemon {
       const pre: Precondition = { maxSteps: 10, createdStep: tr.steps.length };
       if ((d.hit.ruleId === "L1" || d.hit.ruleId === "L3") && lastFail?.errFp) pre.errFp = lastFail.errFp;
       if (["L1", "L2", "T1", "T6"].includes(d.hit.ruleId) && real(tr.lastWs)) pre.ws = tr.lastWs;
+      // OpenCode：pre 阶段产生的 block/ask 绑定到这次调用（evaluate 不带 callID）；之后调用已结束或已有新的调用就作废（宁可漏拦，不误拦）
+      if (rt.harness === "opencode" && rec.event.phase === "pre" && (d.action === "block" || d.action === "ask")) pre.callId = rec.event.toolUseId ?? "";
       const kind: OutboxKind = d.action === "stop_continue" ? "stop_continue" : d.action === "ask" ? "ask" : d.action === "block" ? "block" : "advise";
       this.outbox.enqueue({
         sessionId: rt.sessionId,
@@ -454,7 +459,7 @@ export class Daemon {
     for (let i = 0; i < 5; i++) {
       const row = this.outbox.claim({ sessionId: rt.sessionId, claimer: this.claimer, leaseMs: 30_000, kinds: KINDS_AT[hookPoint] });
       if (!row) return null;
-      const why = checkPrecondition(row.precondition_json ? (JSON.parse(row.precondition_json) as Precondition) : null, { steps: tr.steps.length, lastErrFp: lastStep?.status === "fail" ? lastStep.errFp : lastFail && lastFail === lastStep ? lastFail.errFp : undefined, lastWs: tr.lastWs });
+      const why = checkPrecondition(row.precondition_json ? (JSON.parse(row.precondition_json) as Precondition) : null, { steps: tr.steps.length, lastErrFp: lastStep?.status === "fail" ? lastStep.errFp : lastFail && lastFail === lastStep ? lastFail.errFp : undefined, lastWs: tr.lastWs, openCallId: rt.lastPreId && tr.pending.has(rt.lastPreId) ? rt.lastPreId : undefined });
       if (why) {
         this.outbox.markStale(row.id, this.claimer, why);
         if (row.decision_id) this.store.markDeliveryDropped(row.decision_id, `stale: ${why}`);

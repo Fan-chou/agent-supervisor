@@ -39,12 +39,17 @@ export interface Precondition {
   /** 入队后最多再过多少步（调用）仍然有效。 */
   maxSteps?: number;
   createdStep?: number;
+  /** 绑定到产生这条消息的那次调用（OpenCode：拦截只能在 permission.evaluate 上领取，evaluate 本身不带 callID）。
+   *  只有该调用仍是「最近一次、还没结束的 pre」时才有效；空串 = 无法绑定，一律失效（fail-open）。 */
+  callId?: string;
 }
 
 export interface PreconditionView {
   steps: number;
   lastErrFp?: string;
   lastWs?: string;
+  /** 最近一次 pre 的 toolUseId，且它还没有 post（还在进行中）；否则 undefined。 */
+  openCallId?: string;
 }
 
 /** 返回 null 表示条件成立；否则返回失效原因。 */
@@ -52,6 +57,7 @@ export function checkPrecondition(pre: Precondition | null | undefined, v: Preco
   if (!pre) return null;
   if (pre.errFp !== undefined && v.lastErrFp !== pre.errFp) return "最近一次结果的错误指纹已变化";
   if (pre.ws !== undefined && v.lastWs !== pre.ws) return "工作区指纹已变化";
+  if (pre.callId !== undefined && (pre.callId === "" || v.openCallId !== pre.callId)) return "产生拦截的那次调用已结束，或已有新的调用";
   if (pre.maxSteps !== undefined && pre.createdStep !== undefined && v.steps - pre.createdStep > pre.maxSteps) return "超过有效步数";
   return null;
 }

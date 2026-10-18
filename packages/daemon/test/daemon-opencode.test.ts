@@ -94,6 +94,37 @@ describe("harness=opencode", () => {
     expect(r.evaluate.delivery).toMatchObject({ kind: "block", ruleId: "X2" });
     expect((await post(d, evaluate(cwd))).delivery).toBeNull();
   });
+  test("拦截绑定到产生它的那次调用：before(N) 没有 evaluate → after(N) → before(N+1) → evaluate 不会误拦 N+1（该行记为 stale）", async () => {
+    const { d } = await boot({ mode: "enforce" });
+    const cwd = gitRepo();
+    const reset = { command: "git reset --hard HEAD~1" };
+    await post(d, before(cwd, "bash", reset, "N")); // X2 决定入 outbox；这次调用没有触发 evaluate（无权限闸门/配置放行）
+    await post(d, after(cwd, "bash", reset, "N"));
+    await post(d, before(cwd, "bash", { command: "ls" }, "N1"));
+    const r = await post(d, evaluate(cwd));
+    expect(r.delivery).toBeNull();
+    const row = d.store.db.query("SELECT state, stale_reason FROM outbox").get() as { state: string; stale_reason: string };
+    expect(row.state).toBe("stale");
+    expect(row.stale_reason).toContain("已结束");
+  });
+  test("顺序相反（evaluate 先于 before）：before(N) → after(N) → evaluate(N+1) → before(N+1)：同样不误拦", async () => {
+    const { d } = await boot({ mode: "enforce" });
+    const cwd = gitRepo();
+    const reset = { command: "git reset --hard HEAD~1" };
+    await post(d, before(cwd, "bash", reset, "N"));
+    await post(d, after(cwd, "bash", reset, "N"));
+    expect((await post(d, evaluate(cwd))).delivery).toBeNull();
+    await post(d, before(cwd, "bash", { command: "ls" }, "N1"));
+    expect((await post(d, evaluate(cwd))).delivery).toBeNull();
+    expect(d.store.db.query("SELECT state FROM outbox").get()).toEqual({ state: "stale" });
+  });
+  test("pre 没有 callID → 无法绑定 → 拦截失效（fail-open），不会被任何 evaluate 领走", async () => {
+    const { d } = await boot({ mode: "enforce" });
+    const cwd = gitRepo();
+    await post(d, OC(cwd, { event: "tool.before", tool: "bash", args: { command: "git reset --hard HEAD~1" } }));
+    expect((await post(d, evaluate(cwd))).delivery).toBeNull();
+    expect(d.store.db.query("SELECT state FROM outbox").get()).toEqual({ state: "stale" });
+  });
   test("enforce：写 .env（edit 工具）也走 evaluate 的 block", async () => {
     const { d } = await boot({ mode: "enforce" });
     const cwd = gitRepo();

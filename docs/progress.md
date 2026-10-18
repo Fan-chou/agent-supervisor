@@ -118,7 +118,7 @@
 - Codex 真实载荷校准（tool_name 取值、tool_response 形态、cwd 字段、`turn_id`）、hooks 配置格式（timeout 单位、功能开关、`~` 展开）全部未在 0.163 上验证。
 - 长命令在钩子路径上无法回填退出码（#59）；Codex async 钩子输出（design §3.2「异步建议」）未用。
 - Stop reason 的措辞（design §3.2「用户口吻的事实陈述」）：**判定为基本满足**。本地预设 P3 文案是「最后一次编辑之后没有运行过相关测试、targeted 测试或构建。」——事实陈述，没有规则 ID、没有 supervisor 的元口吻；judge 提示要求 `message_to_agent` 是事实加一个具体的下一步、不含代码/命令/URL/系统式指令，输出后过滤再去掉标签/URL/代码块/shell 行并限 600 字符。保留的缺口：文案只做了人工审读，没有在真实 Codex 上看过模型对「reason 变成 user prompt」的反应；P3 预设只有观察、没有下一步。
-- M3 遗留不变：hook 不会自动拉起守护进程、改 mode 需重启、前端查询 API、OpenCode 适配器、asyncRewake、`parent_session_id`。
+- M3 遗留不变：hook 不会自动拉起守护进程、改 mode 需重启、前端查询 API、asyncRewake、`parent_session_id`。（OpenCode 适配器已在 M6 完成，见下文「M6」一节。）
 - M4 的「shadow 跑一周、零阻塞事故」需要 Jack 的机器与时间，不是代码问题。
 
 ## M6（代码部分）— OpenCode V2 适配器（完成；未在 OpenCode 2 上实测；shadow 观察不归我做）
@@ -136,4 +136,5 @@
 **需要 Jack 决定 / 真机才能回答**
 - OpenCode 2 的真实插件接口：`Plugin.define` 的导入路径与插件加载方式；hook 对象字段（`tool/args/callID/status/result`、`messages` 的形态、`sessionID`）；`execute.before` 与 `permission.evaluate` 的顺序；hook 处理函数能否是 async（插件按 async 写的，同步-only 的话 evaluate 的 deny 写不进去）。全部未实测，形态对不上时插件 fail-open。
 - OpenCode 是否需要本地 X2（#74）？
-- 在顺序核实之前 OpenCode 不要开 enforce（#70）。
+- 在顺序核实之前 OpenCode 不要开 enforce（#70/#78：拦截已绑定到调用，错序时是漏拦而非误拦，但漏拦率未知）。
+- **OpenCode 本地 X2（#74）是 enforce 的阻塞项**：X2 是唯一应当在守护进程故障时仍生效的规则，目前 OpenCode 上守护进程不可达就放行。单文件不是障碍（可用 bun build 把 `x2Check` 打进插件），真正的障碍是 evaluate 不带参数，要靠 tool.before 的参数。需要 Jack 决定是否做，以及真机确认顺序。
