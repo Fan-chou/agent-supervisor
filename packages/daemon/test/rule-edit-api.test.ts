@@ -75,12 +75,12 @@ describe("POST /v1/config/validate 与 /v1/config 的 sources", () => {
 });
 
 describe("PUT /v1/rules/{id}", () => {
-  test("改阈值：200，返回新的规则视图（符合 schema）、变更清单、appliesTo=new_sessions；GET /v1/rules 马上反映；写出 rules.local.json（0600）和审计行", async () => {
+  test("改阈值：200，返回新的规则视图（符合 schema）、变更清单、appliesTo=all_sessions；GET /v1/rules 马上反映；写出 rules.local.json（0600）和审计行", async () => {
     const { d, home } = await boot();
     const r = await put(d, "L2", { thresholds: { repeat: 6 } });
     expect(r.status).toBe(200);
     const j = (await r.json()) as any;
-    expect(j).toMatchObject({ ok: true, appliesTo: "new_sessions", rule: { id: "L2", edited: true, thresholds: { repeat: 6 } } });
+    expect(j).toMatchObject({ ok: true, appliesTo: "all_sessions", rule: { id: "L2", edited: true, thresholds: { repeat: 6 } } });
     expect(validate(schemaFor("Rule")!, j.rule)).toEqual([]);
     expect(j.changes).toEqual([{ what: "thresholds", from: { repeat: 4, window_steps: 12 }, to: { repeat: 6, window_steps: 12 } }]);
     expect((await ruleOf(d, "L2")).thresholds.repeat).toBe(6);
@@ -160,7 +160,7 @@ describe("PUT /v1/rules/{id}", () => {
     const { d: d3 } = await boot(home);
     expect((await ruleOf(d3, "L2")).thresholds.repeat).toBe(4);
   });
-  test("只对之后新建的会话生效：已有会话用旧阈值，新会话用新阈值", async () => {
+  test("立即作用于在跑的会话（decisions #114）：编辑前建好的会话，编辑后的下一步就按新阈值；已记的命中不变；停用/重置同样立即生效", async () => {
     const { d } = await boot();
     const seq = async (sid: string, n: number) => {
       const results: any[] = [];
@@ -176,11 +176,32 @@ describe("PUT /v1/rules/{id}", () => {
     await post(d, "new", { hook_event_name: "UserPromptSubmit", prompt: "go" }); // 编辑之后新建（L2 阈值 = 2）
     await seq("old", 3);
     await seq("new", 3);
-    expect(countL2("old")).toBe(0); // 旧会话仍按 4：3 次不触发
-    expect(countL2("new")).toBeGreaterThan(0); // 新会话按 2：触发
+    expect(countL2("old")).toBeGreaterThan(0); // 旧会话也按 2：3 次就触发（按旧阈值 4 不会）
+    expect(countL2("new")).toBeGreaterThan(0);
     // 每条命中记录当时用的阈值（日志里的事实来源）
-    const th = d.store.db.query("SELECT threshold_json FROM hits WHERE rule_id = 'L2' AND session_id = 'new' LIMIT 1").get() as { threshold_json: string };
+    const th = d.store.db.query("SELECT threshold_json FROM hits WHERE rule_id = 'L2' AND session_id = 'old' LIMIT 1").get() as { threshold_json: string };
     expect(JSON.parse(th.threshold_json)).toMatchObject({ repeat: 2 });
+    // 停用立即生效：在跑的会话不再产生 L2 命中
+    expect((await put(d, "L2", { disabled: true })).status).toBe(200);
+    const before = countL2("old");
+    await seq("old", 3);
+    expect(countL2("old")).toBe(before);
+  });
+  test("命令行改文件也立即作用于在跑的会话（下一次 hook 就重读）；opencode 观察模式降级的 advise 不会被编辑冲掉", async () => {
+    const { d, home } = await boot(undefined, { mode: "enforce" });
+    await post(d, "run-1", { hook_event_name: "UserPromptSubmit", prompt: "go" });
+    await fetch("http://localhost/v1/hook", { unix: d.socketPath!, method: "POST", body: JSON.stringify({ harness: "opencode", payload: { event: "prompt", sessionID: "oc-1", userMessage: { id: "m", text: "hi" } } }) });
+    const modes = () => Object.fromEntries([...(d as any).sessions.entries()].map(([k, rt]: [string, any]) => [k, rt.engine.cfg.mode]));
+    expect(modes()).toEqual({ "claude:run-1": "enforce", "opencode:oc-1": "advise" });
+    saveRuleEdits(join(home, "rules.local.json"), { L3: { set: { "thresholds.L3_repeat": 9 } } });
+    await post(d, "run-1", { hook_event_name: "UserPromptSubmit", prompt: "again" }); // 已存在的会话：这次 hook 触发重读
+    const e = (d as any).sessions.get("claude:run-1").engine;
+    expect(e.cfg.thresholds.L3_repeat).toBe(9);
+    expect((d as any).sessions.get("opencode:oc-1").engine.cfg.thresholds.L3_repeat).toBe(9);
+    expect(modes()).toEqual({ "claude:run-1": "enforce", "opencode:oc-1": "advise" });
+    expect((await put(d, "L2", { thresholds: { repeat: 6 } })).status).toBe(200);
+    expect(modes()).toEqual({ "claude:run-1": "enforce", "opencode:oc-1": "advise" });
+    expect(e.cfg.thresholds.L2_repeat).toBe(6);
   });
   test("命令行（sv rules）改了 rules.local.json：守护进程在下一个新会话前重新读取，不用重启；API 编辑不会覆盖掉它", async () => {
     const { d, home } = await boot();

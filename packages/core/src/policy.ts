@@ -111,10 +111,15 @@ export class Policy {
   readonly judgeLog: { ruleId: string; result: JudgeResult["kind"]; model?: string; verdict?: string; sync?: boolean }[] = [];
 
   constructor(
-    private readonly cfg: Config,
+    private cfg: Config,
     private readonly s: SessionTracker,
     private readonly opts: PolicyOptions = {},
   ) {}
+
+  /** 换配置（规则编辑立即作用于在跑的会话，decisions #114）。冷却/预算计数等会话状态保持不变，只有之后读到的阈值变。 */
+  setCfg(cfg: Config): void {
+    this.cfg = cfg;
+  }
 
   private deferring = false;
   private deferredM: Hit[] = [];

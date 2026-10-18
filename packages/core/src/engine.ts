@@ -28,7 +28,7 @@ export interface StepRecord {
 }
 
 export class Engine {
-  readonly cfg: Config;
+  cfg: Config;
   readonly tracker: SessionTracker;
   readonly policy: Policy;
   readonly records: StepRecord[] = [];
@@ -54,6 +54,12 @@ export class Engine {
       : undefined;
     this.detectors = opts.detectors ?? ALL_DETECTORS;
     if (opts.planMd) this.tracker.setFilePlan(parsePlanMd(opts.planMd));
+  }
+
+  /** 换配置：检测器和 policy 之后读到新阈值；会话状态（tracker、计数、冷却）不动。只用于规则编辑（thresholds/rules），不用于换 mode 以外的结构。 */
+  setCfg(cfg: Config): void {
+    this.cfg = cfg;
+    this.policy.setCfg(cfg);
   }
 
   get plan(): Plan | null {

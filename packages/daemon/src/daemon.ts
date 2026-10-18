@@ -86,7 +86,7 @@ const KINDS_AT: Record<string, OutboxKind[]> = {
 };
 
 export class Daemon {
-  /** 生效配置 = 启动配置 + 规则覆盖（rules.local.json）。只有新建的会话会用到变化后的值。 */
+  /** 生效配置 = 启动配置 + 规则覆盖（rules.local.json）。变化后立即作用于在跑的会话（#114）。 */
   get cfg(): Config {
     return this._cfg;
   }
@@ -310,7 +310,7 @@ export class Daemon {
     }
   }
 
-  /** rules.local.json 被别的进程（sv rules）改过就重新读；损坏的文件忽略（保持内存里的配置）。只影响之后新建的会话。永不抛异常。 */
+  /** rules.local.json 被别的进程（sv rules）改过就重新读；损坏的文件忽略（保持内存里的配置）。永不抛异常。 */
   private refreshRuleEdits(): void {
     try {
       const stamp = this.stampOf();
@@ -320,13 +320,25 @@ export class Daemon {
       if (loaded.warning) return console.error(`[sv] ${loaded.warning}`);
       this.ruleEdits = loaded.edits;
       this._cfg = applyRuleEdits(this.baseCfg, this.ruleEdits);
+      this.pushCfgToSessions();
     } catch {
       /* 读不到就保持现状 */
     }
   }
 
+  /** 规则覆盖变了：立即作用于所有在跑的会话（decisions #114，Jack 00:26 的决定）。每个会话保持它自己的 mode（opencode 观察模式降级的 advise 不能被冲掉）；永不抛异常。 */
+  private pushCfgToSessions(): void {
+    for (const rt of this.sessions.values()) {
+      try {
+        rt.engine.setCfg({ ...this._cfg, mode: rt.engine.cfg.mode });
+      } catch {
+        /* 单个会话换配置失败不影响别的 */
+      }
+    }
+  }
+
   /**
-   * 规则编辑（整个守护进程唯一的写接口，decisions #101）：串行化 → 校验 → 原子写 rules.local.json → 换配置（只影响之后新建的会话）→ 审计。
+   * 规则编辑（整个守护进程唯一的写接口，decisions #101）：串行化 → 校验 → 原子写 rules.local.json → 换配置（立即作用于在跑的会话）→ 审计。
    * 写文件失败时内存配置不变。不在 hook 路径上。
    */
   editRule(id: string, body: unknown, who: { actor: string; via: string }): Promise<{ status: number; body: unknown }> {
@@ -347,13 +359,14 @@ export class Daemon {
     this.ruleEdits = r.edits;
     this.editsStamp = this.stampOf();
     this._cfg = r.cfg;
+    this.pushCfgToSessions();
     try {
       appendFileSync(join(this.home, "rules-edits.jsonl"), JSON.stringify({ ts: this.now(), actor: who.actor, via: who.via, rule: id, request: body, changes: r.changes }) + "\n", { mode: 0o600 });
     } catch {
       /* 审计行写不进去不影响已经生效的编辑（文件本身是事实来源） */
     }
     const view = ruleViews(this.cfg, new Set(Object.keys(this.ruleEdits))).find((v) => v.id === id);
-    return { status: 200, body: { ok: true, rule: view, changes: r.changes, appliesTo: "new_sessions" } };
+    return { status: 200, body: { ok: true, rule: view, changes: r.changes, appliesTo: "all_sessions" } };
   }
 
   /** 推送：只带轻量字段（不含命令/输出正文）；publish 永不抛异常。 */
@@ -444,9 +457,9 @@ export class Daemon {
   private runtime(harness: HookHarness, sessionId: string, cwd?: string): Runtime {
     // 内存里的运行时按 (harness, sessionId) 分开；持久化表（sessions/outbox/injections/plans）仍只按 session_id，依赖 session id 是 UUID
     const key = `${harness}:${sessionId}`;
+    this.refreshRuleEdits(); // 每次 hook 看一眼 rules.local.json 有没有被命令行改过（一次 stat）；变了就立即作用于在跑的会话
     let rt = this.sessions.get(key);
     if (rt) return rt;
-    this.refreshRuleEdits(); // 新会话开始前看一眼 rules.local.json 有没有被命令行改过
     const ids = new WeakMap<Decision, { decisionId: number; deliveryRowId?: number }>();
     const sink = new StoreSink(this.store, { runId: this.runId, deferredDelivery: true, onDecisionLogged: (d, i) => ids.set(d, i) });
     // OpenCode 在真机核对通过前只观察、不拦截（decisions #89）：全局 mode=enforce 时，opencode 会话按 advise 处理——block/ask 记为 would_have_*，不进 outbox；opencodeEnforce 是核对通过后的显式开关

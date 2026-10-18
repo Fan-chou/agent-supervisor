@@ -1,5 +1,5 @@
 // `sv rules show|set|reset`：规则编辑的命令行入口（decisions #101）。和 PUT /v1/rules/{id} 用同一套校验（validateRuleEdit）、同一个文件（<home>/rules.local.json）。
-// 守护进程在**下一次新建会话**时发现文件变了就重新读取（不用重启）；已在跑的会话不变。
+// 守护进程在**下一次 hook**时发现文件变了就重新读取（不用重启），立即作用于在跑的会话（decisions #114）。
 import { join } from "node:path";
 import { applyRuleEdits, expandHome, loadRuleEdits, ruleViews, saveRuleEdits, validateRuleEdit, type Config } from "@sv/core";
 import type { Flags } from "./stats.ts";
@@ -62,5 +62,5 @@ export function runRules(pos: string[], flags: Flags, base: Config): RulesResult
     return { code: 1, lines: [`写 ${file} 失败：${String((err as Error)?.message ?? err).slice(0, 120)}（未改变）`] };
   }
   const ch = r.changes.length ? r.changes.map((c) => `  ${c.what}: ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`) : ["  （没有变化）"];
-  return { code: 0, lines: [...warn, `已写入 ${file}：`, ...ch, "守护进程会在下一次新建会话时读取；已在跑的会话不变。"] };
+  return { code: 0, lines: [...warn, `已写入 ${file}：`, ...ch, "守护进程会在下一次 hook 时读取，立即作用于在跑的会话。"] };
 }
