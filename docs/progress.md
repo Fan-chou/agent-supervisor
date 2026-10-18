@@ -193,3 +193,14 @@
 
 **还剩什么（不依赖 Jack）**：Go 侧结构体生成和对应测试（MyGo 项目）；`Tool.Error` 拒绝通道（等类型补齐再评估）；interrupt 事件订阅（等 `@opencode/client` 的事件模型）；hook 自动拉起守护进程、mode 热加载（一直按判断不做）。
 **等 Jack**：①真机核对：把 `@opencode/schema`/`@opencode/ai`/`@opencode/client`（同为 2.0.32）的 `.d.ts` 拷到 `docs/vendor/`，可以不用真机就定下大部分标 ? 的项；②插件放哪、怎么登记到 OpenCode（我不碰 `~/.config/opencode`），然后一起按清单 §3 跑（含探针）；③规则编辑是否立即作用于在跑会话（现在只新会话）；④P1 是否也 protected（现在只有 X2）。
+
+## run12：类型补齐核对 + 规则编辑立即生效 + 真机测试项目（完成；真机验证未做）
+**决定**（decisions #112–116）：Jack 00:24 补齐了 `@opencode/schema|ai|client` 2.0.32 的类型（已提交到 `docs/vendor/`）；00:26 对 #108 的回答：①真机核对用专门测试项目、只项目级配置、绝不碰全局配置、跑之前先列步骤；②规则编辑改成立即作用于在跑的会话；③P1 不设 protected（只有 X2 锁定）。
+
+**1. 类型核对第二轮（#115，`docs/opencode-verify.md` 重写）**：`Permission.Effect="allow"|"deny"|"ask"` ✓；`SystemPart={type:"text",text,…}` ✓ → `injectSystem` 改为追加干净部件（空数组也能注入，不复制 cache 提示）；`Location.Info.directory`、`Model.Ref`、`session.prompt` 入参（平铺 `{sessionID,text,delivery:"steer"|"queue"}`）✓；**中断**：`session.execution.interrupted`（data.reason）经 `context.event.subscribe` 拿到 → 插件订阅，只有 `reason=user` 才上报 `event=interrupt`，清理时 abort，失败 fail-open；「一轮结束」= `session.execution.succeeded|failed|interrupted`（stop.ts 仍未接线）。`Tool.Error` 是运行时类，不 import 运行时包就用不了，暂不用。**仍只能真机**：触发顺序、是否每次调用都有 evaluate、工具名/参数形态、Esc 是否产生 reason=user、`opencode.json` 文件名/`plugins` 登记是否生效、`Tool.Error` throw 是否被当成拒绝、排队 prompt 语义。
+**2. 规则编辑立即生效（#114）**：`Engine.setCfg`/`Policy.setCfg`；`PUT /v1/rules/{id}` 成功后和每次 hook 发现 `rules.local.json` 变了（`sv rules` 写的，一次 stat）都把新配置推给所有在跑的会话；会话保留自己的 mode（opencode 观察模式降级不被冲掉）；`appliesTo:"all_sessions"`；design §19 / frontend-design / `sv rules` 提示同步。会话中途阈值会跳变（Jack 已知情），命中的 `threshold_json` 记当时的值。
+**3. 真机测试项目（#116）**：`sv opencode-probe-project <目录> [--apply]`，默认 dry-run 只打印计划；`--apply` 创建 `opencode.json` + `.opencode/plugins/agent-supervisor.ts` + 4 个脚本（start-daemon / run-observe / run-probe / report）+ `git init`；数据目录 `<项目>/.sv-home`；脚本 `unset SV_OPENCODE_ENFORCE`；目录检查拒绝 `~/.config` 等。**我没有 `--apply` 过，也没有启动 OpenCode 或守护进程**；步骤见 opencode-verify.md §3，等 Jack 同意。
+**测试结果**：`bun test` 1082 通过 / 0 失败；`tsc --noEmit` 无错误。不联网，不读 `~/.codex`、`~/.claude`、`.env`、`~/.config/opencode`，没碰 session ab4727f2。
+
+**还剩什么（不依赖 Jack）**：Go 侧结构体生成和黄金样例测试（MyGo 项目，不在本仓库）；`Tool.Error` 拒绝通道与收尾续跑接线（都要真机证据后再做）；hook 自动拉起守护进程、mode 热加载（一直按判断不做）。本阶段不依赖 Jack 的实质工作基本做完。
+**等 Jack**：①同意后按 opencode-verify.md §3 跑真机：先 `sv opencode-probe-project <目录>` 看计划，同意再 `--apply`，然后一起跑（含探针）；②测试项目放哪个目录（建议仓库外，例如 `~/Documents/dev/opencode-sv-probe`）；③Claude hook 真实载荷校准与 30 个会话标注（需要 Jack 的数据，见前文）。
