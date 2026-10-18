@@ -1,13 +1,13 @@
 // supervisord：常驻守护进程。接收 hook 事件 → 规整成 Event → Engine.feed → LogSink 一个事务写入；
 // 把要送给 agent 的消息放进 outbox，在合适的注入点原子领取并送出（design §1、§3.4）。
 // 约束：任何内部错误都 fail-open（返回空决定，不阻断 agent）；mode=shadow 时永不产生会生效的拦截（含 X2，只记 would_have_*）。
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   Engine, LogStore, Outbox, StoreSink, beginRun, truncate, checkPrecondition, computeWsFingerprint, createJudgeClient, expandHome, loadInjectionHashes, loadPlan, parsePlanMd, saveInjection, savePlan, wsToString,
-  outcomeOf, type Config, type Decision, type Delivery, type JudgeFn, type OutboxKind, type Precondition, type StepRecord, type JudgeClient,
+  outcomeOf, applyRuleEdits, loadRuleEdits, ruleViews, saveRuleEdits, validateRuleEdit, type Config, type RuleEdits, type Decision, type Delivery, type JudgeFn, type OutboxKind, type Precondition, type StepRecord, type JudgeClient,
 } from "@sv/core";
 import { normalizeClaudeHook, type ClaudeHookPayload } from "../../adapter-claude/src/index.ts";
 import { handleCompare, handleQuery } from "./query-api.ts";
@@ -86,7 +86,14 @@ const KINDS_AT: Record<string, OutboxKind[]> = {
 };
 
 export class Daemon {
-  readonly cfg: Config;
+  /** 生效配置 = 启动配置 + 规则覆盖（rules.local.json）。只有新建的会话会用到变化后的值。 */
+  get cfg(): Config {
+    return this._cfg;
+  }
+  private _cfg: Config;
+  private readonly baseCfg: Config;
+  private ruleEdits: RuleEdits = {};
+  private editChain: Promise<unknown> = Promise.resolve();
   readonly home: string;
   readonly store: LogStore;
   readonly outbox: Outbox;
@@ -108,7 +115,8 @@ export class Daemon {
   private readonly claimer = `daemon-${process.pid}`;
 
   private constructor(private readonly opts: DaemonOptions) {
-    this.cfg = opts.cfg;
+    this.baseCfg = opts.cfg;
+    this._cfg = opts.cfg;
     this.now = opts.now ?? Date.now;
     this.home = expandHome(opts.home ?? "~/.agent-supervisor");
     mkdirSync(this.home, { recursive: true, mode: 0o700 });
@@ -117,6 +125,11 @@ export class Daemon {
     } catch {
       /* 不是我们创建的目录就不强行改 */
     }
+    // 规则覆盖（前端唯一的写路径产生的文件）：叠在启动配置之上；文件损坏就忽略，用启动配置
+    const loaded = loadRuleEdits(join(this.home, "rules.local.json"));
+    if (loaded.warning) console.error(`[sv] ${loaded.warning}`);
+    this.ruleEdits = loaded.edits;
+    this._cfg = applyRuleEdits(this.baseCfg, this.ruleEdits);
     this.store = new LogStore(opts.dbPath ?? (opts.home ? join(this.home, "state.db") : this.cfg.log.db), { jsonlDir: this.cfg.log.jsonl_dir, storeEventBodies: this.cfg.log.store_event_bodies, storeJudgeBodies: this.cfg.log.store_judge_bodies, now: this.now });
     this.outbox = new Outbox(this.store, this.now);
     this.startedAt = this.now();
@@ -213,8 +226,31 @@ export class Daemon {
       if (req.method === "GET" && url.pathname === "/v1/status") return json(200, this.status());
       // 前端的只读查询（不在 hook 路径上；出错只是这一次查询 500，被 catch 住）
       if (req.method === "GET" && url.pathname === "/v1/stream") return this.openStream(req, url, viaUnix, server);
+      const ruleMatch = /^\/v1\/rules\/([A-Za-z0-9]+)$/.exec(url.pathname);
+      if (req.method === "PUT" && ruleMatch) {
+        // 唯一的写接口：除了 UDS/token 鉴权，还要求 JSON 内容类型，并拒绝带 Origin 的请求（浏览器跨站请求一定带 Origin）
+        const bad = (status: number, code: string, message: string) => json(status, { error: { code, message, retryable: false } });
+        if (req.headers.get("origin") !== null) return bad(403, "origin_not_allowed", "规则编辑不接受带 Origin 头的请求");
+        if (!(req.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json")) return bad(415, "unsupported_media_type", "需要 content-type: application/json");
+        const text = await req.text();
+        if (text.length > 16_384) return bad(413, "too_large", "请求体过大");
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          return bad(400, "bad_request", "body 不是合法 JSON");
+        }
+        const actor = (req.headers.get("x-sv-actor") ?? "api").replace(/[^\w.@-]/g, "").slice(0, 64) || "api";
+        try {
+          const out = await this.editRule(ruleMatch[1], parsed, { actor, via: viaUnix ? "uds" : "http" });
+          return json(out.status, out.body);
+        } catch (err) {
+          // 编辑失败只返回 500：不算适配器故障，也不走 hook 路径的 fail-open 响应
+          return bad(500, "edit_failed", String((err as Error)?.message ?? err).slice(0, 200));
+        }
+      }
       try {
-        const q = handleQuery(this.store.db, req.method, url, this.now(), this.cfg) ?? handleCompare(this.store.db, req.method, url);
+        const q = handleQuery(this.store.db, req.method, url, this.now(), this.cfg, new Set(Object.keys(this.ruleEdits))) ?? handleCompare(this.store.db, req.method, url);
         if (q?.contentType) return new Response(String(q.body), { status: q.status, headers: { "content-type": q.contentType, "x-sv-protocol": String(PROTOCOL) } });
         if (q) return json(q.status, q.body);
       } catch (err) {
@@ -238,6 +274,35 @@ export class Daemon {
       this.safeHealth(harness as string, false, `daemon_error: ${String((err as Error)?.message ?? err)}`);
       return json(200, { ok: false, protocol: PROTOCOL, delivery: null, hookPoint: null, mode: this.cfg.mode, error: "internal" } satisfies HookResponse);
     }
+  }
+
+  /**
+   * 规则编辑（整个守护进程唯一的写接口，decisions #101）：串行化 → 校验 → 原子写 rules.local.json → 换配置（只影响之后新建的会话）→ 审计。
+   * 写文件失败时内存配置不变。不在 hook 路径上。
+   */
+  editRule(id: string, body: unknown, who: { actor: string; via: string }): Promise<{ status: number; body: unknown }> {
+    const run = this.editChain.then(() => this.doEditRule(id, body, who));
+    this.editChain = run.catch(() => undefined);
+    return run;
+  }
+
+  private async doEditRule(id: string, body: unknown, who: { actor: string; via: string }): Promise<{ status: number; body: unknown }> {
+    const r = validateRuleEdit(this.baseCfg, this.ruleEdits, id, body);
+    if (!r.ok) return { status: r.status, body: { error: { code: r.code, message: r.errors.join("；"), errors: r.errors, retryable: false } } };
+    try {
+      saveRuleEdits(join(this.home, "rules.local.json"), r.edits);
+    } catch (err) {
+      return { status: 500, body: { error: { code: "write_failed", message: `写 rules.local.json 失败：${String((err as Error)?.message ?? err).slice(0, 120)}（配置未改变）`, retryable: true } } };
+    }
+    this.ruleEdits = r.edits;
+    this._cfg = r.cfg;
+    try {
+      appendFileSync(join(this.home, "rules-edits.jsonl"), JSON.stringify({ ts: this.now(), actor: who.actor, via: who.via, rule: id, request: body, changes: r.changes }) + "\n", { mode: 0o600 });
+    } catch {
+      /* 审计行写不进去不影响已经生效的编辑（文件本身是事实来源） */
+    }
+    const view = ruleViews(this.cfg, new Set(Object.keys(this.ruleEdits))).find((v) => v.id === id);
+    return { status: 200, body: { ok: true, rule: view, changes: r.changes, appliesTo: "new_sessions" } };
   }
 
   /** 推送：只带轻量字段（不含命令/输出正文）；publish 永不抛异常。 */

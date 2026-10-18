@@ -117,7 +117,7 @@ const flat = (e: TimelineEntry): Record<string, unknown> => {
 // ---------- 路由 ----------
 
 /** 返回 null = 不是查询路径（交给其他路由）。 */
-export function handleQuery(db: Database, method: string, u: URL, now: number = Date.now(), cfg?: Config): QueryReply | null {
+export function handleQuery(db: Database, method: string, u: URL, now: number = Date.now(), cfg?: Config, edited?: ReadonlySet<string>): QueryReply | null {
   if (method !== "GET") return null;
   const p = u.pathname;
   if (!p.startsWith("/v1/")) return null;
@@ -130,7 +130,7 @@ export function handleQuery(db: Database, method: string, u: URL, now: number = 
   }
 
   // 规则目录与生效配置（只读；配置里的凭据已遮掉，api key 只给环境变量名和是否已设置）
-  if (cfg && p === "/v1/rules") return ok({ rules: ruleViews(cfg), mode: cfg.mode });
+  if (cfg && p === "/v1/rules") return ok({ rules: ruleViews(cfg, edited), mode: cfg.mode });
   if (cfg && p === "/v1/config") return ok(configView(cfg));
 
   const known = /^\/v1\/(sessions|hits|runs|rules\/stats|judge-calls(?:\/(?:stats|export\.csv|\d+))?|danger\/(stats|events))(\/|\.csv$|$)/.test(p);

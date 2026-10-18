@@ -3,8 +3,8 @@
   "value": {
     "mode": "shadow",
     "rules": [
-      { "id": "L2", "title": "同一调用且输出哈希相同（最近若干步内）", "category": "loop", "level": "M", "source": "LoopGuard、self-critic", "thresholds": { "repeat": 4, "window_steps": 12 }, "override": null, "disabled": false },
-      { "id": "S2", "title": "同一阶段停滞", "category": "stagnation", "level": "observe", "observeOnly": true, "thresholds": { "stall_steps": 7 }, "override": { "disabled": true }, "disabled": true }
+      { "id": "L2", "title": "同一调用且输出哈希相同（最近若干步内）", "category": "loop", "level": "M", "source": "LoopGuard、self-critic", "thresholds": { "repeat": 4, "window_steps": 12 }, "override": null, "disabled": false, "edited": false, "protected": false },
+      { "id": "S2", "title": "同一阶段停滞", "category": "stagnation", "level": "observe", "observeOnly": true, "thresholds": { "stall_steps": 7 }, "override": { "disabled": true }, "disabled": true, "edited": true, "protected": false }
     ]
   }
 }

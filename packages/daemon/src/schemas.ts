@@ -134,8 +134,8 @@ const JudgeCallDetail = obj(
 );
 
 const Rule = obj(
-  { id: str, title: str, category: str, level: en("L", "M", "H", "M→H", "L→M", "observe"), thresholds: { type: "object" }, override: nul({ type: "object" }), disabled: bool },
-  ["id", "title", "category", "level", "thresholds", "override", "disabled"],
+  { id: str, title: str, category: str, level: en("L", "M", "H", "M→H", "L→M", "observe"), thresholds: { type: "object" }, override: nul({ type: "object" }), disabled: bool, edited: bool, protected: bool },
+  ["id", "title", "category", "level", "thresholds", "override", "disabled", "edited", "protected"],
 );
 const RuleList = obj({ rules: arr({ $ref: "#/$defs/Rule" }), mode: en("shadow", "advise", "enforce") });
 const ConfigView = obj({ config: { type: "object" }, judge: obj({ api_key_env: str, api_key_set: bool }), source: en("daemon-startup") });

@@ -3,7 +3,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { applyOverride, thresholdsForRule, type Config } from "./config.ts";
-import { RULE_IDS, ruleConfigKey } from "./rules.ts";
+import { PROTECTED_RULES, RULE_IDS, ruleConfigKey } from "./rules.ts";
 
 export type ThresholdKind = "count" | "ratio" | "number";
 
@@ -31,8 +31,6 @@ export const RULE_THRESHOLD_PATHS: Record<string, Record<string, { path: string;
 const LADDER_RULES = new Set(["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8"]);
 const LADDER_LEVELS = ["L", "advise", "M", "H"] as const;
 
-/** 受保护的规则：不能停用，也没有可编辑阈值。X2 是守护进程故障或配置错误时仍应生效的安全网。 */
-export const PROTECTED_RULES = new Set(["X2"]);
 
 export interface RuleEdit {
   disabled?: boolean;

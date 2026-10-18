@@ -67,13 +67,20 @@ export interface RuleView extends RuleInfo {
   thresholds: Record<string, unknown>;
   /** 配置里对该规则的显式覆盖（rules.<ID>：action/mode/block_on/disabled）。 */
   override: Record<string, unknown> | null;
+  /** 在规则编辑（rules.local.json）里有覆盖记录。 */
+  edited: boolean;
+  /** 受保护：界面不能停用或改阈值。 */
+  protected: boolean;
   /** 配置里被 disabled 掉了。 */
   disabled: boolean;
 }
 
-export function ruleViews(cfg: Config): RuleView[] {
+/** 受保护的规则：不能通过界面停用或改阈值。X2 是守护进程故障或配置错误时仍应生效的安全网。 */
+export const PROTECTED_RULES: ReadonlySet<string> = new Set(["X2"]);
+
+export function ruleViews(cfg: Config, edited: ReadonlySet<string> = new Set()): RuleView[] {
   return RULES.map((r) => {
     const ov = cfg.rules?.[ruleConfigKey(cfg, r.id)] ?? null;
-    return { ...r, thresholds: thresholdsForRule(r.id, cfg), override: ov ? { ...ov } : null, disabled: ov?.disabled === true || ov?.action === "off" };
+    return { ...r, thresholds: thresholdsForRule(r.id, cfg), override: ov ? { ...ov } : null, disabled: ov?.disabled === true || ov?.action === "off", edited: edited.has(r.id), protected: PROTECTED_RULES.has(r.id) };
   });
 }
