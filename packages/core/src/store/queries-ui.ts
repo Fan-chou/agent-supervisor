@@ -356,3 +356,34 @@ export function sessionChildren(db: Database, sessionId: string, runId?: number)
   if (run === null) return [];
   return q<Record<string, unknown>>(db, "SELECT run_id, session_id, harness, model, project, calls, started_ts, ended_ts, parent_session_id FROM sessions WHERE run_id = ? AND parent_session_id = ? ORDER BY started_ts, session_id", [run, sessionId]);
 }
+
+// ---------- 会话活动（recent 排序 / state 过滤） ----------
+
+export interface SessionActivity {
+  firstTs: number | null;
+  lastTs: number | null;
+  events: number;
+  /** sessions.ended_ts（有适配器写入时才有）。 */
+  endedTs: number | null;
+}
+
+/** 每个 (run, session) 的首末事件时间；key 是 `${runId}:${sessionId}`。 */
+export function sessionActivity(db: Database, scope: Scope = {}): Map<string, SessionActivity> {
+  const w = where(scope);
+  const rows = q<Record<string, unknown>>(db, `SELECT run_id, session_id, MIN(ts) AS first_ts, MAX(ts) AS last_ts, COUNT(*) AS n FROM events WHERE ${w.sql} GROUP BY run_id, session_id`, w.args);
+  const ended = new Map(q<Record<string, unknown>>(db, "SELECT run_id, session_id, ended_ts FROM sessions").map((r) => [`${r.run_id}:${r.session_id}`, (r.ended_ts as number) ?? null]));
+  const out = new Map<string, SessionActivity>();
+  for (const r of rows) {
+    const k = `${r.run_id}:${r.session_id}`;
+    out.set(k, { firstTs: (r.first_ts as number) ?? null, lastTs: (r.last_ts as number) ?? null, events: r.n as number, endedTs: ended.get(k) ?? null });
+  }
+  return out;
+}
+
+export type SessionState = "active" | "idle" | "ended";
+
+/** ended：适配器写了 ended_ts；active：最近 activeMs 内有事件；否则 idle。 */
+export function sessionStateOf(a: SessionActivity | undefined, now: number, activeMs = 5 * 60_000): SessionState {
+  if (a?.endedTs) return "ended";
+  return a?.lastTs !== null && a?.lastTs !== undefined && now - a.lastTs <= activeMs ? "active" : "idle";
+}

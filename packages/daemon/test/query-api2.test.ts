@@ -89,6 +89,36 @@ describe("timeline / events / children", () => {
   });
 });
 
+describe("sessions：recent 排序、q / state 过滤", () => {
+  test("last_ts / state / events 字段；sort=recent 最近活动在前；q 匹配 session_id / model / project；state 过滤；非法值 400", async () => {
+    let t = 1_700_000_000_000;
+    const home = mkdtempSync(join(tmpdir(), "sv-qs-"));
+    dirs.push(home);
+    const d = await startDaemon({ cfg: resolveConfig({}, defaultConfig()), home, dbPath: join(home, "state.db"), socketPath: join(home, "sock"), now: () => t });
+    daemons.push(d);
+    const cc = (sid: string, model: string) => post(d, { session_id: sid, cwd: "/tmp/proj-x", model, hook_event_name: "UserPromptSubmit", prompt: "hi" });
+    await cc("old-one", "model-a");
+    t += 20 * 60_000; // 20 分钟后
+    await cc("new-one", "model-b");
+    t += 60_000;
+    const all = await json(d, "/v1/sessions?sort=recent");
+    expect(all.sessions.map((s: any) => s.session_id)).toEqual(["new-one", "old-one"]);
+    const byId = Object.fromEntries(all.sessions.map((s: any) => [s.session_id, s]));
+    expect(byId["new-one"]).toMatchObject({ state: "active", events: 1 });
+    expect(byId["old-one"]).toMatchObject({ state: "idle" });
+    expect(byId["old-one"].last_ts).toBeLessThan(byId["new-one"].last_ts);
+    for (const s of all.sessions) expect(validate(schemaFor("SessionSummary")!, s), JSON.stringify(s)).toEqual([]);
+    expect((await json(d, "/v1/sessions?state=idle")).sessions.map((s: any) => s.session_id)).toEqual(["old-one"]);
+    expect((await json(d, "/v1/sessions?state=active")).sessions.map((s: any) => s.session_id)).toEqual(["new-one"]);
+    expect((await json(d, "/v1/sessions?q=MODEL-B")).sessions.map((s: any) => s.session_id)).toEqual(["new-one"]);
+    expect((await json(d, "/v1/sessions?q=old")).sessions.length).toBe(1);
+    expect((await json(d, "/v1/sessions?q=nothing-matches")).sessions).toEqual([]);
+    expect((await get(d, "/v1/sessions?state=bogus")).status).toBe(400);
+    expect((await get(d, "/v1/sessions?sort=bogus")).status).toBe(400);
+    expect((await json(d, "/v1/sessions/new-one")).state).toBe("active");
+  });
+});
+
 describe("hits 列表", () => {
   test("游标分页、按规则 / 级别 / 会话 / 结局 / 标注过滤；符合 schema", async () => {
     const d = await boot();

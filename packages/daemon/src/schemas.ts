@@ -78,7 +78,8 @@ const Hit = obj({
 
 const danger = obj({ total: int, wouldHaveBlocked: int, enforced: int });
 const SessionSummary = obj(
-  { run_id: int, session_id: str, harness: nul(str), model: nul(str), project: nul(str), calls: nul(int), hits_L: int, hits_M: int, hits_H: int, alarms: int, dangerous: int, would_have_blocked: int, blocked: int, judge_calls: int, danger },
+  { run_id: int, session_id: str, harness: nul(str), model: nul(str), project: nul(str), calls: nul(int), hits_L: int, hits_M: int, hits_H: int, alarms: int, dangerous: int, would_have_blocked: int, blocked: int, judge_calls: int, danger, first_ts: nul(int), last_ts: nul(int), events: int, state: en("active", "idle", "ended") },
+  ["run_id", "session_id", "harness", "model", "project", "calls", "hits_L", "hits_M", "hits_H", "alarms", "dangerous", "would_have_blocked", "blocked", "judge_calls", "danger", "events", "state"],
 );
 const DangerEvent = obj({ hitId: int, runId: int, sessionId: str, ts: int, callIndex: nul(int), category: nul(str), subject: nul(str), reason: nul(str), action: nul(str), outcome: nul(str), mode: nul(str), model: nul(str) });
 const DangerStats = obj({

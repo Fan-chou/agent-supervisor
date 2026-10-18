@@ -12,8 +12,10 @@ import {
   modelRuleStats,
   resolveRuns,
   ruleStats,
+  sessionActivity,
   sessionChildren,
   sessionEvents,
+  sessionStateOf,
   sessionStats,
   sessionTimeline,
   type Scope,
@@ -81,14 +83,23 @@ const csv = (rows: Record<string, unknown>[], columns?: string[]): QueryReply =>
 
 // ---------- 会话摘要 ----------
 
-function sessionRows(db: Database, sc: Scope, u: URL): Record<string, unknown>[] {
+function sessionRows(db: Database, sc: Scope, u: URL, now: number): Record<string, unknown>[] {
   let rows = sessionStats(db, sc);
   const harness = u.searchParams.get("harness");
   const model = u.searchParams.get("model");
   if (harness) rows = rows.filter((r) => r.harness === harness);
   if (model) rows = rows.filter((r) => r.model === model);
   if (u.searchParams.get("has_danger") === "true") rows = rows.filter((r) => Number(r.dangerous) > 0);
-  const out: Record<string, unknown>[] = rows.map((r) => ({ ...r, danger: { total: r.dangerous, wouldHaveBlocked: r.would_have_blocked, enforced: r.blocked } }));
+  const act = sessionActivity(db, sc);
+  let out: Record<string, unknown>[] = rows.map((r) => {
+    const a = act.get(`${r.run_id}:${r.session_id}`);
+    return { ...r, danger: { total: r.dangerous, wouldHaveBlocked: r.would_have_blocked, enforced: r.blocked }, first_ts: a?.firstTs ?? null, last_ts: a?.lastTs ?? null, events: a?.events ?? 0, state: sessionStateOf(a, now) };
+  });
+  const state = u.searchParams.get("state");
+  if (state) out = out.filter((r) => r.state === state);
+  const qs = u.searchParams.get("q")?.toLowerCase();
+  if (qs) out = out.filter((r) => [r.session_id, r.project, r.model, r.harness].some((v) => typeof v === "string" && v.toLowerCase().includes(qs)));
+  if (u.searchParams.get("sort") === "recent") out.sort((a, b) => Number(b.last_ts ?? 0) - Number(a.last_ts ?? 0));
   if (u.searchParams.get("sort") === "danger_desc") out.sort((a, b) => Number(b.dangerous) - Number(a.dangerous));
   return out;
 }
@@ -101,7 +112,7 @@ const flat = (e: TimelineEntry): Record<string, unknown> => {
 // ---------- 路由 ----------
 
 /** 返回 null = 不是查询路径（交给其他路由）。 */
-export function handleQuery(db: Database, method: string, u: URL): QueryReply | null {
+export function handleQuery(db: Database, method: string, u: URL, now: number = Date.now()): QueryReply | null {
   if (method !== "GET") return null;
   const p = u.pathname;
   if (!p.startsWith("/v1/")) return null;
@@ -145,12 +156,18 @@ export function handleQuery(db: Database, method: string, u: URL): QueryReply | 
     return m[3] ? csv(t.entries.map(flat)) : ok(t);
   }
 
-  if (p === "/v1/sessions/export.csv") return csv(sessionRows(db, sc, u).map(({ danger, ...r }) => ({ ...r, danger_total: (danger as { total: unknown }).total })));
-  if (p === "/v1/sessions") return ok({ sessions: sessionRows(db, sc, u) });
+  if (p === "/v1/sessions" || p === "/v1/sessions/export.csv") {
+    const state = q.get("state");
+    const sort = q.get("sort");
+    if (state && !["active", "idle", "ended"].includes(state)) return bad("state 只能是 active | idle | ended");
+    if (sort && !["recent", "danger_desc"].includes(sort)) return bad("sort 只能是 recent | danger_desc");
+  }
+  if (p === "/v1/sessions/export.csv") return csv(sessionRows(db, sc, u, now).map(({ danger, ...r }) => ({ ...r, danger_total: (danger as { total: unknown }).total })));
+  if (p === "/v1/sessions") return ok({ sessions: sessionRows(db, sc, u, now) });
   m = /^\/v1\/sessions\/([^/]+)$/.exec(p);
   if (m) {
     const id = decodeURIComponent(m[1]);
-    const one = sessionRows(db, { ...sc, sessionId: id }, u);
+    const one = sessionRows(db, { ...sc, sessionId: id }, u, now);
     return one.length ? ok(one.length === 1 ? one[0] : one) : notFound(`会话 ${id}`);
   }
 
