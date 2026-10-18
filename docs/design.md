@@ -493,6 +493,7 @@ agent-supervisor/
 - **X2 的 `rm -rf` 口径确认**为窄化版本（§5.5）：`/`、`$HOME` 本身、仓库外路径、仓库根和 `.git`；仓库内普通子目录、`/tmp`、构建产物目录豁免；含未解析变量的路径放行。
 - **新增 §18 日志与可观测性**：结构化、可查询的 SQLite 日志（可选 JSONL 镜像/导出）、保留期可配置，覆盖事件、命中（规则/指纹/证据/阈值）、judge 请求响应（脱敏）、延迟/token/模型、决策与抑制原因、投递结果与遵从、用户覆盖；可产出按规则命中率/误报率统计，并通过 `sv replay --set` 调阈值。
 - 前端确定为 **MyGo native UI**（见 `docs/frontend-design.md`）。
+- **shadow 是纯观察，X2 跟随 mode（Jack 已确认）**：shadow 下完全不拦截；但 X2 危险操作必须被记录并醒目标记——日志里 `hits.severity='dangerous'`（含类别/对象/原因），`decisions.outcome='would_have_blocked'`（Claude 上 ask 类是 `would_have_asked`），与真实拦截的 `blocked`/`asked` 明显区分；`sv stats --by danger` 和按会话的危险计数；前端对应「危险」徽标/筛选和「本应拦截」指示器（§18.5）。日志 schema 升到 v2（旧库自动补列）。
 
 ## 18. 日志与可观测性（v2.1 新增）
 目的：Jack 要在真实项目上用，日后复盘、调参。原则：**一切判定都留下可追溯的记录**，并且这些记录能直接回答「哪条规则吵、哪条规则准、阈值该往哪调」。
@@ -544,3 +545,54 @@ agent-supervisor/
 - 守护进程（M3）或回放：`Engine.feed()` 每处理一条事件调用一次 `LogSink.onFeed`，在**一个事务**里写入事件、judge 调用、命中、决策、投递，并更新遵从观察窗口与 `#sv` 覆盖；`Engine.close()` 结算未走完的窗口。
 - judge 客户端在返回值里带上 `meta`（延迟、token、重试、response_format 等级与降级、修复列表、脱敏后的请求/响应），由引擎包装 judge 时收集。
 - 适配器连接健康由守护进程在每次适配器请求/失败时写入 `adapter_health`。
+
+### 18.5 危险操作（X2）与结局（outcome）——shadow 下的「本应拦截」
+原则（Jack 已确认）：**shadow 模式是纯观察，完全不拦截；X2 危险操作必须被记录并醒目标记。** X2 的行为不变（仍跟随 mode：只有 enforce 才生效）。
+- **严重度**：`hits.sev` 仍是 L/M/H；另有面向人的 `hits.severity`：普通命中是 `low/medium/high`，**X2 一律是 `dangerous`**（不随 mode 变）。X2 命中同时记录 `danger_category`（env/key/ci/rm/git）、`danger_subject`（被写的文件 / 被删的路径 / 命令）、`danger_reason`（原因文案）。
+- **结局** `decisions.outcome`（只有会面向 agent 的动作才有）：真实生效时 `blocked` / `asked` / `continued` / `advised`；不生效（shadow、advise 模式下的拦截等）时对应 `would_have_blocked` / `would_have_asked` / `would_have_continued` / `would_have_advised`。所以 **X2 在 shadow 下是 `would_have_blocked`（deny 类）或 `would_have_asked`（Claude 上 .env / CI 配置的 ask 类）**，在 enforce 下才是 `blocked` / `asked`。
+- **统计**：`sv stats --by danger`（总数、本应拦截 vs 已真实拦截、按类别、按会话、逐条列出）；`sv stats --by session`（每会话「⚠ 危险 / 本应拦截 / 已拦截」三列，`--sort-danger` 按危险数排序）；`sv stats --by rule` 的每条规则带结局分布；回放文本里危险行以 `⚠` 开头并标「◌ 本应拦截·未生效」（真实拦截是「■ 已拦截」），`ReplayResult.summary.dangerous` 给出总数。
+- **schema v2**：新增 `hits.severity / danger_category / danger_subject / danger_reason` 与 `decisions.outcome`；打开 v1 库时自动 `ALTER TABLE` 补列并升版本。
+
+### 18.6 可直接在 sqlite3 里跑的查询示例
+（与 `packages/core/src/store/queries.ts` 一致；`:run` 为要看的 run id。）
+```sql
+-- 1) 每条规则：命中数 / 每 100 次调用命中数
+SELECT h.rule_id, COUNT(*) AS hits,
+       ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM events WHERE run_id = :run AND phase='post' AND tool_name IS NOT NULL), 2) AS per_100_calls
+  FROM hits h WHERE h.run_id = :run AND h.observe_only = 0 AND h.rule_id != 'INTERNAL'
+ GROUP BY h.rule_id ORDER BY hits DESC;
+
+-- 2) 误报率：每个命中取最新一条人工标注，再按规则汇总（没有标注的不计入分母）
+WITH latest AS (
+  SELECT o.target_id AS hit_id, o.kind FROM overrides o
+   WHERE o.target_type='hit' AND o.kind IN ('mark_false_positive','mark_useful')
+     AND o.id = (SELECT MAX(id) FROM overrides o2 WHERE o2.target_type='hit' AND o2.target_id=o.target_id AND o2.kind IN ('mark_false_positive','mark_useful')))
+SELECT h.rule_id,
+       SUM(l.kind='mark_false_positive') AS fp, SUM(l.kind='mark_useful') AS useful,
+       ROUND(1.0 * SUM(l.kind='mark_false_positive') / COUNT(l.kind), 3) AS fp_rate
+  FROM hits h JOIN latest l ON l.hit_id = h.id GROUP BY h.rule_id;
+
+-- 3) 按被监督模型：谁更容易触发什么（模型名只用于事后统计）
+SELECT model, rule_id, COUNT(*) AS hits FROM hits
+ WHERE observe_only = 0 AND rule_id != 'INTERNAL' GROUP BY model, rule_id ORDER BY model, hits DESC;
+
+-- 4) 对比两次运行（阈值不同的回放）：每条规则的命中与「会面向 agent 的」报警数
+SELECT rule_id,
+       SUM(CASE WHEN run_id = :a THEN 1 ELSE 0 END) AS hits_a,
+       SUM(CASE WHEN run_id = :b THEN 1 ELSE 0 END) AS hits_b
+  FROM hits WHERE run_id IN (:a, :b) AND observe_only = 0 GROUP BY rule_id;
+
+-- 5) 危险操作：本应拦截（shadow）与已真实拦截，按会话
+SELECT h.session_id, COUNT(*) AS dangerous,
+       SUM(d.outcome LIKE 'would_have_%') AS would_have_blocked,
+       SUM(d.outcome IN ('blocked','asked')) AS enforced
+  FROM hits h LEFT JOIN decisions d ON d.hit_id = h.id
+ WHERE h.severity = 'dangerous' GROUP BY h.run_id, h.session_id ORDER BY dangerous DESC;
+
+-- 6) 抑制原因分布：某条规则的报警是被冷却 / 预算 / 连续拦截上限挡掉的，还是真的发出去了
+SELECT suppressed_by, outcome, COUNT(*) FROM decisions WHERE rule_id = 'T1' GROUP BY suppressed_by, outcome;
+```
+
+### 18.7 已知的数据来源缺口（M3 填）
+- `sessions.parent_session_id`（视图里子 agent 的展开）目前**没有写入方**：回放读取器默认丢弃 sidechain，所以回放里为空；线上由 M3 适配器在收到子 agent 事件时填写。
+- `adapter_health`、`kind='live'` 的运行记录、`deliveries.channel` 的真实通道（asyncRewake 等）同样要等 M3 的守护进程与适配器；回放里通道带 `replay:` 前缀、遵从为模拟。
