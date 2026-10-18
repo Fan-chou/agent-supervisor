@@ -26,3 +26,4 @@ export * from "./store/store.ts";
 export * from "./store/sink.ts";
 export * from "./store/queries.ts";
 export * from "./store/runtime.ts";
+export * from "./delivery.ts";

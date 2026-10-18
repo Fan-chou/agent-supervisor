@@ -1,18 +1,9 @@
 // Claude Code 的 render()：Delivery → 钩子输出 JSON。只按 design §3.5 的白名单输出字段，其他字段一律删掉。
 // 放在 adapter 包里，以后 sv-hook（bun --compile）直接复用；纯函数，不依赖守护进程，不读环境。
-import type { X2Result } from "@sv/core";
+import { MAX_TEXT, truncate, type Delivery, type DeliveryKind, type X2Result } from "@sv/core";
 
-export type DeliveryKind = "block" | "ask" | "advise" | "stop_continue";
-
-/** design §3.4。除 kind/text 之外的字段是内部簿记，绝不能出现在输出里。 */
-export interface Delivery {
-  kind: DeliveryKind;
-  text: string;
-  deliveryId?: string;
-  ruleId?: string;
-  createdAtSeq?: number;
-  expires?: unknown;
-}
+export { MAX_TEXT, truncate };
+export type { Delivery, DeliveryKind };
 
 export type HookPoint = "PreToolUse" | "PostToolUse" | "PostToolUseFailure" | "PostToolBatch" | "Stop";
 
@@ -20,8 +11,6 @@ export interface RenderContext {
   /** Stop 钩子输入里的 stop_hook_active：为 true 时不再 block，避免死循环（Claude 内置续跑上限 8 次）。 */
   stopHookActive?: boolean;
 }
-
-export const MAX_TEXT = 600;
 
 export type ClaudeOutput =
   | { hookSpecificOutput: { hookEventName: "PreToolUse"; permissionDecision: "deny" | "ask"; permissionDecisionReason: string } }
@@ -36,12 +25,6 @@ export const ALLOWED: Record<HookPoint, { top: readonly string[]; hso: readonly 
   PostToolBatch: { top: ["hookSpecificOutput"], hso: ["hookEventName", "additionalContext"] },
   Stop: { top: ["decision", "reason"], hso: [] },
 };
-
-export function truncate(text: string, max = MAX_TEXT): string {
-  const t = text.trim();
-  if (t.length <= max) return t;
-  return t.slice(0, max - 1) + "…";
-}
 
 /** 兜底：把任何不在白名单里的字段删掉（包括 continue、stopReason、suppressOutput、updatedInput、systemMessage 等）。 */
 export function sanitize(out: Record<string, unknown>, at: HookPoint): Record<string, unknown> {
