@@ -9,6 +9,8 @@ export type JudgeMode = "off" | "mock";
 
 export interface ReplayOptions {
   judge?: JudgeMode | JudgeFn;
+  /** 自定义 JudgeFn 时在结果里显示的 judge 模式名（比如 "live"）。 */
+  judgeLabel?: string;
   mock?: MockOptions;
   cfg?: Config;
   planMd?: string;
@@ -110,7 +112,7 @@ export async function replayEvents(events: Event[], opts: ReplayOptions = {}, fi
   let judgeMode = "off";
   if (typeof opts.judge === "function") {
     judge = opts.judge;
-    judgeMode = "custom";
+    judgeMode = opts.judgeLabel ?? "custom";
   } else if (opts.judge === "mock") {
     judge = mockJudge(opts.mock);
     judgeMode = "mock";

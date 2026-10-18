@@ -98,7 +98,7 @@ export class Daemon {
     } catch {
       /* 不是我们创建的目录就不强行改 */
     }
-    this.store = new LogStore(opts.dbPath ?? this.cfg.log.db, { jsonlDir: this.cfg.log.jsonl_dir, storeEventBodies: this.cfg.log.store_event_bodies, storeJudgeBodies: this.cfg.log.store_judge_bodies, now: this.now });
+    this.store = new LogStore(opts.dbPath ?? (opts.home ? join(this.home, "state.db") : this.cfg.log.db), { jsonlDir: this.cfg.log.jsonl_dir, storeEventBodies: this.cfg.log.store_event_bodies, storeJudgeBodies: this.cfg.log.store_judge_bodies, now: this.now });
     this.outbox = new Outbox(this.store, this.now);
     this.startedAt = this.now();
     if (opts.judge) this.judge = opts.judge;

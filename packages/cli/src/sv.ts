@@ -2,16 +2,18 @@
 // sv：第一阶段实现 replay / eval / stats / mark / explain / override / export / prune。
 // 其余子命令（start/stop/status/install…）属于 M3+。
 import { readFileSync, writeFileSync } from "node:fs";
-import { applyOverride, beginRun, defaultConfig, expandHome, loadConfigFile, LogStore, type Config } from "@sv/core";
+import { applyOverride, beginRun, createJudgeClient, defaultConfig, expandHome, loadConfigFile, LogStore, type Config, type JudgeFn } from "@sv/core";
+import { startDaemon, type Daemon } from "../../daemon/src/index.ts";
+import { installSnippet } from "./install.ts";
 import { renderText, replayPath, type JudgeMode } from "../../replay/src/index.ts";
 import { runExplain, runExport, runMark, runOverride, runPrune, runStats, type Flags } from "./stats.ts";
 
 const USAGE = `用法：
-  sv replay <file|dir> [--judge=off|mock] [--format=text|json|both] [--out <path>] [-v]
+  sv replay <file|dir> [--judge=off|mock|live] [--format=text|json|both] [--out <path>] [-v]
                         [--config <config.yaml>] [--plan <plan.md>] [--mode shadow|advise|enforce]
                         [--set thresholds.T1.H=4 ...]            覆盖配置（可重复），用于调阈值
                         [--log [db]] [--label <name>]            写结构化日志（默认库见 config 的 log.db）
-  sv eval   <labels.yaml> [--judge=off|mock] [--window N] [--ab] [--set k=v ...] [--format=text|json] [--out <path>]
+  sv eval   <labels.yaml> [--judge=off|mock|live] [--window N] [--ab] [--set k=v ...] [--format=text|json] [--out <path>]
             [--sweep thresholds.T1.H=3,4,5]                      阈值扫描：每个取值各跑一遍并各写一条 eval 运行记录
             [--log [db]] [--label name]                          写结构化日志
   sv stats  [--by rule|model|judge|session|danger|runs] [--run N,M] [--label L] [--since 7d|2026-10-01] [--session ID]
@@ -25,9 +27,14 @@ const USAGE = `用法：
   sv export --out <dir>                                           全部表导出为 JSONL
   sv prune [--days N]                                             按保留期清理
 
-replay 只读本地 transcript，不发任何网络请求；--judge=live 不在第一阶段范围内。`;
+  sv start  [--home <dir>] [--port N] [--mode shadow|advise|enforce] [--judge=live] [--config <config.yaml>]   前台运行守护进程
+  sv status [--home <dir>]                                        查询守护进程
+  sv install claude [--launchd]                                   只打印 Claude Code 的 hooks 配置片段 / launchd plist，不改任何文件
 
-const VALUE_FLAGS = new Set(["sweep", "config", "plan", "out", "mode", "format", "judge", "db", "run", "label", "kind", "since", "until", "session", "by", "compare", "days", "note", "window", "set", "log"]);
+replay/eval 默认只读本地 transcript、不发网络请求；--judge=live 才会调用 config 里 judge.base_url（默认本地 Magpie 路由组 http://127.0.0.1:3425/v1）。
+key 只从 judge.api_key_env 指定的环境变量（或 ADVISOR_API_KEY）读取，不读任何文件。`;
+
+const VALUE_FLAGS = new Set(["home", "port", "sweep", "config", "plan", "out", "mode", "format", "judge", "db", "run", "label", "kind", "since", "until", "session", "by", "compare", "days", "note", "window", "set", "log"]);
 
 export function parseArgs(argv: string[]) {
   const pos: string[] = [];
@@ -60,6 +67,48 @@ function buildConfig(flags: Flags): { cfg: Config; overrides: string[] } {
   return { cfg, overrides };
 }
 
+async function runStart(flags: Flags, cfg0: Config): Promise<number> {
+  let cfg = cfg0;
+  if (flags.judge === "live") cfg = { ...cfg, judge: { ...cfg.judge, enabled: true } };
+  let d: Daemon;
+  try {
+    d = await startDaemon({ cfg, home: typeof flags.home === "string" ? flags.home : undefined, port: typeof flags.port === "string" ? Number(flags.port) : undefined, dbPath: typeof flags.db === "string" ? flags.db : undefined });
+  } catch (e) {
+    console.error(`启动失败：${(e as Error).message}`);
+    return 2;
+  }
+  console.error(`supervisord 已启动：mode=${cfg.mode} judge=${cfg.judge.enabled ? cfg.judge.base_url : "off"} socket=${d.socketPath ?? "-"}${d.port ? " port=" + d.port : ""} run=${d.runId}`);
+  await new Promise<void>((resolve) => {
+    const stop = () => resolve();
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+  });
+  await d.stop(); // 优雅退出：关闭每个会话的引擎、结束 live run、移除 socket
+  console.error("supervisord 已退出");
+  return 0;
+}
+
+async function runStatus(flags: Flags): Promise<number> {
+  const home = expandHome(typeof flags.home === "string" ? flags.home : "~/.agent-supervisor");
+  try {
+    const r = await fetch("http://localhost/v1/status", { unix: `${home}/sock`, headers: { "x-sv-protocol": "1" }, signal: AbortSignal.timeout(2000) });
+    console.log(JSON.stringify(await r.json(), null, 2));
+    return 0;
+  } catch {
+    console.error(`守护进程不可达（${home}/sock）。用 \`sv start\` 启动。`);
+    return 1;
+  }
+}
+
+function runInstall(pos: string[], flags: Flags): number {
+  if (pos[0] !== "claude") {
+    console.error("用法：sv install claude [--launchd]   （只打印，不改任何文件）");
+    return 2;
+  }
+  console.log(installSnippet({ launchd: flags.launchd === true }));
+  return 0;
+}
+
 export async function main(argv: string[]): Promise<number> {
   const { pos, flags } = parseArgs(argv);
   const cmd = pos[0];
@@ -84,11 +133,18 @@ export async function main(argv: string[]): Promise<number> {
   if (cmd === "export") return runExport(flags, cfg);
   if (cmd === "prune") return runPrune(flags, cfg);
 
+  // ---- 守护进程相关命令 ----
+  if (cmd === "start") return runStart(flags, cfg);
+  if (cmd === "status") return runStatus(flags);
+  if (cmd === "install") return runInstall(pos.slice(1), flags);
+
   const judge = (typeof flags.judge === "string" ? flags.judge : "off") as string;
-  if (judge !== "off" && judge !== "mock") {
-    console.error(`不支持的 --judge=${judge}（第一阶段只有 off|mock；live 要等 M3）`);
+  if (judge !== "off" && judge !== "mock" && judge !== "live") {
+    console.error(`不支持的 --judge=${judge}（只有 off|mock|live）`);
     return 2;
   }
+  const liveClient = judge === "live" ? createJudgeClient({ cfg: cfg.judge }) : undefined;
+  const judgeOpt: JudgeMode | JudgeFn = liveClient ? liveClient.judge : (judge as JudgeMode);
 
   if (cmd === "replay") {
     const target = pos[1];
@@ -105,7 +161,7 @@ export async function main(argv: string[]): Promise<number> {
       runId = beginRun(store, cfg, { kind: "replay", label: typeof flags.label === "string" ? flags.label : undefined, source: target, judgeMode: judge, overrides });
     }
     try {
-      const results = await replayPath(target, { judge: judge as JudgeMode, cfg, planMd, log: store && runId !== undefined ? { store, runId } : undefined });
+      const results = await replayPath(target, { judge: judgeOpt, judgeLabel: judge, cfg, planMd, log: store && runId !== undefined ? { store, runId } : undefined });
       const format = typeof flags.format === "string" ? flags.format : "text";
       const json = JSON.stringify(results.length === 1 ? results[0] : results, null, 2);
       if (typeof flags.out === "string") writeFileSync(flags.out, json + "\n");
@@ -117,6 +173,7 @@ export async function main(argv: string[]): Promise<number> {
       if (store && runId !== undefined) {
         store.endRun(runId);
         console.error(`已写入日志：run ${runId}${typeof flags.label === "string" ? "（" + flags.label + "）" : ""} → ${store.db.filename}`);
+        if (liveClient) for (const [m, st] of liveClient.stats) console.error(`judge ${m}: 调用 ${st.calls} ok ${st.ok} parse_fail ${st.parseFail}（${(liveClient.parseFailRate(m) * 100).toFixed(1)}%）超时 ${st.timeouts} 出错 ${st.errors}`);
         const days = cfg.log.retention_days;
         if (days > 0) store.prune(days);
       }
@@ -127,7 +184,7 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (cmd === "eval") {
     const { runEvalCli } = await import("../../../eval/src/cli.ts");
-    return runEvalCli(pos.slice(1), flags, cfg, judge as JudgeMode);
+    return runEvalCli(pos.slice(1), flags, cfg, judge);
   }
   console.error(`未知子命令：${cmd}\n${USAGE}`);
   return 2;

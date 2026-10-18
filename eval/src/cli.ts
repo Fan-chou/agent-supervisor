@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs";
 import type { Config } from "@sv/core";
-import { expandHome, LogStore, redactDeep } from "@sv/core";
+import { createJudgeClient, expandHome, LogStore, redactDeep } from "@sv/core";
 import { defaultMockFactory, loadLabels, renderEvalText, renderSweepText, runEval, runPromptAb, runSweep } from "./run.ts";
 import { LabelError } from "./labels.ts";
 
@@ -20,7 +20,7 @@ export async function runEvalCli(pos: string[], flags: Record<string, string | t
   const window = typeof flags.window === "string" ? Number(flags.window) : undefined;
   const label = typeof flags.label === "string" ? flags.label : undefined;
   const overrides = ((flags.set as string[] | undefined) ?? []).slice();
-  const judgeMode = judge === "mock" ? "mock" : "off";
+  const judgeMode = judge === "mock" ? "mock" : judge === "live" ? createJudgeClient({ cfg: cfg.judge }).judge : "off";
   const logStore = flags.log ? new LogStore(expandHome(typeof flags.log === "string" ? flags.log : cfg.log.db), { jsonlDir: cfg.log.jsonl_dir, storeEventBodies: cfg.log.store_event_bodies, storeJudgeBodies: cfg.log.store_judge_bodies }) : undefined;
   const emit = (obj: unknown) => {
     const json = JSON.stringify(redactDeep(obj), null, 2);

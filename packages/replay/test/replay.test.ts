@@ -192,8 +192,8 @@ describe("sv replay CLI", () => {
     const r = await run(["replay", join(FX, "claude/misc.jsonl"), "--plan", plan, "--format=json"]);
     expect(JSON.parse(r.out).plan.source).toBe("file");
   });
-  test("--judge=live 被拒绝（第一阶段不碰网络）；缺参数给出用法", async () => {
-    const a = await run(["replay", join(FX, "claude/success.jsonl"), "--judge=live"]);
+  test("无效的 --judge 值被拒绝；缺参数给出用法", async () => {
+    const a = await run(["replay", join(FX, "claude/success.jsonl"), "--judge=bogus"]);
     expect(a.code).toBe(2);
     const b = await run(["replay"]);
     expect(b.code).toBe(2);
