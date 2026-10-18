@@ -120,3 +120,20 @@
 - Stop reason 的措辞（design §3.2「用户口吻的事实陈述」）：**判定为基本满足**。本地预设 P3 文案是「最后一次编辑之后没有运行过相关测试、targeted 测试或构建。」——事实陈述，没有规则 ID、没有 supervisor 的元口吻；judge 提示要求 `message_to_agent` 是事实加一个具体的下一步、不含代码/命令/URL/系统式指令，输出后过滤再去掉标签/URL/代码块/shell 行并限 600 字符。保留的缺口：文案只做了人工审读，没有在真实 Codex 上看过模型对「reason 变成 user prompt」的反应；P3 预设只有观察、没有下一步。
 - M3 遗留不变：hook 不会自动拉起守护进程、改 mode 需重启、前端查询 API、OpenCode 适配器、asyncRewake、`parent_session_id`。
 - M4 的「shadow 跑一周、零阻塞事故」需要 Jack 的机器与时间，不是代码问题。
+
+## M6（代码部分）— OpenCode V2 适配器（完成；未在 OpenCode 2 上实测；shadow 观察不归我做）
+**做了什么**（decisions #68–77）
+- `packages/adapter-opencode`：`normalize.ts`（`normalizeOpenCodeEvent`，与另两家同构：`Normalized{hookPoint, events, …}`；tool.before→pre，tool.after→post（`status:"error"` 直接判失败），context→注入点（带 `userMessage` 时产生 prompt 事件），permission.evaluate→只是领取点，interrupt/session.created）、`render.ts`（白名单：evaluate→`{effect:"deny",message}`，context→`{system:[text]}`，其余 null）、`plugin/agent-supervisor.ts`（自包含插件，fail-open，按返回的 mode 再过滤一道，inject_repeat）。
+- 契约测试（OpenCode 部分）：`test/contract/opencode/*.json` 13 个手写 fixture + 不变量（只允许 effect/message/system；effect 只会是 deny 且一定带 message；context 只有 advise；其他注入点恒 null；≤600；X2 文案交叉校验）。
+- daemon：`harness=opencode`，block/ask 经 outbox 在 `permission.evaluate` 领取，advise 在 `context` 领取；shadow 下全程无输出，只记 `would_have_blocked`（有测试）；origin 回显判 `supervisor`（有测试）；换模型名命中序列一致（有测试）。
+- `sv install opencode`：只打印插件源码与步骤（假 HOME 验证不碰用户目录）。
+- 复用：core 的 `preEvent/postEvent/toolKind/x2Check`（x2 对非 Claude 本来就是 deny）、`adapter-codex/parse.unpackOutput`；daemon 的 outbox/租约/前置条件/injections 一行没改。
+
+**测试结果**：`bun test` 917 通过 / 0 失败（35 个文件）；`tsc --noEmit` 无错误。不发网络请求（插件测试只连本机 `Bun.serve`），没有读 `~/.config/opencode`、`~/.codex`、`~/.claude`、`.env`。
+
+**偏离 design**：OpenCode 无本地 X2（#74）；Pre 事件取自 execute.before 而非 evaluate（#69）；拦截全部经 outbox（#70）。
+
+**需要 Jack 决定 / 真机才能回答**
+- OpenCode 2 的真实插件接口：`Plugin.define` 的导入路径与插件加载方式；hook 对象字段（`tool/args/callID/status/result`、`messages` 的形态、`sessionID`）；`execute.before` 与 `permission.evaluate` 的顺序；hook 处理函数能否是 async（插件按 async 写的，同步-only 的话 evaluate 的 deny 写不进去）。全部未实测，形态对不上时插件 fail-open。
+- OpenCode 是否需要本地 X2（#74）？
+- 在顺序核实之前 OpenCode 不要开 enforce（#70）。
