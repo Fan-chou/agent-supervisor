@@ -589,7 +589,7 @@ function classifyArgv(argv: string[], opts: ClassifyOptions, seg: Segment | unde
   // ---- 脚本 ----
   const script = scriptOf(argv);
   if (script) {
-    const created = opts.newScripts?.has(script);
+    const created = opts.newScripts?.has(script) || opts.newScripts?.has(script.replace(/^\.\//, ""));
     if (created && isSmokeName(script)) {
       return { cls: opts.sourceEdited ? "smoke_script" : "repro_script", scriptPath: script };
     }
