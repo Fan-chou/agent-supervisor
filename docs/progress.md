@@ -204,3 +204,10 @@
 
 **还剩什么（不依赖 Jack）**：Go 侧结构体生成和黄金样例测试（MyGo 项目，不在本仓库）；`Tool.Error` 拒绝通道与收尾续跑接线（都要真机证据后再做）；hook 自动拉起守护进程、mode 热加载（一直按判断不做）。本阶段不依赖 Jack 的实质工作基本做完。
 **等 Jack**：①同意后按 opencode-verify.md §3 跑真机：先 `sv opencode-probe-project <目录>` 看计划，同意再 `--apply`，然后一起跑（含探针）；②测试项目放哪个目录（建议仓库外，例如 `~/Documents/dev/opencode-sv-probe`）；③Claude hook 真实载荷校准与 30 个会话标注（需要 Jack 的数据，见前文）。
+
+## run13：Jack 07:18 批准真机核对与数据请求（decisions #117–118）
+- **测试项目已创建**：`sv opencode-probe-project ~/Documents/dev/opencode-sv-probe --apply`（8 个文件 + git init/一次提交；只项目级配置，没碰任何全局配置）。
+- **真机流程我没能跑**：本会话里运行 `opencode`、启动守护进程脚本都需要审批而被拒（包括 `opencode --version`），所以没有任何真机结果，也没有编造。**留给 Jack 的整套步骤**：见 `docs/opencode-verify.md` §3（`./start-daemon.sh` → `./run-observe.sh` → `./report.sh` → `./run-probe.sh` → X2 → 把 `./report.sh` 输出和 `opencode --version` 发回）。其中 Esc 中断、开第二个会话本来就需要交互。结果回来后我据此更新 verify 表的 ? 项并决定要不要改适配器；`opencodeEnforce` 仍默认关。
+- **数据请求已写**：`docs/data-request.md`（A. Claude hook 真实载荷样本，用 `SV_HOOK_DUMP=1`；B. 30 个会话标注，用 `sv export` + `sv mark`/`eval/labels.yaml`）。只用本项目自己记录的数据，不读 `~/.claude`、`~/.codex/sessions` 等；等 Jack 自己采集并检查后交给我。
+- **等 Jack**：①跑真机清单并回传报告；②按 data-request.md 采集 A/B 两类数据；③（可选）如果希望我直接在本会话里跑 `opencode`/守护进程，需要放行这些命令。
+- 本轮只改文档，未改代码；最近一次全量 `bun test` 1084 通过 / 0 失败、`tsc` 干净（run12 末尾）。
