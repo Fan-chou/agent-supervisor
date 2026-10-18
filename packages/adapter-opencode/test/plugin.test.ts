@@ -239,20 +239,51 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
     expect(c4.system.length).toBe(2);
     expect(c5.system).toEqual(["base"]);
   });
-  test("context 注入只在能确认 system 元素形态时才做：对象部件复制最后一个的形状只换 text；空数组 / 未知形态 / 非数组都不改（宁可没有建议）", async () => {
+  test("context 注入：SystemPart 是 {type:\"text\", text}（已核实）——追加干净的部件（不复制 cache 提示），空数组也能注入；system 不是数组就不改", async () => {
     startFake(() => deliver("advise", "建议一条", "advise"));
     const { ctx, hooks } = fakeCtx();
     await setup(ctx);
     const h = hooks.get("session.context")!;
-    const part: any = { sessionID: "a", system: [{ type: "text", text: "base", cache: true }], messages: [] };
+    const part: any = { sessionID: "a", system: [{ type: "text", text: "base", cache: { type: "ephemeral" } }], messages: [] };
     await h(part);
-    expect(part.system).toEqual([{ type: "text", text: "base", cache: true }, { type: "text", text: "建议一条", cache: true }]);
-    for (const [sid, system] of [["b", []], ["c", [42]], ["d", [{ nope: 1 }]], ["e", undefined], ["f", "str"]] as const) {
+    expect(part.system).toEqual([{ type: "text", text: "base", cache: { type: "ephemeral" } }, { type: "text", text: "建议一条" }]);
+    const empty: any = { sessionID: "b", system: [], messages: [] };
+    await h(empty);
+    expect(empty.system).toEqual([{ type: "text", text: "建议一条" }]);
+    for (const [sid, system] of [["e", undefined], ["f", "str"]] as const) {
       const e: any = { sessionID: sid, system, messages: [] };
       const before = JSON.stringify(e);
       await h(e);
       expect(JSON.stringify(e), String(sid)).toBe(before);
     }
+  });
+  test("中断：订阅 event.subscribe，只有 session.execution.interrupted 且 reason=user 才上报 event=interrupt；其他事件/原因忽略；清理时中止订阅；订阅抛错不影响 setup", async () => {
+    startFake();
+    let aborted = false;
+    const events = [
+      { type: "session.text.delta", data: { sessionID: "s1" } },
+      { type: "session.execution.interrupted", data: { sessionID: "s1", reason: "shutdown" } },
+      { type: "session.execution.interrupted", data: { sessionID: "s1", reason: "user" } },
+      { type: "session.execution.interrupted", data: { reason: "user" } },
+    ];
+    const f = fakeCtx();
+    (f.ctx as any).event = {
+      subscribe: (o: any) => {
+        o?.signal?.addEventListener("abort", () => (aborted = true));
+        return (async function* () {
+          for (const e of events) yield e;
+        })();
+      },
+    };
+    const cleanup: any = await setup(f.ctx);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(seen.filter((x) => x.payload.event === "interrupt").map((x) => x.payload.sessionID)).toEqual(["s1"]);
+    await cleanup();
+    expect(aborted).toBe(true);
+    const bad = fakeCtx();
+    (bad.ctx as any).event = { subscribe: () => { throw new Error("boom"); } };
+    await setup(bad.ctx);
+    expect([...bad.hooks.keys()].length).toBe(5);
   });
   test("session.prompt 钩子：user 消息文本（字符串 / {text} / 部件数组）以 event=prompt 上报，同一条不重复；注册成功后 context 不再扫 messages", async () => {
     startFake();

@@ -2,11 +2,13 @@
 // sv：第一阶段实现 replay / eval / stats / mark / explain / override / export / prune。
 // 其余子命令（start/stop/status/install…）属于 M3+。
 import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { applyOverride, beginRun, createJudgeClient, defaultConfig, expandHome, loadConfigFile, LogStore, type Config, type JudgeFn } from "@sv/core";
 import { startDaemon, type Daemon } from "../../daemon/src/index.ts";
 import { codexInstallSnippet, installSnippet, opencodeInstallSnippet } from "./install.ts";
 import { analyze, formatReport, parseDump } from "./opencode-report.ts";
 import { runOpencodeEnforce } from "./opencode-enforce.ts";
+import { runOpencodeProbeProject } from "./opencode-probe-project.ts";
 import { runRules } from "./rules-cmd.ts";
 import { renderText, replayPath, type JudgeMode } from "../../replay/src/index.ts";
 import { runExplain, runExport, runMark, runOverride, runPrune, runStats, type Flags } from "./stats.ts";
@@ -34,7 +36,8 @@ const USAGE = `用法：
   sv status [--home <dir>]                                        查询守护进程
   sv rules show|set|reset [ID] [--disable|--enable] [--threshold 键=数字]   规则编辑（写 rules.local.json，与 PUT /v1/rules/{id} 同一套校验）
   sv opencode-enforce status|on|off [--report <dump.jsonl>] [--approved-by <批准人>]   OpenCode 拦截开关（默认 OFF；on 需要核对报告通过 + 批准人署名；每次切换记日志）
-  sv opencode-report <dump.jsonl> [--format json]                汇总 OpenCode 插件的核对样本（SV_OPENCODE_DUMP=1）
+  sv opencode-probe-project <目录> [--apply]                      OpenCode 真机核对用的专门测试项目（只项目级配置；默认只打印计划，--apply 才创建文件；不启动任何东西）
+  sv opencode-report <dump.jsonl> [--format json]               汇总 OpenCode 插件的核对样本（SV_OPENCODE_DUMP=1）
   sv install claude|codex|opencode [--launchd]                              只打印 Claude Code / Codex 的 hooks 配置片段、OpenCode V2 的插件内容（claude 可加 launchd plist），不改任何文件
 
 replay/eval 默认只读本地 transcript、不发网络请求；--judge=live 才会调用 config 里 judge.base_url（默认本地 Magpie 路由组 http://127.0.0.1:3425/v1）。
@@ -159,6 +162,11 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (cmd === "opencode-enforce") {
     const r = runOpencodeEnforce(pos.slice(1), flags);
+    for (const l of r.lines) (r.code === 0 ? console.log : console.error)(l);
+    return r.code;
+  }
+  if (cmd === "opencode-probe-project") {
+    const r = await runOpencodeProbeProject(pos.slice(1), flags, { repoRoot: join(import.meta.dir, "../../..") });
     for (const l of r.lines) (r.code === 0 ? console.log : console.error)(l);
     return r.code;
   }

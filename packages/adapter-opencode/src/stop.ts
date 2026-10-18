@@ -2,7 +2,9 @@
 // OpenCode V2 没有 Stop 钩子。设计里的候选做法：在「assistant 这一轮结束」的信号上，用 `session.prompt({ sessionID, text, delivery:"queue" })`
 // 把 outbox 里的 stop_continue 作为一条 user 消息排进去（P0-6：这条消息会回显成 user 消息，必须按「实际输出的字符串」登记 origin）。
 // 这里只放「该不该发、发什么」的纯函数和防循环护栏，方便在真机核实 session.prompt 的语义之前先把行为用测试钉住。
-// 未核实：①哪个事件表示「这一轮结束」 ②session.prompt 的参数名/delivery 取值/返回值 ③排队消息会不会被当成新的 user turn（重置「本轮」计数）。
+// 类型已核实（@opencode/client 2.0.32，decisions #115）：①「这一轮结束」= 事件 session.execution.succeeded | failed | interrupted（经 context.event.subscribe 拿到，插件尚未订阅 succeeded）
+// ②session.prompt 的入参是平铺的 {sessionID, text, files?, metadata?, delivery?: "steer"|"queue", resume?}，与下面的 prompt 一致。
+// 仍未核实（只能真机）：③排队消息会不会被当成新的 user turn（重置「本轮」计数）、session.prompt 何时 resolve。
 import { truncate, type Delivery } from "@sv/core";
 
 export interface StopPlanState {

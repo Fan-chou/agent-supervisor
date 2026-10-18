@@ -1,7 +1,7 @@
 // agent-supervisor 的 OpenCode V2 插件（旁路监督；shadow 下只收事件，永不拦截）。
 // 源文件只依赖 node:* 和 core 里两个纯函数（x2Check、redactDeep）；`sv install opencode` 用 Bun.build 把它们打进同一个文件再打印（自包含，由用户自己放进 OpenCode 的插件目录）。
 // 约束（CLAUDE.md / design §3.3）：插件跑在 OpenCode 进程内，**任何异常都要 catch**，守护进程不可达/超时/响应坏掉一律 fail-open。
-// V2 的 hook 对象字段形态【未核实】（@opencode/plugin 2.0.32 的类型文件本轮读不到，见 docs/opencode-verify.md），下面对工具名/参数/callID 的取值都做了宽松兜底；真机核对后按实际形态校准。
+// V2 的 hook 对象字段已对照 vendor 的 @opencode/{plugin,schema,ai,client} 2.0.32 类型核对（docs/opencode-verify.md）；工具名/参数形态和触发顺序只能真机确认，取值处仍做了宽松兜底。
 // Jack 的决定（decisions #88/#89）：本地 X2 在；但真机核对通过前**只观察不拦截**——deny 需要同时满足 守护进程 mode=enforce 且 SV_OPENCODE_ENFORCE=1（核对通过后才由 Jack 设置）。
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -126,21 +126,15 @@ function promptText(p: Any): string | undefined {
 }
 
 /**
- * 往 context 的 system（Array<SystemPart>）里追加一条建议。SystemPart 的真实形态没核实，所以只做两种有把握的：
- * 元素本来就是字符串 → 推字符串；元素是带字符串 text 的对象 → 复制最后一个元素的形状，只换 text。其他情况（空数组、未知形态）返回 false，不改。
+ * 往 context 的 system（Array<SystemPart>）里追加一条建议。SystemPart 已按 @opencode/ai 2.0.32 核实：`{type:"text", text, cache?, metadata?}`。
+ * 追加一个干净的 `{type:"text", text}`（不复制 cache 提示，免得我们的文本占用缓存断点）；system 不是数组 → 返回 false，不改。
+ * 元素本来就是字符串（只有测试替身会这样）→ 推字符串。
  */
 function injectSystem(system: Any, t: string): boolean {
-  if (!Array.isArray(system) || !system.length) return false;
-  const last = system[system.length - 1];
-  if (typeof last === "string") {
-    system.push(t);
-    return true;
-  }
-  if (last && typeof last === "object" && typeof last.text === "string") {
-    system.push({ ...last, text: t });
-    return true;
-  }
-  return false;
+  if (!Array.isArray(system)) return false;
+  if (typeof system[system.length - 1] === "string") system.push(t);
+  else system.push({ type: "text", text: t });
+  return true;
 }
 
 // ---------- 真机核对用的载荷样本（SV_OPENCODE_DUMP=1，默认关；只写我们自己的目录，脱敏后落盘，0600/0700）----------
@@ -346,8 +340,32 @@ async function setup(ctx: Any): Promise<(() => Promise<void>) | void> {
     await post({ event: "tool.after", sessionID: s, directory: dirOf(e, ctx), callID: callId(e), tool: toolName(e), args: plain(e?.args ?? e?.input ?? e?.params), status, result: plain(e?.result ?? e?.output), error: plain(e?.error) }, EVENT_TIMEOUT_MS);
   });
 
+  // 中断：没有 hook，只能订阅事件（context.event.subscribe() → AsyncIterable<V2Event>）。
+  // `session.execution.interrupted` 的 data 是 {sessionID, reason: "user"|"shutdown"|"superseded"|"inactivity"}（@opencode/client 2.0.32）；只有 user 中断才算（对应 Claude 的 Esc，清零重复计数）。
+  const abort = new AbortController();
+  const sub = ctx?.event?.subscribe;
+  if (typeof sub === "function") {
+    void (async () => {
+      try {
+        for await (const ev of sub.call(ctx.event, { signal: abort.signal }) as AsyncIterable<Any>) {
+          try {
+            if (ev?.type !== "session.execution.interrupted" || ev?.data?.reason !== "user") continue;
+            const s = sid(ev.data);
+            if (s) await post({ event: "interrupt", sessionID: s, directory: dirOf(ev, ctx) }, EVENT_TIMEOUT_MS);
+          } catch {
+            /* 单个事件处理失败不影响订阅 */
+          }
+        }
+      } catch {
+        /* 订阅断了就算了：只是少了中断信号，fail-open */
+      }
+    })();
+    dump("event.subscribe", "note", undefined, { registered: true });
+  } else dump("event.subscribe", "note", undefined, { registered: false, reason: "no event.subscribe on context" });
+
   // setup 可以返回清理函数（promise/plugin.d.ts 的 Cleanup）：卸载时注销我们注册的全部 hook
   return async () => {
+    abort.abort();
     for (const r of registrations.splice(0)) {
       try {
         await r.dispose();
