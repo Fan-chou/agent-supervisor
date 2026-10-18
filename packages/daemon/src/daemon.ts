@@ -93,6 +93,7 @@ export class Daemon {
   private _cfg: Config;
   private readonly baseCfg: Config;
   private ruleEdits: RuleEdits = {};
+  private editsStamp = "";
   private editChain: Promise<unknown> = Promise.resolve();
   readonly home: string;
   readonly store: LogStore;
@@ -130,6 +131,7 @@ export class Daemon {
     if (loaded.warning) console.error(`[sv] ${loaded.warning}`);
     this.ruleEdits = loaded.edits;
     this._cfg = applyRuleEdits(this.baseCfg, this.ruleEdits);
+    this.editsStamp = this.stampOf();
     this.store = new LogStore(opts.dbPath ?? (opts.home ? join(this.home, "state.db") : this.cfg.log.db), { jsonlDir: this.cfg.log.jsonl_dir, storeEventBodies: this.cfg.log.store_event_bodies, storeJudgeBodies: this.cfg.log.store_judge_bodies, now: this.now });
     this.outbox = new Outbox(this.store, this.now);
     this.startedAt = this.now();
@@ -299,6 +301,30 @@ export class Daemon {
     }
   }
 
+  private stampOf(): string {
+    try {
+      const st = statSync(join(this.home, "rules.local.json"));
+      return `${st.mtimeMs}:${st.size}`;
+    } catch {
+      return "";
+    }
+  }
+
+  /** rules.local.json 被别的进程（sv rules）改过就重新读；损坏的文件忽略（保持内存里的配置）。只影响之后新建的会话。永不抛异常。 */
+  private refreshRuleEdits(): void {
+    try {
+      const stamp = this.stampOf();
+      if (stamp === this.editsStamp) return;
+      const loaded = loadRuleEdits(join(this.home, "rules.local.json"));
+      this.editsStamp = stamp;
+      if (loaded.warning) return console.error(`[sv] ${loaded.warning}`);
+      this.ruleEdits = loaded.edits;
+      this._cfg = applyRuleEdits(this.baseCfg, this.ruleEdits);
+    } catch {
+      /* 读不到就保持现状 */
+    }
+  }
+
   /**
    * 规则编辑（整个守护进程唯一的写接口，decisions #101）：串行化 → 校验 → 原子写 rules.local.json → 换配置（只影响之后新建的会话）→ 审计。
    * 写文件失败时内存配置不变。不在 hook 路径上。
@@ -310,6 +336,7 @@ export class Daemon {
   }
 
   private async doEditRule(id: string, body: unknown, who: { actor: string; via: string }): Promise<{ status: number; body: unknown }> {
+    this.refreshRuleEdits(); // 命令行 sv rules 可能改过文件：以文件为准，别把它的修改覆盖掉
     const r = validateRuleEdit(this.baseCfg, this.ruleEdits, id, body);
     if (!r.ok) return { status: r.status, body: { error: { code: r.code, message: r.errors.join("；"), errors: r.errors, retryable: false } } };
     try {
@@ -318,6 +345,7 @@ export class Daemon {
       return { status: 500, body: { error: { code: "write_failed", message: `写 rules.local.json 失败：${String((err as Error)?.message ?? err).slice(0, 120)}（配置未改变）`, retryable: true } } };
     }
     this.ruleEdits = r.edits;
+    this.editsStamp = this.stampOf();
     this._cfg = r.cfg;
     try {
       appendFileSync(join(this.home, "rules-edits.jsonl"), JSON.stringify({ ts: this.now(), actor: who.actor, via: who.via, rule: id, request: body, changes: r.changes }) + "\n", { mode: 0o600 });
@@ -418,6 +446,7 @@ export class Daemon {
     const key = `${harness}:${sessionId}`;
     let rt = this.sessions.get(key);
     if (rt) return rt;
+    this.refreshRuleEdits(); // 新会话开始前看一眼 rules.local.json 有没有被命令行改过
     const ids = new WeakMap<Decision, { decisionId: number; deliveryRowId?: number }>();
     const sink = new StoreSink(this.store, { runId: this.runId, deferredDelivery: true, onDecisionLogged: (d, i) => ids.set(d, i) });
     // OpenCode 在真机核对通过前只观察、不拦截（decisions #89）：全局 mode=enforce 时，opencode 会话按 advise 处理——block/ask 记为 would_have_*，不进 outbox；opencodeEnforce 是核对通过后的显式开关

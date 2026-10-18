@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LogStore, defaultConfig, resolveConfig } from "@sv/core";
+import { LogStore, defaultConfig, resolveConfig, saveRuleEdits } from "@sv/core";
 import { Daemon, startDaemon } from "../src/index.ts";
 import { schemaFor } from "../src/schemas.ts";
 import { validate } from "./helpers/validate.ts";
@@ -181,6 +181,28 @@ describe("PUT /v1/rules/{id}", () => {
     // 每条命中记录当时用的阈值（日志里的事实来源）
     const th = d.store.db.query("SELECT threshold_json FROM hits WHERE rule_id = 'L2' AND session_id = 'new' LIMIT 1").get() as { threshold_json: string };
     expect(JSON.parse(th.threshold_json)).toMatchObject({ repeat: 2 });
+  });
+  test("命令行（sv rules）改了 rules.local.json：守护进程在下一个新会话前重新读取，不用重启；API 编辑不会覆盖掉它", async () => {
+    const { d, home } = await boot();
+    const file = join(home, "rules.local.json");
+    expect((await ruleOf(d, "L3")).thresholds.repeat).toBe(3);
+    saveRuleEdits(file, { L3: { set: { "thresholds.L3_repeat": 9 } } }); // 模拟 sv rules set L3 --threshold repeat=9
+    expect((await ruleOf(d, "L3")).thresholds.repeat).toBe(3); // 还没有新会话触发重新读取
+    await post(d, "fresh-1", { hook_event_name: "UserPromptSubmit", prompt: "hi" });
+    expect(d.cfg.thresholds.L3_repeat).toBe(9);
+    expect((await ruleOf(d, "L3"))).toMatchObject({ edited: true, thresholds: { repeat: 9 } });
+    // API 编辑另一条规则：文件里命令行写的那条保留
+    expect((await put(d, "S1", { disabled: true })).status).toBe(200);
+    expect(Object.keys(JSON.parse(readFileSync(file, "utf8")).edits).sort()).toEqual(["L3", "S1"]);
+    // 命令行再改一次（含删除），API 编辑前同样以文件为准
+    saveRuleEdits(file, { S1: { disabled: true } });
+    expect((await put(d, "L2", { thresholds: { repeat: 7 } })).status).toBe(200);
+    expect(Object.keys(JSON.parse(readFileSync(file, "utf8")).edits).sort()).toEqual(["L2", "S1"]);
+    expect(d.cfg.thresholds.L3_repeat).toBe(3);
+    // 文件被写坏：保持内存里的配置，不崩
+    writeFileSync(file, "{oops");
+    await post(d, "fresh-2", { hook_event_name: "UserPromptSubmit", prompt: "hi" });
+    expect(d.cfg.thresholds.L2_repeat).toBe(7);
   });
   test("写文件失败 → 500，内存配置不变（把 home 变成只读）", async () => {
     const { d, home } = await boot();
