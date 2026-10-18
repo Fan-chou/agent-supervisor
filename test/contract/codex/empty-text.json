@@ -1,0 +1,6 @@
+{
+  "cell": "文本为空白：不输出",
+  "at": "PreToolUse",
+  "delivery": { "kind": "block", "text": "   \n  " },
+  "expected": null
+}

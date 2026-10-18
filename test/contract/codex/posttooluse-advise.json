@@ -1,0 +1,11 @@
+{
+  "cell": "Codex PostToolUse × advise → 只有 additionalContext（不带 updatedMCPToolOutput / decision）",
+  "at": "PostToolUse",
+  "delivery": { "kind": "advise", "text": "同一个错误已经出现 3 次，每次之间的改动都没有触及报错的文件。", "ruleId": "L3" },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PostToolUse",
+      "additionalContext": "同一个错误已经出现 3 次，每次之间的改动都没有触及报错的文件。"
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "cell": "Codex PostToolUse × block：工具已执行，降级成 additionalContext，绝不输出 permissionDecision / decision:block",
+  "at": "PostToolUse",
+  "delivery": { "kind": "block", "text": "下一次同样的调用会被拦截。", "ruleId": "L1" },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PostToolUse",
+      "additionalContext": "下一次同样的调用会被拦截。"
+    }
+  }
+}

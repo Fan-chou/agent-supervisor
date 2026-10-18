@@ -1,0 +1,12 @@
+{
+  "cell": "X2 破坏性 git 命令（Codex deny）",
+  "at": "PreToolUse",
+  "x2": { "rule": "X2", "category": "git", "action": "deny", "reason": "X2：git reset --hard 可能丢失未提交的工作或改写远端历史", "subject": "git reset --hard" },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "X2：git reset --hard 可能丢失未提交的工作或改写远端历史"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "cell": "Codex PreToolUse × block → deny（只有三个字段，不带 additionalContext）",
+  "at": "PreToolUse",
+  "delivery": { "kind": "block", "text": "同一条命令已连续失败 2 次，错误相同，期间没有任何改动。", "ruleId": "L1", "deliveryId": "d-1", "createdAtSeq": 7 },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "同一条命令已连续失败 2 次，错误相同，期间没有任何改动。"
+    }
+  }
+}

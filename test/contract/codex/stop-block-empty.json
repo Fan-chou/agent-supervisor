@@ -1,0 +1,6 @@
+{
+  "cell": "Codex Stop × block：不输出",
+  "at": "Stop",
+  "delivery": { "kind": "block", "text": "一条拦截。" },
+  "expected": null
+}

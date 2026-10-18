@@ -1,0 +1,6 @@
+{
+  "cell": "Codex Stop × ask：不输出",
+  "at": "Stop",
+  "delivery": { "kind": "ask", "text": "一条确认。" },
+  "expected": null
+}

@@ -1,0 +1,11 @@
+{
+  "cell": "Codex PreToolUse × advise → 只有 additionalContext（没有 permissionDecision）",
+  "at": "PreToolUse",
+  "delivery": { "kind": "advise", "text": "上一次运行之后没有改动过任何文件。", "ruleId": "T1" },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "additionalContext": "上一次运行之后没有改动过任何文件。"
+    }
+  }
+}

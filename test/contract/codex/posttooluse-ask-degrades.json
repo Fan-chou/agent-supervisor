@@ -1,0 +1,11 @@
+{
+  "cell": "Codex PostToolUse × ask：降级成 additionalContext，绝不输出 ask",
+  "at": "PostToolUse",
+  "delivery": { "kind": "ask", "text": "刚才的操作需要用户确认。", "ruleId": "X2" },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PostToolUse",
+      "additionalContext": "刚才的操作需要用户确认。"
+    }
+  }
+}

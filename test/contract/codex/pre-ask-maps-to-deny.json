@@ -1,0 +1,12 @@
+{
+  "cell": "Codex PreToolUse × ask → deny（Codex 不支持 ask：输出 ask 会让钩子失败、工具照常执行）",
+  "at": "PreToolUse",
+  "delivery": { "kind": "ask", "text": "即将修改 CI 配置，需要用户确认。", "ruleId": "X2" },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "即将修改 CI 配置，需要用户确认。"
+    }
+  }
+}

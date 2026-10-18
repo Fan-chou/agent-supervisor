@@ -1,0 +1,6 @@
+{
+  "cell": "Codex Stop × advise：Stop 上没有合法的输出字段（additionalContext 不允许）",
+  "at": "Stop",
+  "delivery": { "kind": "advise", "text": "一条建议。" },
+  "expected": null
+}

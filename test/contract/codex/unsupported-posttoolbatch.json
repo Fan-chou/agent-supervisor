@@ -1,0 +1,6 @@
+{
+  "cell": "Codex 没有 PostToolBatch：任何 Delivery 都不输出",
+  "at": "PostToolBatch",
+  "delivery": { "kind": "advise", "text": "一条建议。" },
+  "expected": null
+}

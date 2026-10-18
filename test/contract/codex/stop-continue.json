@@ -1,0 +1,9 @@
+{
+  "cell": "Codex Stop × stop_continue → decision:block + reason（reason 会成为新的 user prompt）",
+  "at": "Stop",
+  "delivery": { "kind": "stop_continue", "text": "最后一次编辑之后没有运行过相关测试、targeted 测试或构建。", "ruleId": "P3", "deliveryId": "d-9" },
+  "expected": {
+    "decision": "block",
+    "reason": "最后一次编辑之后没有运行过相关测试、targeted 测试或构建。"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "cell": "Codex PostToolUse × stop_continue：没有合法输出",
+  "at": "PostToolUse",
+  "delivery": { "kind": "stop_continue", "text": "还有未完成的步骤。" },
+  "expected": null
+}

@@ -1,0 +1,7 @@
+{
+  "cell": "Codex Stop × stop_hook_active=true：不再 block",
+  "at": "Stop",
+  "delivery": { "kind": "stop_continue", "text": "最后一次编辑之后没有运行过相关测试、targeted 测试或构建。" },
+  "context": { "stopHookActive": true },
+  "expected": null
+}
