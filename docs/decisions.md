@@ -20,3 +20,19 @@
 11. **errFingerprint**：错误行最多取 8 条不同的归一化行；归一化会去掉带目录的路径与孤立文件名、行号、数字、十六进制（≥7 位）、UUID、ANSI。只取最后一个 Traceback 的最后一帧。无错误行 → 尾部 300 字符。返回 16 位十六进制；空输出返回 `undefined`。
 12. **工作区指纹**：`kind` ∈ `git | non-git | timeout | error`。只有两边都是 `git` 且指纹相同才算「确定没改动」；其余一律按「可能有改动」。指纹包含 `status`（含未跟踪文件逐个列出）、未暂存 diff 哈希、暂存区 diff 哈希、未跟踪文件 `(path, mtime, size)`（最多 2000 个）。`git` 调用设 `GIT_OPTIONAL_LOCKS=0`，避免 `status` 去写 index 锁。
 13. **脱敏**：`redact()` 对 `*_KEY=`/`*_TOKEN=`/`password=` 保留变量名只抹值；`redactDeep` 对键名以 key/token/secret/password 结尾的字段整体抹掉。输出头尾各 1k 字符的截断是独立函数 `headTail`，由调用方决定何时用。
+
+## M1
+14. **包结构**：`packages/core`（类型、分类器、tracker、检测器、policy、engine、mock judge）、`packages/replay`（读取器、回放、报告）、`packages/cli`（`sv`）。读取器放在 replay 而不是 core，因为 core 以后要被守护进程/hook 复用，不该带 transcript 解析。
+15. **Event 流约定**：每次工具调用产生 `pre` + `post` 两条事件（同一 `toolUseId`）。H 级拦截类规则（X2、P1 显式、L1/T1 第 3 次）只在 `pre` 上命中；计数类和 M 级规则在 `post` 上命中；P3 在 `stop` 上命中。回放读取器把 Claude 的「没有 tool_use 的 assistant 文本消息」当作 `stop`，Codex 用 `event_msg.task_complete`。
+16. **L1 的次数定义**：同一 argsHash 连续失败（errFingerprint 相同、两次之间无改动）——第 2 次失败的 `post` 上记 M（advise）；第 3 次*尝试*的 `pre` 上记 H。T1 在 `pre` 上评估：第 2 次无改动重跑 advise，GPT 档第 3 次 H；默认档 T1 没有 H（design 表里默认档只写了第 2 次 advise），`rules.T1_rerun_unchanged.block_on` 只改 GPT 档的 H 阈值。
+17. **「advise」的表示**：L 级 + `message` = 本地预设建议（不经 judge）；L 且无 message = 只记录。T 组的 advise 因此是「L + 事实陈述 message」；M 进 judge。L 级本地建议：非 T 组每规则每会话最多 1 次，T 组靠冷却（10 步 / 5 分钟，两个条件同时满足才算冷却中）。
+18. **阶梯阈值**：`Profile` 里每条 T 规则是 `{L?, advise?, M?, H?}` 次数阶梯，取满足的最高级，且只在「升级的那一次」触发（边沿触发），避免每一步都重复报。`config.example.yaml` 里 `profiles` 的扁平键（`T2_full_per_turn` 等）映射到这些阶梯。
+19. **没有真实指纹时（回放）**：`SessionTracker.unchangedBetween` 返回 `verified | inferred | changed`。`inferred` = 事件流里没有编辑也没有 mutating 命令，但没有真实 `wsFingerprint`。policy 默认（线上）对 `inferred` 不拦，只 advise；回放用 `trustInferredUnchanged=true`，并在时间线里标注 `verified=false` / `wouldBlockIfVerified`。
+20. **X2 与 mode**：shadow 模式下 X2 仍然生效（`rules.X2_dangerous.action` 默认 `block`；设为 `off` 才只记录）。理由：design 把 X2 定义成适配器本地规则、故障也不放行，config.example 里 X2 的配置也独立于 `mode`。如果 Jack 希望 shadow 阶段完全不拦，需要把 `X2_dangerous.action` 设成 `off`——**请确认**。
+21. **X2 的 `rm -rf` 解释**：design 写「删仓库外或 $HOME 下的路径」，但仓库通常就在 $HOME 下。实现为：目标是 `/`、`$HOME` 本身（含 `~/*`）、仓库外的绝对路径/`../` 路径、仓库根或 `.git` 时拦；仓库内普通子目录不拦（可由 git 恢复）；`/tmp`、`/var/folders` 和仓库内构建产物目录（node_modules、dist、build、target…）豁免；含未解析变量（`$X`）的路径无法判断，放行。`git push --force-with-lease` 不拦。
+22. **X1 的判断**：只看测试文件（路径含 tests/、spec/、`test_*.py`、`*.test.ts`、`*_test.go` 等）的 Edit/Write/apply_patch：新增 skip/xfail/`.only`；断言数量减少；上一次测试失败后没改过源码就改了断言行。用户意图/当前计划步骤包含「写测试、补测试、flaky、快照、基准、修 CI」时降为 L。「fix the failing test」**不**算豁免（那通常是要修源码）。
+23. **P1 的允许范围**：plan.md 写了 `allow:` → 显式（H，本地拦，不问 judge，不受连续拦截上限）；否则用当前 in_progress 步骤文本里的路径/glob + 该步期间读过/改过的文件。步骤文本里一个路径都没有 → 自动提取不可靠，P1 不报。匹配：无通配符按「相等或目录前缀」，有通配符用 `Bun.Glob`，不做子串匹配。
+24. **R4** 在 engine 里实现（需要知道「最近没有其他触发」），judge `done=true` 暂停 R4/P4 直到下一次 M 级命中；R2 需要配置 `detect.session_budget_usd`，取不到花费就跳过。
+25. **回放读取器的合成格式**：Claude 样本按公开的 transcript 结构手写（`type: user|assistant`、`message.content[]` 里的 `tool_use`/`tool_result`、`isSidechain`、`isMeta`、`isCompactSummary`）；Codex 样本按 rollout 结构手写（`session_meta`、`turn_context`、`response_item`{message, function_call, function_call_output, custom_tool_call(_output)}、`event_msg`{task_complete, turn_aborted, token_count}）。**真实文件的细节差异需要在 Jack 的机器上校准**——这也是 design §16 第 2 条的未决项。生成器是 `test/fixtures/gen.ts`，输出已提交。
+26. **Codex 长命令回填**：`exec_command` 返回 `Process running with session ID N` 时先标 pending，之后 `write_stdin` 轮询拿到 `Process exited with code M` 时，就地替换最初那条 post 事件的 result（保留原 seq/ts）。这样检测器看到的是最终状态，代价是回放比线上多知道一点「未来」。
+27. **sidechain**：Claude 子 agent（`isSidechain`）的事件默认丢弃，只保留主链；`Task` 工具调用本身仍作为 `agent` 类步骤（S4 用）。
