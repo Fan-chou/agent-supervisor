@@ -89,6 +89,42 @@ describe("timeline / events / children", () => {
   });
 });
 
+describe("/v1/rules 与 /v1/config（只读）", () => {
+  test("rules：目录 + 生效阈值 + 覆盖；符合 schema；改配置阈值跟着变", async () => {
+    const d = await boot({ thresholds: { L2_repeat: 7 }, rules: { S1: { disabled: true } } });
+    const r = await json(d, "/v1/rules");
+    expect(validate(schemaFor("RuleList")!, r)).toEqual([]);
+    expect(r.mode).toBe("shadow");
+    expect(r.rules.find((x: any) => x.id === "L2").thresholds.repeat).toBe(7);
+    expect(r.rules.find((x: any) => x.id === "S1")).toMatchObject({ disabled: true, override: { disabled: true } });
+    expect(r.rules.find((x: any) => x.id === "X2").level).toBe("H");
+  });
+  test("config：api key 只有变量名和是否已设置，凭据被遮掉，响应里没有密钥值；符合 schema；POST 不被接受", async () => {
+    const prev = process.env.SV_TEST_JUDGE_KEY;
+    process.env.SV_TEST_JUDGE_KEY = "sk-should-never-appear-0123456789";
+    try {
+      const d = await boot({ judge: { api_key_env: "SV_TEST_JUDGE_KEY", request: { headers: { Authorization: "Bearer sk-zzzzzzzzzzzzzzzzzzzz" } } } });
+      const res = await get(d, "/v1/config");
+      const text = await res.text();
+      expect(text).not.toContain("sk-should-never-appear");
+      expect(text).not.toContain("sk-zzzz");
+      const c = JSON.parse(text);
+      expect(validate(schemaFor("ConfigView")!, c)).toEqual([]);
+      expect(c.judge).toEqual({ api_key_env: "SV_TEST_JUDGE_KEY", api_key_set: true });
+      expect(c.config.mode).toBe("shadow");
+      expect(c.config.judge.request.headers.Authorization).toBe("••••");
+      expect((await fetch("http://localhost/v1/config", { unix: d.socketPath!, method: "POST", body: "{}" })).status).toBe(404);
+    } finally {
+      if (prev === undefined) delete process.env.SV_TEST_JUDGE_KEY;
+      else process.env.SV_TEST_JUDGE_KEY = prev;
+    }
+  });
+  test("HTTP 没有 token → 401（rules / config 同样要鉴权）", async () => {
+    const d = await boot();
+    for (const p of ["/v1/rules", "/v1/config", "/v1/judge-calls"]) expect((await fetch(`http://127.0.0.1:${d.port}${p}`)).status, p).toBe(401);
+  });
+});
+
 describe("sessions：recent 排序、q / state 过滤", () => {
   test("last_ts / state / events 字段；sort=recent 最近活动在前；q 匹配 session_id / model / project；state 过滤；非法值 400", async () => {
     let t = 1_700_000_000_000;

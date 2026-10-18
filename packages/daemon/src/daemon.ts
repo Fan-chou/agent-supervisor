@@ -214,7 +214,7 @@ export class Daemon {
       // 前端的只读查询（不在 hook 路径上；出错只是这一次查询 500，被 catch 住）
       if (req.method === "GET" && url.pathname === "/v1/stream") return this.openStream(req, url, viaUnix, server);
       try {
-        const q = handleQuery(this.store.db, req.method, url, this.now()) ?? handleCompare(this.store.db, req.method, url);
+        const q = handleQuery(this.store.db, req.method, url, this.now(), this.cfg) ?? handleCompare(this.store.db, req.method, url);
         if (q?.contentType) return new Response(String(q.body), { status: q.status, headers: { "content-type": q.contentType, "x-sv-protocol": String(PROTOCOL) } });
         if (q) return json(q.status, q.body);
       } catch (err) {
