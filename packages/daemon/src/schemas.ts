@@ -141,7 +141,26 @@ const RuleList = obj({ rules: arr({ $ref: "#/$defs/Rule" }), mode: en("shadow", 
 const ConfigView = obj({ config: { type: "object" }, judge: obj({ api_key_env: str, api_key_set: bool }), sources: rec(en("default", "configured", "rules.local")), source: en("daemon-startup") });
 const ConfigValidation = obj({ valid: bool, errors: arr(str), warnings: arr(str), diff: arr(obj({ path: str, from: {}, to: {} }, ["path"])), enablesBlocking: bool });
 
-const DEFS: Record<string, S> = { Rule, RuleList, ConfigView, ConfigValidation, Decision, TimelineCall, TimelineEvent, TimelineHit, TimelineEntry, Hit, SessionSummary, DangerEvent, DangerStats, RuleStat, Run, Status, Delivery, StreamMessage, Timeline, JudgeCall, JudgeCallList, JudgeCallDetail };
+const RunDetail = obj({
+  id: int,
+  kind: en("live", "replay", "eval"),
+  label: nul(str),
+  source: nul(str),
+  mode: nul(str),
+  judge_mode: nul(str),
+  version: nul(str),
+  thresholds_hash: nul(str),
+  started_ts: int,
+  ended_ts: nul(int),
+  tuning: { type: ["object", "null"] },
+  overrides: arr(str),
+  sessions: int,
+  calls: int,
+  hits: int,
+  judge_calls: int,
+});
+
+const DEFS: Record<string, S> = { RunDetail, Rule, RuleList, ConfigView, ConfigValidation, Decision, TimelineCall, TimelineEvent, TimelineHit, TimelineEntry, Hit, SessionSummary, DangerEvent, DangerStats, RuleStat, Run, Status, Delivery, StreamMessage, Timeline, JudgeCall, JudgeCallList, JudgeCallDetail };
 export const SCHEMA_NAMES = Object.keys(DEFS).filter((n) => !["TimelineCall", "TimelineEvent", "TimelineHit"].includes(n));
 
 /** 返回自包含的 Schema（$defs 里带上所有定义，$ref 就地可解析）；未知名字返回 null。 */

@@ -1,0 +1,21 @@
+{
+  "schema": "RunDetail",
+  "value": {
+    "id": 2,
+    "kind": "replay",
+    "label": "base",
+    "source": "test/fixtures/sessions",
+    "mode": "shadow",
+    "judge_mode": "off",
+    "version": null,
+    "thresholds_hash": "ab12cd34",
+    "started_ts": 1700000000000,
+    "ended_ts": 1700000005000,
+    "tuning": { "thresholds": { "L2_repeat": 5 }, "budgets": {}, "detect": {}, "rules": {} },
+    "overrides": ["thresholds.L2_repeat=5"],
+    "sessions": 3,
+    "calls": 41,
+    "hits": 7,
+    "judge_calls": 0
+  }
+}

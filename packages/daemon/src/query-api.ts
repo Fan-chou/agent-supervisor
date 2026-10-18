@@ -11,6 +11,7 @@ import {
   listHits,
   listJudgeCalls,
   listRuns,
+  runDetail,
   modelRuleStats,
   resolveRuns,
   ruleStats,
@@ -133,7 +134,7 @@ export function handleQuery(db: Database, method: string, u: URL, now: number = 
   if (cfg && p === "/v1/rules") return ok({ rules: ruleViews(cfg, edited), mode: cfg.mode });
   if (cfg && p === "/v1/config") return ok(configView(cfg, process.env, base));
 
-  const known = /^\/v1\/(sessions|hits|runs|rules\/stats|judge-calls(?:\/(?:stats|export\.csv|\d+))?|danger\/(stats|events))(\/|\.csv$|$)/.test(p);
+  const known = /^\/v1\/(sessions|hits|runs|replays|eval\/reports|rules\/stats|judge-calls(?:\/(?:stats|export\.csv|\d+))?|danger\/(stats|events))(\/|\.csv$|$)/.test(p);
   if (!known) return null;
   const sc = scopeOf(db, u);
   if (isReply(sc)) return sc;
@@ -201,6 +202,23 @@ export function handleQuery(db: Database, method: string, u: URL, now: number = 
   // 运行 / 统计 / 危险
   if (p === "/v1/runs") return ok({ runs: listRuns(db) });
   if (p === "/v1/runs.csv") return csv(listRuns(db));
+  // 回放 / 评测的结果（只读；回放与评测由命令行发起，界面不触发，decisions #100）
+  m = /^\/v1\/runs\/(\d+)$/.exec(p);
+  if (m) {
+    const d = runDetail(db, Number(m[1]));
+    return d ? ok(d) : notFound(`运行 ${m[1]}`);
+  }
+  if (p === "/v1/replays") return ok({ replays: listRuns(db).filter((r) => r.kind === "replay") });
+  m = /^\/v1\/replays\/(\d+)$/.exec(p);
+  if (m) {
+    const d = runDetail(db, Number(m[1]));
+    return d && d.kind === "replay" ? ok(d) : notFound(`回放 ${m[1]}`);
+  }
+  // 评测报告 = kind=eval 的运行 + 该运行的逐规则统计（命中率、误报率…）；sv eval 的会话级 precision 表目前不入库，所以这里没有
+  if (p === "/v1/eval/reports") {
+    const runs = listRuns(db).filter((r) => r.kind === "eval");
+    return ok({ reports: runs.map((r) => ({ run: r, rules: ruleStats(db, { runIds: [r.id as number] }) })) });
+  }
   if (p === "/v1/rules/stats" || p === "/v1/rules/stats.csv") {
     const byModel = q.get("by") === "model";
     const rows = (byModel ? modelRuleStats(db, sc) : ruleStats(db, sc)) as unknown as Record<string, unknown>[];

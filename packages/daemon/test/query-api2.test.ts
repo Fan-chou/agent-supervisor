@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultConfig, resolveConfig } from "@sv/core";
+import { applyOverride, beginRun, defaultConfig, resolveConfig } from "@sv/core";
 import { Daemon, startDaemon } from "../src/index.ts";
 import { SCHEMA_NAMES, schemaFor } from "../src/schemas.ts";
 import { csvCell, toCsv } from "../src/query-api.ts";
@@ -86,6 +86,31 @@ describe("timeline / events / children", () => {
     expect((await get(d, "/v1/sessions/nope/events")).status).toBe(404);
     expect((await get(d, "/v1/sessions/cc-1/timeline?limit=x")).status).toBe(400);
     expect((await get(d, "/v1/sessions/cc-1/timeline?before_seq=1.5")).status).toBe(400);
+  });
+});
+
+describe("运行详情 / 回放 / 评测报告（只读）", () => {
+  test("runs/{id}：当时生效的配置（tuning）、--set 覆盖、汇总；replays 只列回放；eval/reports 带逐规则统计；符合 schema", async () => {
+    const d = await boot();
+    const cfg = d.cfg;
+    const replay = beginRun(d.store, applyOverride(cfg, "thresholds.L2_repeat=5"), { kind: "replay", label: "base", source: "fixtures/x", judgeMode: "off", overrides: ["thresholds.L2_repeat=5"] });
+    d.store.insertHit(replay, { sessionId: "r1", seq: 1, ts: 1, ruleId: "L2", sev: "M" });
+    d.store.endRun(replay, 5);
+    const evalRun = beginRun(d.store, cfg, { kind: "eval", label: "ev", source: "labels.yaml", judgeMode: "mock" });
+    d.store.insertHit(evalRun, { sessionId: "e1", seq: 1, ts: 1, ruleId: "T1", sev: "H" });
+    const det = await json(d, `/v1/runs/${replay}`);
+    expect(validate(schemaFor("RunDetail")!, det)).toEqual([]);
+    expect(det).toMatchObject({ kind: "replay", label: "base", overrides: ["thresholds.L2_repeat=5"], hits: 1, ended_ts: 5 });
+    expect(det.tuning.thresholds.L2_repeat).toBe(5);
+    expect((await json(d, "/v1/replays")).replays.map((r: any) => r.id)).toEqual([replay]);
+    expect((await json(d, `/v1/replays/${replay}`)).id).toBe(replay);
+    expect((await get(d, `/v1/replays/${evalRun}`)).status).toBe(404); // 不是回放
+    const rep = await json(d, "/v1/eval/reports");
+    expect(rep.reports.map((x: any) => x.run.id)).toEqual([evalRun]);
+    expect(rep.reports[0].rules.map((r: any) => r.rule)).toEqual(["T1"]);
+    expect((await get(d, "/v1/runs/9999")).status).toBe(404);
+    expect((await fetch("http://localhost/v1/replays", { unix: d.socketPath!, method: "POST", body: "{}" })).status).toBe(404); // 界面不触发回放
+    expect((await fetch(`http://localhost/v1/replays/${replay}`, { unix: d.socketPath!, method: "DELETE" })).status).toBe(404);
   });
 });
 

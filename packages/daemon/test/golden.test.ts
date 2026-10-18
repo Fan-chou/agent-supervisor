@@ -80,6 +80,7 @@ describe("黄金样例：字段集合与真实响应一致（防漂移）", () =
     expect(keys(await get("/v1/danger/stats"))).toEqual(keys(fx("DangerStats")));
     expect(keys((await get("/v1/rules/stats")).rows[0])).toEqual(keys(fx("RuleStat")));
     expect(keys((await get("/v1/runs")).runs[0])).toEqual(keys(fx("Run")).filter((k) => k in (fx("Run") as object)));
+    expect(keys(await get(`/v1/runs/${d.runId}`))).toEqual(keys(fx("RunDetail")));
     const st = await get("/v1/status");
     for (const k of keys(fx("Status"))) expect(keys(st), `Status.${k}`).toContain(k);
     const jl = await get("/v1/judge-calls");

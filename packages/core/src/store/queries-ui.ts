@@ -357,6 +357,51 @@ export function sessionChildren(db: Database, sessionId: string, runId?: number)
   return q<Record<string, unknown>>(db, "SELECT run_id, session_id, harness, model, project, calls, started_ts, ended_ts, parent_session_id FROM sessions WHERE run_id = ? AND parent_session_id = ? ORDER BY started_ts, session_id", [run, sessionId]);
 }
 
+// ---------- 运行详情（回放 / 评测 / live） ----------
+
+const tryJson = (s: unknown): unknown => {
+  if (typeof s !== "string") return null;
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+};
+
+/** 一次运行的详情：列表字段 + 当时生效的阈值/预算/规则配置（thresholds_json）+ `--set` 覆盖 + 会话与命中汇总。不存在返回 null。 */
+export function runDetail(db: Database, id: number) {
+  const r = q<Record<string, unknown>>(db, "SELECT * FROM runs WHERE id = ?", [id])[0];
+  if (!r) return null;
+  const counts = q<Record<string, unknown>>(
+    db,
+    `SELECT (SELECT COUNT(*) FROM sessions WHERE run_id = r.id) AS sessions,
+            (SELECT COUNT(*) FROM events WHERE run_id = r.id AND phase = 'post') AS calls,
+            (SELECT COUNT(*) FROM hits WHERE run_id = r.id AND observe_only = 0) AS hits,
+            (SELECT COUNT(*) FROM judge_calls WHERE run_id = r.id) AS judge_calls
+       FROM runs r WHERE r.id = ?`,
+    [id],
+  )[0];
+  return {
+    id: r.id as number,
+    kind: r.kind as string,
+    label: (r.label as string) ?? null,
+    source: (r.source as string) ?? null,
+    mode: (r.mode as string) ?? null,
+    judge_mode: (r.judge_mode as string) ?? null,
+    version: (r.version as string) ?? null,
+    thresholds_hash: (r.thresholds_hash as string) ?? null,
+    started_ts: r.started_ts as number,
+    ended_ts: (r.ended_ts as number) ?? null,
+    /** 当时生效的 {thresholds, budgets, detect, rules}。 */
+    tuning: tryJson(r.thresholds_json),
+    overrides: (tryJson(r.overrides_json) as string[] | null) ?? [],
+    sessions: counts.sessions as number,
+    calls: counts.calls as number,
+    hits: counts.hits as number,
+    judge_calls: counts.judge_calls as number,
+  };
+}
+
 // ---------- judge 调用（列表 / 详情；正文只在详情里） ----------
 
 export interface JudgeCallRow {
