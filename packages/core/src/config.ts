@@ -1,4 +1,5 @@
-// 配置（config.example.yaml）：默认值、合并、加载、档位选择。
+// 配置（config.example.yaml）：默认值、合并、加载、覆盖。
+// 所有规则通用、只有一套阈值（`thresholds`），不按模型分档；模型名只记录到日志。
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 
@@ -6,11 +7,10 @@ export type Level = "L" | "advise" | "M" | "H";
 /** 阶梯阈值：次数达到 n 时升到对应级别（取满足的最高级）。 */
 export type Ladder = Partial<Record<Level, number>>;
 
-export interface Profile {
-  name: string;
+export interface Thresholds {
   L2_repeat: number;
   S1_readonly: number;
-  /** L1：连续失败多少次后 advise（默认 2）。 */
+  /** L1：连续失败多少次后 advise。 */
   L1_advise: number;
   T1: Ladder;
   T2: Ladder;
@@ -20,14 +20,26 @@ export interface Profile {
   T6: Ladder;
   T7: Ladder;
   T8: Ladder;
-  /** 每轮预算（GPT 档）：超出进入 M。undefined = 不限。 */
-  full_tests_per_turn?: number;
-  verify_calls_per_turn?: number;
+  /** 每轮预算：超出进入 M。 */
+  full_tests_per_turn: number;
+  verify_calls_per_turn: number;
 }
 
 export interface JudgeRoute {
   when: { rule?: string; sync?: boolean };
   model: string;
+}
+
+export interface LogConfig {
+  /** SQLite 日志库路径（design §18）。 */
+  db: string;
+  /** 保留天数；0 = 不自动清理。 */
+  retention_days: number;
+  /** 非空时同时把每条记录镜像追加到该目录下的 JSONL 文件（按表、按日期）。 */
+  jsonl_dir: string | null;
+  /** 是否保存事件正文 / judge 请求响应正文（脱敏后）。关掉后只留指纹与统计字段。 */
+  store_event_bodies: boolean;
+  store_judge_bodies: boolean;
 }
 
 export interface Config {
@@ -52,13 +64,13 @@ export interface Config {
     max_stop_continues: number;
     max_async_rewakes: number;
   };
-  model_profiles: { match: string; profile: string }[];
-  profiles: Record<string, Profile>;
+  thresholds: Thresholds;
   rules: Record<string, { action?: string; mode?: string; block_on?: number; disabled?: boolean }>;
   plan: { source: "auto" | "file" | "off" };
   test: { full: string[]; fast: string[]; extra_patterns: string[] };
   harness: Record<string, { enabled: boolean; api?: string }>;
   runtime: { socket: string; autostart_daemon: boolean };
+  log: LogConfig;
   /** 回放/检测器用的其他参数。 */
   detect: {
     context_window: number;
@@ -74,37 +86,24 @@ export interface Config {
   };
 }
 
-const DEFAULT_PROFILE: Profile = {
-  name: "default",
-  L2_repeat: 4,
-  S1_readonly: 12,
-  L1_advise: 2,
-  T1: { advise: 2 },
-  T2: { advise: 3 },
-  T3: { advise: 1 },
-  T4: { L: 6 },
-  T5: { L: 3 },
-  T6: { advise: 3 },
-  T7: { L: 1 },
-  T8: { L: 10 },
-};
-
-const GPT_PROFILE: Profile = {
-  name: "gpt",
-  L2_repeat: 4,
-  S1_readonly: 12,
-  L1_advise: 2,
-  T1: { advise: 2, H: 3 },
-  T2: { advise: 2, M: 4 },
-  T3: { advise: 1 },
-  T4: { advise: 4 },
-  T5: { advise: 2, M: 3 },
-  T6: { advise: 2 },
-  T7: { advise: 1 },
-  T8: { M: 10 },
-  full_tests_per_turn: 2,
-  verify_calls_per_turn: 12,
-};
+/** 初值（design §5、§6.3），必须用回放校准。 */
+export function defaultThresholds(): Thresholds {
+  return {
+    L2_repeat: 4,
+    S1_readonly: 12,
+    L1_advise: 2,
+    T1: { advise: 2, H: 3 },
+    T2: { advise: 3, M: 5 },
+    T3: { advise: 1 },
+    T4: { L: 4, advise: 6 },
+    T5: { L: 2, advise: 3, M: 4 },
+    T6: { advise: 3 },
+    T7: { advise: 1 },
+    T8: { L: 10, M: 14 },
+    full_tests_per_turn: 3,
+    verify_calls_per_turn: 12,
+  };
+}
 
 export function defaultConfig(): Config {
   return {
@@ -129,8 +128,7 @@ export function defaultConfig(): Config {
       max_stop_continues: 2,
       max_async_rewakes: 2,
     },
-    model_profiles: [{ match: "^(gpt-|o\\d|codex)", profile: "gpt" }],
-    profiles: { default: { ...DEFAULT_PROFILE }, gpt: { ...GPT_PROFILE } },
+    thresholds: defaultThresholds(),
     rules: {
       X2_dangerous: { action: "block" },
       S2_phase_stall: { mode: "replay_only" },
@@ -140,6 +138,7 @@ export function defaultConfig(): Config {
     test: { full: [], fast: [], extra_patterns: [] },
     harness: { claude: { enabled: true }, codex: { enabled: true }, opencode: { enabled: true, api: "v2" } },
     runtime: { socket: "~/.agent-supervisor/sock", autostart_daemon: true },
+    log: { db: "~/.agent-supervisor/state.db", retention_days: 14, jsonl_dir: null, store_event_bodies: true, store_judge_bodies: true },
     detect: {
       context_window: 200_000,
       r4_interval_steps: 20,
@@ -159,7 +158,7 @@ function isObj(v: unknown): v is Record<string, unknown> {
 }
 
 function deepMerge<T>(base: T, over: unknown): T {
-  if (!isObj(base) || !isObj(over)) return (over === undefined ? base : (over as T));
+  if (!isObj(base) || !isObj(over)) return over === undefined ? base : (over as T);
   const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
   for (const [k, v] of Object.entries(over)) {
     out[k] = k in out && isObj(out[k]) && isObj(v) ? deepMerge(out[k], v) : v;
@@ -167,45 +166,13 @@ function deepMerge<T>(base: T, over: unknown): T {
   return out as T;
 }
 
-/** config.example.yaml 里 profiles 用扁平键（T2_full_per_turn 等），映射到阶梯。 */
-function applyFlatProfileKeys(p: Profile, flat: Record<string, unknown>): Profile {
-  const out: Profile = { ...p };
-  const num = (k: string) => (typeof flat[k] === "number" ? (flat[k] as number) : undefined);
-  const set = (k: keyof Profile, v: unknown) => ((out as unknown as Record<string, unknown>)[k as string] = v);
-  if (num("L2_repeat") !== undefined) out.L2_repeat = num("L2_repeat")!;
-  if (num("S1_readonly") !== undefined) out.S1_readonly = num("S1_readonly")!;
-  if (num("T2_full_per_turn") !== undefined) out.T2 = { ...out.T2, advise: num("T2_full_per_turn")! };
-  if (num("T4_probes") !== undefined) {
-    const lvl: Level = out.T4.advise !== undefined ? "advise" : "L";
-    out.T4 = { ...out.T4, [lvl]: num("T4_probes")! };
-  }
-  if (num("T5_smoke_scripts") !== undefined) {
-    const lvl: Level = out.T5.advise !== undefined ? "advise" : "L";
-    out.T5 = { ...out.T5, [lvl]: num("T5_smoke_scripts")! };
-  }
-  if (num("verify_calls_per_turn") !== undefined) set("verify_calls_per_turn", num("verify_calls_per_turn"));
-  if (num("full_tests_per_turn") !== undefined) set("full_tests_per_turn", num("full_tests_per_turn"));
-  return out;
-}
-
 export function resolveConfig(raw: unknown, base: Config = defaultConfig()): Config {
   if (!isObj(raw)) return base;
-  const { profiles, ...rest } = raw as Record<string, unknown>;
-  let cfg = deepMerge(base, rest);
-  if (isObj(profiles)) {
-    const merged: Record<string, Profile> = { ...cfg.profiles };
-    for (const [name, flat] of Object.entries(profiles)) {
-      if (!isObj(flat)) continue;
-      const start = merged[name] ?? { ...DEFAULT_PROFILE, name };
-      merged[name] = applyFlatProfileKeys({ ...start, name }, flat);
-    }
-    cfg = { ...cfg, profiles: merged };
-  }
-  // rules.T1_rerun_unchanged.block_on 只作用于已经有 H 阶梯的档（GPT 档）
+  const cfg = deepMerge(base, raw);
+  // rules.T1_rerun_unchanged.block_on 是 thresholds.T1.H 的别名（config.example.yaml 沿用的写法）
   const bo = cfg.rules.T1_rerun_unchanged?.block_on;
-  if (typeof bo === "number") {
-    for (const p of Object.values(cfg.profiles)) if (p.T1.H !== undefined) p.T1 = { ...p.T1, H: bo };
-  }
+  const explicitH = isObj(raw.thresholds) && isObj((raw.thresholds as Record<string, unknown>).T1) && "H" in ((raw.thresholds as Record<string, unknown>).T1 as object);
+  if (typeof bo === "number" && !explicitH) cfg.thresholds = { ...cfg.thresholds, T1: { ...cfg.thresholds.T1, H: bo } };
   return cfg;
 }
 
@@ -213,21 +180,35 @@ export function loadConfigFile(path: string, base?: Config): Config {
   return resolveConfig(parseYaml(readFileSync(path, "utf8")), base);
 }
 
-/** 按 agent 的模型名选档；拿不到模型名用 default（不按工具猜）。 */
-export function pickProfile(model: string | undefined, cfg: Config): Profile {
-  if (model) {
-    for (const m of cfg.model_profiles) {
-      try {
-        if (new RegExp(m.match).test(model) && cfg.profiles[m.profile]) return cfg.profiles[m.profile];
-      } catch {
-        /* 非法正则忽略 */
-      }
-    }
+/**
+ * 命令行覆盖：`thresholds.T1.H=4`、`budgets.judge_cooldown_s=30`（点号路径，值按 JSON 解析，失败当字符串）。
+ * 返回新的配置，不修改入参。用于 `sv replay --set …` 调阈值。
+ */
+export function applyOverride(cfg: Config, assignment: string): Config {
+  const eq = assignment.indexOf("=");
+  if (eq <= 0) throw new Error(`覆盖格式应为 path=value：${assignment}`);
+  const path = assignment.slice(0, eq).split(".").filter(Boolean);
+  const raw = assignment.slice(eq + 1);
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    value = raw;
   }
-  return cfg.profiles.default ?? DEFAULT_PROFILE;
+  const clone = structuredClone(cfg) as unknown as Record<string, unknown>;
+  let cur: Record<string, unknown> = clone;
+  for (let i = 0; i < path.length - 1; i++) {
+    const next = cur[path[i]];
+    if (!isObj(next)) throw new Error(`配置里没有路径 ${path.slice(0, i + 1).join(".")}`);
+    cur = next;
+  }
+  const last = path[path.length - 1];
+  if (!(last in cur) && !path[0].startsWith("thresholds")) throw new Error(`配置里没有路径 ${path.join(".")}`);
+  cur[last] = value;
+  return clone as unknown as Config;
 }
 
-/** 阶梯取值：返回满足的最高级别及其阈值。 */
+/** 阶梯取值：返回满足的最高级别。 */
 export function ladderLevel(l: Ladder, n: number, scale = 1): Level | null {
   const order: Level[] = ["H", "M", "advise", "L"];
   for (const lv of order) {

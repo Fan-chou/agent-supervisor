@@ -28,17 +28,34 @@ budgets:
   max_stop_continues: 2
   max_async_rewakes: 2
 
-model_profiles:                          # 按 agent 的模型名选阈值档；拿不到模型名用 default
-  - { match: "^(gpt-|o\\d|codex)", profile: gpt }
-
-profiles:
-  default: { L2_repeat: 4, S1_readonly: 12, T2_full_per_turn: 3, T4_probes: 6, T5_smoke_scripts: 3 }
-  gpt:     { L2_repeat: 4, S1_readonly: 12, T2_full_per_turn: 2, T4_probes: 4, T5_smoke_scripts: 2, verify_calls_per_turn: 12 }
+# 所有规则通用、只有一套阈值，不按模型分档；模型名只记录到日志（log 段），不参与判定。
+# T 组是阶梯：{ L|advise|M|H: 次数 }，次数达到时升到对应级别。初值，必须用回放校准（sv replay --set thresholds.T1.H=4）。
+thresholds:
+  L2_repeat: 4
+  S1_readonly: 12
+  L1_advise: 2
+  T1: { advise: 2, H: 3 }
+  T2: { advise: 3, M: 5 }
+  T3: { advise: 1 }
+  T4: { L: 4, advise: 6 }
+  T5: { L: 2, advise: 3, M: 4 }
+  T6: { advise: 3 }
+  T7: { advise: 1 }
+  T8: { L: 10, M: 14 }
+  full_tests_per_turn: 3
+  verify_calls_per_turn: 12
 
 rules:
-  X2_dangerous: { action: block }        # Claude 上 CI/.env 类用 ask
+  X2_dangerous: { action: block }        # Claude 上 CI/.env 类用 ask；是否真正拦截仍跟随 mode
   S2_phase_stall: { mode: replay_only }
-  T1_rerun_unchanged: { block_on: 3 }
+  T1_rerun_unchanged: { block_on: 3 }    # 等价于 thresholds.T1.H
+
+log:                                     # 结构化日志，design §18
+  db: ~/.agent-supervisor/state.db       # SQLite（WAL）
+  retention_days: 14                     # 0 = 不自动清理
+  jsonl_dir: null                        # 例：~/.agent-supervisor/logs ——非空时同时镜像为 JSONL
+  store_event_bodies: true               # false 时只留指纹/统计字段
+  store_judge_bodies: true               # judge 请求/响应正文（均已脱敏）
 
 plan:
   source: auto                           # auto（agent 待办）| file（.supervisor/plan.md）| off   【暂定】

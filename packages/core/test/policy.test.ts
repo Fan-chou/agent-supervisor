@@ -199,14 +199,19 @@ describe("policy：H 级与上限", () => {
     const [pre2] = await s.bash("pytest -q", { out: PYTEST_PASS });
     expect(pre1.decisions.some((d) => d.hit.ruleId === "T1")).toBe(false);
     expect(pre2.decisions.find((d) => d.hit.ruleId === "T1")?.action).toBe("advise");
-    // §6.3：advise 一次后冷却 10 步或 5 分钟——第 3 次无改动重跑落在冷却里，不再发第二条 advise
-    const [pre3] = await s.bash("pytest -q", { out: PYTEST_PASS });
-    expect(pre3.decisions.find((d) => d.hit.ruleId === "T1")?.action).toBe("skip");
-    expect(pre3.decisions.find((d) => d.hit.ruleId === "T1")?.reason).toContain("冷却");
+    // §6.3：advise 一次后冷却 10 步或 5 分钟——编辑后重新来一遍「跑、再跑」，第二次 advise 落在冷却里
+    await s.edit("/work/proj/src/a.py", "a", "b");
+    await s.bash("pytest -q", { out: PYTEST_PASS });
+    const [again] = await s.bash("pytest -q", { out: PYTEST_PASS });
+    const d = again.decisions.find((x) => x.hit.ruleId === "T1");
+    expect(d?.action).toBe("skip");
+    expect(d?.reason).toContain("冷却");
     // 步数和时间都过了窗口（10 步且 5 分钟）后可以再提醒一次
+    await s.edit("/work/proj/src/a.py", "b", "c");
     for (let i = 0; i < 10; i++) await s.bash(`echo filler ${i}`, { out: "f" + i, dt: 60_000 });
-    const [pre4] = await s.bash("pytest -q", { out: PYTEST_PASS, ws: undefined });
-    expect(pre4.decisions.find((d) => d.hit.ruleId === "T1")?.action).toBe("advise");
+    await s.bash("pytest -q", { out: PYTEST_PASS });
+    const [later] = await s.bash("pytest -q", { out: PYTEST_PASS });
+    expect(later.decisions.find((x) => x.hit.ruleId === "T1")?.action).toBe("advise");
   });
 });
 

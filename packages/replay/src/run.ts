@@ -1,7 +1,7 @@
 // 回放：Event 流 → Engine → 命中时间线（JSON + 可读文本）。
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import { defaultConfig, Engine, mockJudge, pickProfile, redact, redactDeep, type Config, type Decision, type Event, type Hit, type JudgeFn, type MockOptions } from "@sv/core";
+import { defaultConfig, Engine, mockJudge, redact, redactDeep, type Config, type Decision, type Event, type Hit, type JudgeFn, type MockOptions } from "@sv/core";
 import { readClaudeTranscript } from "./claude.ts";
 import { readCodexRollout } from "./codex.ts";
 
@@ -50,7 +50,6 @@ export interface ReplayResult {
   sessionId: string;
   harness: string;
   model?: string;
-  profile: string;
   judgeMode: string;
   events: number;
   steps: number;
@@ -163,7 +162,6 @@ export async function replayEvents(events: Event[], opts: ReplayOptions = {}, fi
     sessionId: events[0]?.sessionId ?? "unknown",
     harness: events[0]?.harness ?? "unknown",
     model: engine.tracker.model,
-    profile: pickProfile(engine.tracker.model, cfg).name,
     judgeMode,
     events: events.length,
     steps: engine.tracker.steps.length,
@@ -207,7 +205,6 @@ export async function replayPath(path: string, opts: ReplayOptions = {}): Promis
         file: f,
         sessionId: basename(f),
         harness: "unknown",
-        profile: "default",
         judgeMode: "off",
         events: 0,
         steps: 0,
@@ -242,7 +239,7 @@ const ACTION_LABEL: Record<string, string> = {
 
 export function renderText(r: ReplayResult, opts: { verbose?: boolean } = {}): string {
   const out: string[] = [];
-  out.push(`会话 ${r.sessionId}  [${r.harness}${r.model ? " / " + r.model : ""}]  档位=${r.profile}  judge=${r.judgeMode}`);
+  out.push(`会话 ${r.sessionId}  [${r.harness}${r.model ? " / " + r.model : ""}]  judge=${r.judgeMode}`);
   if (r.file) out.push(`文件 ${r.file}`);
   out.push(`事件 ${r.events}，工具调用 ${r.steps}，时长 ${fmtRel(r.durationMs).slice(1)}，命中 ${r.summary.hits}，judge 调用 ${r.summary.judgeCalls}`);
   if (r.plan) out.push(`计划 来源=${r.plan.source}  当前步骤=${r.plan.current ?? "（无）"}${r.plan.explicitAllow.length ? "  allow=" + r.plan.explicitAllow.join(",") : ""}`);

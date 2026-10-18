@@ -1,6 +1,6 @@
 import type { Event } from "../event.ts";
 import { cheatDetectors } from "./cheat.ts";
-import { gptDetectors } from "./gpt.ts";
+import { tDetectors } from "./tgroup.ts";
 import { loopDetectors } from "./loop.ts";
 import { resourceDetectors } from "./resource.ts";
 import { scopeDetectors } from "./scope.ts";
@@ -13,9 +13,9 @@ export * from "./stall.ts";
 export * from "./scope.ts";
 export * from "./cheat.ts";
 export * from "./resource.ts";
-export * from "./gpt.ts";
+export * from "./tgroup.ts";
 
-export const ALL_DETECTORS: Detector[] = [...cheatDetectors, ...loopDetectors, ...stallDetectors, ...scopeDetectors, ...gptDetectors, ...resourceDetectors];
+export const ALL_DETECTORS: Detector[] = [...cheatDetectors, ...loopDetectors, ...stallDetectors, ...scopeDetectors, ...tDetectors, ...resourceDetectors];
 
 /** 对一条事件运行全部检测器（事件已经 ingest 进 tracker）。 */
 export function detectAll(e: Event, ctx: DetectCtx, detectors: Detector[] = ALL_DETECTORS): Hit[] {

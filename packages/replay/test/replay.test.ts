@@ -66,23 +66,26 @@ describe("replay：命中时间线", () => {
     expect(p1.action).toBe("block");
     expect(r.plan?.source).toBe("file");
   });
-  test("Codex GPT 档：按 model 选档；编辑后同一条测试连续重跑 → T1 第 2 次 advise、第 3 次 H；T2 M", async () => {
-    const r = await replayFile(join(FX, "codex/overtest-gpt.jsonl"));
-    expect(r.profile).toBe("gpt");
+  test("Codex：编辑后同一条测试连续重跑 → T1 第 2 次 advise、之后 H；T2 advise 后 M", async () => {
+    const r = await replayFile(join(FX, "codex/overtest.jsonl"));
     const t1 = r.timeline.filter((t) => t.ruleId === "T1");
-    expect(t1.map((t) => t.sev)).toEqual(["L", "H", "H", "H"]); // 第 2 次 advise，之后每次重跑都是 H
+    expect(t1.map((t) => t.sev)).toEqual(["L", "H", "H", "H"]);
     expect(t1[1].phase).toBe("pre");
-    expect(r.timeline.some((t) => t.ruleId === "T2" && t.sev === "M")).toBe(true);
+    expect(r.timeline.filter((t) => t.ruleId === "T2").map((t) => t.sev)).toEqual(["L", "M"]);
     expect(r.timeline.some((t) => t.ruleId === "P2")).toBe(false);
   });
-  test("Codex 同一份会话换成默认档：阈值不同", async () => {
-    const text = readFileSync(join(FX, "codex/overtest-gpt.jsonl"), "utf8").replace(/gpt-5-codex/g, "claude-sonnet-5-5");
-    const f = join(tmp, "as-default.jsonl");
-    writeFileSync(f, text);
-    const a = await replayFile(join(FX, "codex/overtest-gpt.jsonl"));
-    const b = await replayFile(f);
-    expect(b.profile).toBe("default");
-    expect(b.timeline.filter((t) => t.ruleId === "T2").length).toBeLessThanOrEqual(a.timeline.filter((t) => t.ruleId === "T2").length);
+  test("模型名只记录、不参与判定：换成任何模型名，命中时间线完全一致", async () => {
+    const orig = readFileSync(join(FX, "codex/overtest.jsonl"), "utf8");
+    const a = await replayFile(join(FX, "codex/overtest.jsonl"));
+    expect(a.model).toBe("gpt-5-codex");
+    for (const model of ["claude-sonnet-5-5", "kimi-k2", "o3"]) {
+      const f = join(tmp, `as-${model}.jsonl`);
+      writeFileSync(f, orig.replace(/gpt-5-codex/g, model));
+      const b = await replayFile(f);
+      expect(b.model).toBe(model);
+      const sig = (r: typeof a) => r.timeline.map((t) => `${t.seq}:${t.ruleId}:${t.sev}:${t.action}`);
+      expect(sig(b)).toEqual(sig(a));
+    }
   });
   test("Codex 退出码回填后，失败循环被 L1 识别", async () => {
     const r = await replayFile(join(FX, "codex/fail-loop.jsonl"));

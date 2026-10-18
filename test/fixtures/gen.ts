@@ -182,7 +182,7 @@ class Codex {
   for (let i = 0; i < 5; i++) c.shell(20 + i * 15, `c${3 + i}`, "pytest -q", "3 passed in 0.04s", 0);
   c.shell(110, "c8", "python -c \"import parser; print(parser.parse('a,b'))\"", "['a', 'b']", 0);
   c.done(120);
-  c.dump("overtest-gpt.jsonl");
+  c.dump("overtest.jsonl");
 }
 {
   // 退出码回填：exec_command 先返回 "Process running with session ID 7"，write_stdin 轮询拿到最终退出码 1

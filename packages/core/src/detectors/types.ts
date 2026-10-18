@@ -1,4 +1,4 @@
-import type { Config, Profile } from "../config.ts";
+import type { Config, Thresholds } from "../config.ts";
 import type { Event } from "../event.ts";
 import type { SessionTracker } from "../session.ts";
 
@@ -35,7 +35,7 @@ export interface Hit {
 export interface DetectCtx {
   s: SessionTracker;
   cfg: Config;
-  profile: Profile;
+  th: Thresholds;
 }
 
 export type Detector = (e: Event, ctx: DetectCtx) => Hit[];

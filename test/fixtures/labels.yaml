@@ -29,7 +29,7 @@ sessions:
     derail_kind: scope
     expected_rules: [P1]
   - id: codex-overtest
-    file: codex/overtest-gpt.jsonl
+    file: codex/overtest.jsonl
     outcome: derailed
     derail_step: 5
     derail_kind: over_testing

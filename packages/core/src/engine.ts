@@ -1,5 +1,5 @@
 // 引擎：Event → tracker → 检测器 → policy。回放和（以后的）守护进程共用。
-import { defaultConfig, pickProfile, type Config } from "./config.ts";
+import { defaultConfig, type Config } from "./config.ts";
 import { ALL_DETECTORS, detectAll, mkHit, type DetectCtx, type Detector, type Hit } from "./detectors/index.ts";
 import type { Event } from "./event.ts";
 import type { JudgeFn } from "./judge/types.ts";
@@ -46,7 +46,7 @@ export class Engine {
   }
 
   ctx(): DetectCtx {
-    return { s: this.tracker, cfg: this.cfg, profile: pickProfile(this.tracker.model, this.cfg) };
+    return { s: this.tracker, cfg: this.cfg, th: this.cfg.thresholds };
   }
 
   async feed(e: Event): Promise<StepRecord> {

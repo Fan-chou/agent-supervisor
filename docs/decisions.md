@@ -24,12 +24,12 @@
 ## M1
 14. **包结构**：`packages/core`（类型、分类器、tracker、检测器、policy、engine、mock judge）、`packages/replay`（读取器、回放、报告）、`packages/cli`（`sv`）。读取器放在 replay 而不是 core，因为 core 以后要被守护进程/hook 复用，不该带 transcript 解析。
 15. **Event 流约定**：每次工具调用产生 `pre` + `post` 两条事件（同一 `toolUseId`）。H 级拦截类规则（X2、P1 显式、L1/T1 第 3 次）只在 `pre` 上命中；计数类和 M 级规则在 `post` 上命中；P3 在 `stop` 上命中。回放读取器把 Claude 的「没有 tool_use 的 assistant 文本消息」当作 `stop`，Codex 用 `event_msg.task_complete`。
-16. **L1 的次数定义**：同一 argsHash 连续失败（errFingerprint 相同、两次之间无改动）——第 2 次失败的 `post` 上记 M（advise）；第 3 次*尝试*的 `pre` 上记 H。T1 在 `pre` 上评估：第 2 次无改动重跑 advise，GPT 档第 3 次 H；默认档 T1 没有 H（design 表里默认档只写了第 2 次 advise），`rules.T1_rerun_unchanged.block_on` 只改 GPT 档的 H 阈值。
+16. **L1 的次数定义**：同一 argsHash 连续失败（errFingerprint 相同、两次之间无改动）——第 2 次失败的 `post` 上记 M（advise）；第 3 次*尝试*的 `pre` 上记 H。T1 在 `pre` 上评估：第 2 次无改动重跑 advise，第 3 次 H（对所有 agent 一套阈值；**原先「默认档没有 H、GPT 档第 3 次 H」的分档已作废**，见 #41）。`rules.T1_rerun_unchanged.block_on` 是 `thresholds.T1.H` 的别名。
 17. **「advise」的表示**：L 级 + `message` = 本地预设建议（不经 judge）；L 且无 message = 只记录。T 组的 advise 因此是「L + 事实陈述 message」；M 进 judge。L 级本地建议：非 T 组每规则每会话最多 1 次，T 组靠冷却（10 步 / 5 分钟，两个条件同时满足才算冷却中）。
-18. **阶梯阈值**：`Profile` 里每条 T 规则是 `{L?, advise?, M?, H?}` 次数阶梯，取满足的最高级，且只在「升级的那一次」触发（边沿触发），避免每一步都重复报。`config.example.yaml` 里 `profiles` 的扁平键（`T2_full_per_turn` 等）映射到这些阶梯。
+18. **阶梯阈值**：`thresholds` 里每条 T 规则是 `{L?, advise?, M?, H?}` 次数阶梯，取满足的最高级，且只在「升级的那一次」触发（边沿触发），避免每一步都重复报。
 19. **没有真实指纹时（回放）**：`SessionTracker.unchangedBetween` 返回 `verified | inferred | changed`。`inferred` = 事件流里没有编辑也没有 mutating 命令，但没有真实 `wsFingerprint`。policy 默认（线上）对 `inferred` 不拦，只 advise；回放用 `trustInferredUnchanged=true`，并在时间线里标注 `verified=false` / `wouldBlockIfVerified`。
 20. **X2 与 mode**：X2 **跟随 mode**：shadow 只记录（Decision 里 `action` 仍标 block/ask，`applied=false`），advise 模式也不拦，只有 enforce 才生效。理由：config 注释写 `shadow=只记录`，M4 是 shadow 周、完成标准是「零阻塞事故」，M5 才打开 H 级拦截；design 说的「X2 不依赖守护进程」指的是故障时不放行、不是可以无视 mode。`rules.X2_dangerous.action: off` 则连命中都不产生。**请 Jack 确认**：如果希望 shadow 阶段 X2 就真的拦，需要改这一条。
-21. **X2 的 `rm -rf` 解释**：design 写「删仓库外或 $HOME 下的路径」，但仓库通常就在 $HOME 下。实现为：目标是 `/`、`$HOME` 本身（含 `~/*`）、仓库外的绝对路径/`../` 路径、仓库根或 `.git` 时拦；仓库内普通子目录不拦（可由 git 恢复）；`/tmp`、`/var/folders` 和仓库内构建产物目录（node_modules、dist、build、target…）豁免；含未解析变量（`$X`）的路径无法判断，放行。`git push --force-with-lease` 不拦。
+21. **X2 的 `rm -rf` 解释（Jack 已确认；design §5.5 已同步）**：design 原文写「删仓库外或 $HOME 下的路径」，但仓库通常就在 $HOME 下。实现为：目标是 `/`、`$HOME` 本身（含 `~/*`）、仓库外的绝对路径/`../` 路径、仓库根或 `.git` 时拦；仓库内普通子目录不拦（可由 git 恢复）；`/tmp`、`/var/folders` 和仓库内构建产物目录（node_modules、dist、build、target…）豁免；含未解析变量（`$X`）的路径无法判断，放行。`git push --force-with-lease` 不拦。
 22. **X1 的判断**：只看测试文件（路径含 tests/、spec/、`test_*.py`、`*.test.ts`、`*_test.go` 等）的 Edit/Write/apply_patch：新增 skip/xfail/`.only`；断言数量减少；上一次测试失败后没改过源码就改了断言行。用户意图/当前计划步骤包含「写测试、补测试、flaky、快照、基准、修 CI」时降为 L。「fix the failing test」**不**算豁免（那通常是要修源码）。
 23. **P1 的允许范围**：plan.md 写了 `allow:` → 显式（H，本地拦，不问 judge，不受连续拦截上限）；否则用当前 in_progress 步骤文本里的路径/glob + 该步期间读过/改过的文件。步骤文本里一个路径都没有 → 自动提取不可靠，P1 不报。匹配：无通配符按「相等或目录前缀」，有通配符用 `Bun.Glob`，不做子串匹配。
 24. **R4** 在 engine 里实现（需要知道「最近没有其他触发」），judge `done=true` 暂停 R4/P4 直到下一次 M 级命中；R2 需要配置 `detect.session_budget_usd`，取不到花费就跳过。
@@ -63,3 +63,6 @@
 38. **冷却只挡「放行类」结局，不挡 pre 阶段的 block**：L1/T1 的 H 命中（可在 pre 拦截）不先过冷却门——否则被拦的调用一重试就落进同 key 冷却而被放行，「连续拦截 ≤2」会变成 ≤1，第 2 次尝试连 advise 都没有。现在的流程：沿用此前的拦截判断（`blockedAt`，10 步 / 5 分钟）→ 冷却（只有 advise/ignore 结局写冷却记录）→ 连续拦截上限（≥2 时降级 advise 并写冷却）→ 指纹核实 → 同步 judge。block 本身不写冷却记录，只缓存判断，所以重复被拦时不会重复问 judge、不烧预算；默认 5 秒间隔下同一调用依次是 block、block、advise、skip（放行）。
 39. **T1 的 key 不含 attempt 序号**（`T1:<normCmd>` 用于 advise，`T1H:<normCmd>` 用于 H）：这样 §6.3 的「advise 一次后冷却 10 步或 5 分钟」才生效。
 40. **M 级 judge 的 block 判断（post 阶段命中）不计入连续拦截计数**，因为它还没有真正拦住任何调用（`atNextPre=true`，要等下一个 pre）。「把待执行的拦截带到下一个 pre」的机制属于 M3（outbox/daemon），这一阶段未做。
+
+## Jack 的决定（监督者指示）
+41. **不要任何模型特定规则**：所有规则（含 T 组测试重跑）通用、只有一套阈值。已删除 GPT/默认 profile（代码 `config.ts`/检测器/`engine`/回放、`config.example.yaml`、`design.md` §6.3、测试）；配置里只有 `thresholds`，没有 `profiles` / `model_profiles`。模型名（`SessionStart.model`、`PostModelSwitch`、Codex 的 `model` 字段、OpenCode 的 context hook）只记录到日志，不参与判定；测试断言「换任意模型名，命中时间线完全一致」。**decisions #16 中的分档作废。** 统一后的初值：T1 advise@2 / H@3；T2 advise@3 / M@5；T3 advise 一次；T4 L@4 / advise@6；T5 L@2 / advise@3 / M@4；T6 advise@3；T7 advise；T8 L@10 / M@14；每轮预算全量测试 ≤3、验证类 ≤12。这些是初值，用 `sv replay --set thresholds.X=…` 校准。

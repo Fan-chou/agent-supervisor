@@ -13,7 +13,7 @@ function entry(over: Partial<TimelineEntry> & { ruleId: string; callIndex: numbe
   return { seq: over.callIndex * 2, ts: 0, relMs: 0, step: over.callIndex, sev: "M", category: "loop", phase: "post", action: "advise", applied: false, reason: "", evidence: [], ...over };
 }
 function result(timeline: TimelineEntry[], steps = 20, judge: ReplayResult["summary"]["judge"] = { calls: 0, byModel: {} }): ReplayResult {
-  return { sessionId: "s", harness: "claude", profile: "default", judgeMode: "off", events: 0, steps, durationMs: 0, plan: null, timeline, summary: { hits: timeline.length, byRule: {}, judgeCalls: judge.calls, firstHitMs: {}, judge }, warnings: [] };
+  return { sessionId: "s", harness: "claude", judgeMode: "off", events: 0, steps, durationMs: 0, plan: null, timeline, summary: { hits: timeline.length, byRule: {}, judgeCalls: judge.calls, firstHitMs: {}, judge }, warnings: [] };
 }
 const L = (o: Partial<LabelSession> & { id: string; outcome: "ok" | "derailed" }): LabelSession => ({ file: "x", ...o });
 

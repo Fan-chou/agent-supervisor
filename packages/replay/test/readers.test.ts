@@ -12,7 +12,7 @@ const pres = (es: Event[]) => es.filter((e) => e.phase === "pre");
 describe("Claude Code 读取器", () => {
   test("格式识别", () => {
     expect(detectFormat(load("claude/success.jsonl"))).toBe("claude");
-    expect(detectFormat(load("codex/overtest-gpt.jsonl"))).toBe("codex");
+    expect(detectFormat(load("codex/overtest.jsonl"))).toBe("codex");
     expect(detectFormat("hello\nworld")).toBe("unknown");
     expect(() => readEvents("hello")).toThrow();
   });
@@ -94,7 +94,7 @@ describe("Claude Code 读取器", () => {
 
 describe("Codex 读取器", () => {
   test("session_meta / environment_context / task_complete", () => {
-    const es = readCodexRollout(load("codex/overtest-gpt.jsonl"));
+    const es = readCodexRollout(load("codex/overtest.jsonl"));
     expect(es[0].phase).toBe("session");
     expect(es[0].sessionId).toBe("codex-overtest");
     expect(es[0].model).toBe("gpt-5-codex");
@@ -113,20 +113,20 @@ describe("Codex 读取器", () => {
     expect(es.some((e) => e.phase === "interrupt")).toBe(true);
   });
   test("exit code 0 → ok；shell 的 command 数组形式取最后一个元素", () => {
-    const es = readCodexRollout(load("codex/overtest-gpt.jsonl"));
+    const es = readCodexRollout(load("codex/overtest.jsonl"));
     const run = posts(es).filter((e) => e.shell?.normCmd === "pytest -q");
     expect(run).toHaveLength(5);
     expect(run.every((e) => e.result?.status === "ok" && e.result.exitCode === 0)).toBe(true);
   });
   test("apply_patch（custom_tool_call）→ edit 事件，含内容哈希", () => {
-    const es = readCodexRollout(load("codex/overtest-gpt.jsonl"));
+    const es = readCodexRollout(load("codex/overtest.jsonl"));
     const patch = posts(es).find((e) => e.tool?.name === "apply_patch")!;
     expect(patch.tool?.kind).toBe("edit");
     expect(patch.edit?.files).toEqual(["src/parser.py"]);
     expect(patch.edit?.contentHashes?.["src/parser.py"]).toBeTruthy();
   });
   test("update_plan → plan 工具", () => {
-    const es = readCodexRollout(load("codex/overtest-gpt.jsonl"));
+    const es = readCodexRollout(load("codex/overtest.jsonl"));
     expect(posts(es).find((e) => e.tool?.name === "update_plan")?.tool?.kind).toBe("plan");
   });
   test("长时间运行的命令：先 pending，再由 write_stdin 的 Process exited with code 回填", () => {

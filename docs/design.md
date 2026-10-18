@@ -58,7 +58,7 @@
 | 异步唤醒 | `asyncRewake:true`，exit 2 时 stderr 作为 system reminder | 只用于高价值消息；**仍然受 timeout 约束**，只支持 command 类型【评审✓】；会话已经 Stop 后不唤醒；计入 Stop 续跑预算 |
 | 收尾审查 | `Stop` 输出 `decision:"block"`+`reason` | 先读 `stop_hook_active`，为 true 时不再 block。内置上限：连续续跑 8 次后强制结束，每次 Claude 调用工具时计数清零【评审✓】 |
 | 失败与退出码 | `PostToolUseFailure` 的 `error` 第一行是 `Exit code N`【评审✓】 | Claude 这一侧**不需要** FailureClassifier |
-| 模型名 | `SessionStart.model`（可能缺失）+ **`PostModelSwitch`** | 中途换模型时同步切换档位 |
+| 模型名 | `SessionStart.model`（可能缺失）+ **`PostModelSwitch`** | 只记录到日志，不参与判定 |
 | 任务和计划 | `UserPromptSubmit.prompt`；**`TodoWrite` 的 PreToolUse 和 PostToolUse**（§4.2） | — |
 | 压缩 | `PreCompact` / `PostCompact`，`SessionStart source=compact` 时重新注入 intent 和要点 | — |
 - **其他要点**：
@@ -75,7 +75,7 @@
 | 建议 | PreToolUse / PostToolUse 的 `additionalContext`（作为开发者上下文，约 2,500 token 上限） | PostToolUse 不要带 `updatedMCPToolOutput` |
 | 异步建议 | **async 钩子输出会送达模型**：活跃轮次里在下一次模型请求时送达，否则等到下一个用户轮次；每会话最多 8 个并发；会话结束时没投递的会丢弃【评审✓】 | 取代 v1 的「排队等下一次 PreToolUse」 |
 | 收尾 | Stop 的 `decision:"block"`+`reason`。**reason 会成为一条新的 user prompt**【评审✓】 | 措辞用「用户口吻的事实陈述」；读 `stop_hook_active`；登记成 origin=supervisor（P0-6） |
-| 模型名 | 通用输入里有 `model` 字段【评审✓】 | 按 model 判定档位，不按工具判定 |
+| 模型名 | 通用输入里有 `model` 字段【评审✓】 | 只记录到日志，不参与判定 |
 | 计划 | `update_plan` 工具调用（走同一条本地函数工具钩子路径【源码✓：handlers/plan.rs 存在；钩子能否收到它，未实测】） | §4.2 |
 | 信任 | 非托管钩子要在 `/hooks` 里审核信任，**按哈希绑定** | 安装说明里写清楚 |
 - **退出码问题**【源码✓】：
@@ -195,7 +195,7 @@ type Event = {
 | S3 | 距上次成功编辑 ≥8 分钟，而且其间 ≥10 次调用（pending 的不算） | — | M | LoopGuard、claude-focus |
 | S4 | 自上次**真实用户**消息（origin=user）起 ≥15 个子 agent，或者 3 个连续没有产出 | — | M | claude-focus |
 
-### 5.3 GPT 过度测试 → §6
+### 5.3 过度测试 → §6
 
 ### 5.4 范围 / 计划（依赖 §4.2）
 | ID | 规则 | 阈值 | 级 | 出处 |
@@ -211,7 +211,7 @@ type Event = {
 | ID | 规则 | 级 | 出处 |
 |---|---|---|---|
 | X1 | 改测试让它通过：删断言、加 skip/xfail/`.only`、把期望值改成实际输出、在没改源码的情况下改测试 | M。**intent 或计划里是写测试、修 flaky、更新快照时降为 L** | Squawk；评审 |
-| X2 | 写 `.env*`（**`.env.example`、`.env.sample` 除外**）、`*.pem`、`*.key`；`rm -rf` 删仓库外或 `$HOME` 下的路径（`/tmp` 和仓库内的构建产物目录豁免）；`git push --force`；`git reset --hard`、`git checkout -- .`、`git restore .`、`git clean -fdx`、`git stash drop/clear`；改 CI 配置 | **H，在适配器本地执行，不受连续拦截上限约束**（P0-1）。Claude 上「改 CI 配置」「写 .env」用 ask，其余 deny；Codex 一律 deny；OpenCode 用 evaluate deny | claude-focus、histori；评审 |
+| X2 | 写 `.env*`（**`.env.example`、`.env.sample` 除外**）、`*.pem`、`*.key`；`rm -rf`（递归删除）的目标是 `/`、`$HOME` 本身（含 `~/*`）、仓库外的路径（绝对路径或 `../`）、仓库根或 `.git`（**Jack 已确认的窄化口径**：仓库内普通子目录可由 git 恢复，不拦；`/tmp`、`/var/folders` 和仓库内构建产物目录 node_modules/dist/build/target 等豁免；含未解析变量如 `$X` 的路径无法判断，放行）；`git push --force`；`git reset --hard`、`git checkout -- .`、`git restore .`、`git clean -fdx`、`git stash drop/clear`；改 CI 配置 | **H，在适配器本地执行，不受连续拦截上限约束**（P0-1）。Claude 上「改 CI 配置」「写 .env」用 ask，其余 deny；Codex 一律 deny；OpenCode 用 evaluate deny | claude-focus、histori；评审 |
 - X2 只是尽力而为，`bash -c`、`python -c open(...)` 这类写法都能绕过，**它不是安全边界**。
 - X2 **不接受 judge 降级或升级**，judge 也不能产生 X 类拦截（P0-7）。
 
@@ -227,8 +227,8 @@ type Event = {
 - judge 对同一条规则**连续 3 次判 ignore** → 本会话内这条规则阈值 ×2。这是 research 的版本，比 v1 的「2 次 ×1.5」保守，v1 的写法已删除。
 - judge 判 block、或给出高严重度 advise → 接下来 10 步内 R4 抽查间隔减半。
 
-## 6. GPT 过度测试专项
-### 6.1 证据（只有定性证据）
+## 6. 过度测试专项（T 组）
+### 6.1 证据（只有定性证据；现象最早来自 GPT 系模型，但规则不限模型）
 - r/codex 的一个 600+ 赞帖子（经 explainx 转述，二手来源）；
 - OpenAI 社区帖：用户不得不叮嘱模型别再跑 20 分钟的单测；
 - Qwik 的 AGENTS.md 写着「Don't run the full test suite」。
@@ -251,23 +251,25 @@ type Event = {
 ### 6.3 规则
 「两次之间没改动」一律按 §4.3 的工作区指纹判断：期间没有编辑、没有 mutating 命令，而且指纹相同。
 
-| ID | 规则 | 默认档 | GPT 档 | 响应 |
-|---|---|---|---|---|
-| T1 | 没改动就重跑**同一条**测试命令 | 第 2 次 advise | 第 2 次 advise；第 3 次 **H**（拦截前同步复核指纹；非 git 目录只 advise） | 事实陈述：「工作区自上次运行 `<cmd>` 以来没有变化，上次结果：<summary>」 |
-| T2 | 本轮「两次之间没有编辑」的 `test_full` 运行次数 | ≥3 次 advise | ≥2 次 advise；≥4 次 M | 建议跑相关的单个测试 |
-| T3 | 有 targeted 可用时仍跑 full | advise（只提示一次） | 同左 | 给出映射到的具体测试路径 |
-| T4 | 本轮 probe 次数（按 §6.2 的收紧定义） | ≥6 次 L | ≥4 次 advise | 「这些检查可以合并成一个测试」 |
-| T5 | 修复之后新建的 smoke 或验证脚本（不含 repro_script） | ≥3 个 L | ≥2 个 advise，≥3 个 M | 提醒先做功能，不要搭验证基建 |
-| T6 | 没改动就重复 `http_smoke` | ≥3 次 | ≥2 次 | advise |
-| T7 | 花样运行：`-p random`、`--reverse`、`--count>1`、多次换随机种子 | L | advise | — |
-| T8 | 本轮验证类调用占比超过一半，而且 ≥10 次 | L | M | — |
+**所有规则通用、只有一套阈值，不按模型分档**（v2.1，见 §17）。下表是初值，必须用回放校准（§12、§18）。
+
+| ID | 规则 | 阈值（一套） | 响应 |
+|---|---|---|---|
+| T1 | 没改动就重跑**同一条**测试命令 | 第 2 次 advise；第 3 次 **H**（拦截前同步复核指纹；非 git 目录只 advise） | 事实陈述：「工作区自上次运行 `<cmd>` 以来没有变化，上次结果：<summary>」 |
+| T2 | 本轮「两次之间没有编辑」的 `test_full` 运行次数 | ≥3 次 advise；≥5 次 M | 建议跑相关的单个测试 |
+| T3 | 有 targeted 可用时仍跑 full | advise（只提示一次） | 给出映射到的具体测试路径 |
+| T4 | 本轮 probe 次数（按 §6.2 的收紧定义） | ≥4 次 L；≥6 次 advise | 「这些检查可以合并成一个测试」 |
+| T5 | 修复之后新建的 smoke 或验证脚本（不含 repro_script） | ≥2 个 L；≥3 个 advise；≥4 个 M | 提醒先做功能，不要搭验证基建 |
+| T6 | 没改动就重复 `http_smoke` | ≥3 次 advise | advise |
+| T7 | 花样运行：`-p random`、`--reverse`、`--count>1`、多次换随机种子 | advise | — |
+| T8 | 本轮验证类调用占比超过一半，而且 ≥10 次 | ≥10 次 L；≥14 次 M | — |
 - **和 P3 协调**（修复两条规则互相夹击）：
   - P3 只要求「最后一次编辑后跑过 targeted 测试或构建」，不要求跑全量；
   - T 组 advise 过之后，P3 的要求也降为 targeted；
   - T2 只统计中间没有编辑的那些全量运行。
-- **每轮预算**：GPT 档每轮全量测试 ≤2 次、验证类调用合计 ≤12 次，超出后进入 M 级。这里的「轮」以 origin=user 的消息为界。
+- **每轮预算**：每轮全量测试 ≤3 次、验证类调用合计 ≤12 次，超出后进入 M 级。这里的「轮」以 origin=user 的消息为界。
 - **冷却**：同一条 T 规则 advise 一次后，冷却 10 步或 5 分钟。
-- **档位选择**：用显式映射表 `model_profiles: [{match:"^(gpt-|o\\d|codex)", profile:"gpt"}, …]`，正则锚定开头。Codex 和 OpenCode 能拿到 model，Claude 从 SessionStart 或 PostModelSwitch 拿。**拿不到 model 时用默认档**，不再按工具猜测。
+- **不按模型分档**：模型名（`SessionStart.model`、`PostModelSwitch`、Codex 的 `model` 字段、OpenCode 的 context hook）**只记录到日志**（§18），不参与任何判定；规则对所有 agent 一视同仁，是否某个模型更容易触发某条规则，事后用日志统计（`sv stats --by model`）来看。
 - **例外**：任务本身是写测试、修 flaky、做基准测试或修 CI 时，T 组整体降一级。判定方法是用户 prompt（origin=user）关键词，加上 judge 复核。
 
 ## 7. 升级策略

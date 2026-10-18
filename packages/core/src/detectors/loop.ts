@@ -31,13 +31,13 @@ function failChain(ctx: Parameters<Detector>[1], list: Step[], errFp: string | u
 
 export const L1: Detector = (e: Event, ctx) => {
   if (ruleDisabled(ctx, "L1") || !e.tool) return [];
-  const { s, profile } = ctx;
+  const { s, th } = ctx;
   if (e.phase === "post") {
     const cur = s.last();
     if (!cur || cur.seq !== e.seq || cur.status !== "fail" || !cur.errFp) return [];
     const list = sameCallSteps(ctx, cur.argsHash);
     const { n, verified } = failChain(ctx, list, cur.errFp);
-    const need = Math.ceil(profile.L1_advise * s.scaleOf("L1"));
+    const need = Math.ceil(th.L1_advise * s.scaleOf("L1"));
     if (n >= need) {
       return [
         mkHit(e, ctx, {
@@ -83,7 +83,7 @@ export const L1: Detector = (e: Event, ctx) => {
 
 export const L2: Detector = (e, ctx) => {
   if (e.phase !== "post" || !e.tool || ruleDisabled(ctx, "L2")) return [];
-  const { s, profile } = ctx;
+  const { s, th } = ctx;
   const cur = s.last();
   if (!cur || cur.seq !== e.seq || !cur.outHash || cur.status === "pending" || cur.neutral) return [];
   const lo = Math.max(s.loopFloor, cur.idx - 11);
@@ -94,7 +94,7 @@ export const L2: Detector = (e, ctx) => {
     // L2a：轮询类白名单，≥8 次才记 L
     return n === Math.ceil(8 * s.scaleOf("L2")) ? [mkHit(e, ctx, { ruleId: "L2a", sev: "L", category: "loop", key: `L2a:${cur.argsHash}`, evidence: same.map((x) => x.seq), detail: { count: n } })] : [];
   }
-  const need = Math.ceil(profile.L2_repeat * s.scaleOf("L2"));
+  const need = Math.ceil(th.L2_repeat * s.scaleOf("L2"));
   if (n === need) {
     return [
       mkHit(e, ctx, {

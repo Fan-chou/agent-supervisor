@@ -17,11 +17,11 @@ function trailingReadOnly(steps: Step[]): { n: number; seqs: number[] } {
 
 export const S1: Detector = (e, ctx) => {
   if (e.phase !== "post" || !e.tool || ruleDisabled(ctx, "S1")) return [];
-  const { s, profile } = ctx;
+  const { s, th } = ctx;
   const cur = s.last();
   if (!cur || cur.seq !== e.seq || !cur.readOnly) return [];
   const { n, seqs } = trailingReadOnly(s.turnSteps);
-  const need = Math.ceil(profile.S1_readonly * s.scaleOf("S1"));
+  const need = Math.ceil(th.S1_readonly * s.scaleOf("S1"));
   if (n > 0 && n % need === 0) {
     const beforeFirstEdit = s.firstEditStepIdx < 0;
     return [
