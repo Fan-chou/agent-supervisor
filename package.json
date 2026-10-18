@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:hook": "bun build --compile packages/hook/src/main.ts --outfile bin/sv-hook"
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",
