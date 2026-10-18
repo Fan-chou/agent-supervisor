@@ -36,6 +36,8 @@ export interface DaemonOptions {
   noUnix?: boolean;
   /** /v1/stream 心跳间隔（毫秒），默认 15000；测试用。 */
   streamHeartbeatMs?: number;
+  /** OpenCode 真机核对通过后才设为 true；默认 false = opencode 会话永不拦截（decisions #89）。 */
+  opencodeEnforce?: boolean;
 }
 
 export interface HookResponse {
@@ -330,7 +332,9 @@ export class Daemon {
     if (rt) return rt;
     const ids = new WeakMap<Decision, { decisionId: number; deliveryRowId?: number }>();
     const sink = new StoreSink(this.store, { runId: this.runId, deferredDelivery: true, onDecisionLogged: (d, i) => ids.set(d, i) });
-    const engine = new Engine({ cfg: this.cfg, judge: this.judge, sink, policy: { trustInferredUnchanged: false } });
+    // OpenCode 在真机核对通过前只观察、不拦截（decisions #89）：全局 mode=enforce 时，opencode 会话按 advise 处理——block/ask 记为 would_have_*，不进 outbox；opencodeEnforce 是核对通过后的显式开关
+    const rtCfg = harness === "opencode" && this.cfg.mode === "enforce" && !this.opts.opencodeEnforce ? { ...this.cfg, mode: "advise" as const } : this.cfg;
+    const engine = new Engine({ cfg: rtCfg, judge: this.judge, sink, policy: { trustInferredUnchanged: false } });
     for (const h of loadInjectionHashes(this.store, sessionId)) engine.tracker.registry.addHash(h);
     const plan = loadPlan(this.store, sessionId);
     if (plan) engine.tracker.plan = plan;

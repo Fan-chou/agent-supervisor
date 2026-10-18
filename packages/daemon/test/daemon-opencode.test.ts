@@ -17,9 +17,9 @@ afterEach(async () => {
   while (daemons.length) await daemons.pop()!.stop();
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
-async function boot(over: Record<string, unknown> = {}) {
+async function boot(over: Record<string, unknown> = {}, opencodeEnforce = false) {
   const home = tmp();
-  const d = await startDaemon({ cfg: resolveConfig(over, defaultConfig()), home, dbPath: join(home, "state.db"), socketPath: join(home, "sock") });
+  const d = await startDaemon({ cfg: resolveConfig(over, defaultConfig()), home, dbPath: join(home, "state.db"), socketPath: join(home, "sock"), opencodeEnforce });
   daemons.push(d);
   return { d, home };
 }
@@ -85,7 +85,7 @@ describe("harness=opencode", () => {
     expect(r.status).toBe(400);
   });
   test("enforce：X2（git reset --hard）在 tool.before 上不直接返回，留在 outbox，同一次调用的 permission.evaluate 领取 → block；只领一次", async () => {
-    const { d } = await boot({ mode: "enforce" });
+    const { d } = await boot({ mode: "enforce" }, true);
     const cwd = gitRepo();
     const r = await bash(d, cwd, "git reset --hard HEAD~1");
     expect(r.before.delivery).toBeNull();
@@ -95,7 +95,7 @@ describe("harness=opencode", () => {
     expect((await post(d, evaluate(cwd))).delivery).toBeNull();
   });
   test("拦截绑定到产生它的那次调用：before(N) 没有 evaluate → after(N) → before(N+1) → evaluate 不会误拦 N+1（该行记为 stale）", async () => {
-    const { d } = await boot({ mode: "enforce" });
+    const { d } = await boot({ mode: "enforce" }, true);
     const cwd = gitRepo();
     const reset = { command: "git reset --hard HEAD~1" };
     await post(d, before(cwd, "bash", reset, "N")); // X2 决定入 outbox；这次调用没有触发 evaluate（无权限闸门/配置放行）
@@ -108,7 +108,7 @@ describe("harness=opencode", () => {
     expect(row.stale_reason).toContain("已结束");
   });
   test("顺序相反（evaluate 先于 before）：before(N) → after(N) → evaluate(N+1) → before(N+1)：同样不误拦", async () => {
-    const { d } = await boot({ mode: "enforce" });
+    const { d } = await boot({ mode: "enforce" }, true);
     const cwd = gitRepo();
     const reset = { command: "git reset --hard HEAD~1" };
     await post(d, before(cwd, "bash", reset, "N"));
@@ -119,20 +119,37 @@ describe("harness=opencode", () => {
     expect(d.store.db.query("SELECT state FROM outbox").get()).toEqual({ state: "stale" });
   });
   test("pre 没有 callID → 无法绑定 → 拦截失效（fail-open），不会被任何 evaluate 领走", async () => {
-    const { d } = await boot({ mode: "enforce" });
+    const { d } = await boot({ mode: "enforce" }, true);
     const cwd = gitRepo();
     await post(d, OC(cwd, { event: "tool.before", tool: "bash", args: { command: "git reset --hard HEAD~1" } }));
     expect((await post(d, evaluate(cwd))).delivery).toBeNull();
     expect(d.store.db.query("SELECT state FROM outbox").get()).toEqual({ state: "stale" });
   });
+  test("全局 mode=enforce 但没有 opencodeEnforce：opencode 会话按 advise 处理——X2 / L1 都不拦、不进 outbox，日志记 would_have_blocked（decisions #89）；同一个 daemon 里 claude 会话照常 enforce", async () => {
+    const { d, home } = await boot({ mode: "enforce" });
+    const cwd = gitRepo();
+    const r = await bash(d, cwd, "git reset --hard HEAD~1");
+    expect(r.before.delivery).toBeNull();
+    expect(r.evaluate.delivery).toBeNull();
+    for (let i = 0; i < 3; i++) expect((await bash(d, cwd, "pytest tests/a.py", { fail: true })).evaluate.delivery).toBeNull();
+    // claude 会话：同一个危险命令仍然被拦
+    const cc = await post(d, { session_id: "cc", cwd, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git reset --hard HEAD~1" }, tool_use_id: "k1" }, "claude");
+    expect(cc.delivery).toMatchObject({ kind: "block", ruleId: "X2" });
+    await d.stop();
+    daemons.pop();
+    const s = new LogStore(join(home, "state.db"));
+    expect(s.db.query("SELECT COUNT(*) AS n FROM outbox WHERE session_id = ? AND kind IN ('block','ask')").get(SID)).toEqual({ n: 0 });
+    const oc = s.db.query("SELECT d.outcome, d.applied, d.mode FROM decisions d JOIN hits h ON h.id = d.hit_id WHERE h.rule_id = 'X2' AND d.session_id = ?").all(SID) as Record<string, unknown>[];
+    expect(oc).toEqual([{ outcome: "would_have_blocked", applied: 0, mode: "advise" }]);
+  });
   test("enforce：写 .env（edit 工具）也走 evaluate 的 block", async () => {
-    const { d } = await boot({ mode: "enforce" });
+    const { d } = await boot({ mode: "enforce" }, true);
     const cwd = gitRepo();
     expect((await post(d, before(cwd, "write", { filePath: join(cwd, ".env"), content: "A=1" }, "w1"))).delivery).toBeNull();
     expect((await post(d, evaluate(cwd))).delivery).toMatchObject({ kind: "block", ruleId: "X2" });
   });
   test("enforce：同一失败命令第 3 次尝试 → evaluate 领到 L1 block", async () => {
-    const { d } = await boot({ mode: "enforce" });
+    const { d } = await boot({ mode: "enforce" }, true);
     const cwd = gitRepo();
     const r: Awaited<ReturnType<typeof bash>>[] = [];
     for (let i = 0; i < 3; i++) r.push(await bash(d, cwd, "pytest tests/a.py", { fail: true }));
@@ -140,7 +157,7 @@ describe("harness=opencode", () => {
     expect(r[2].evaluate.delivery).toMatchObject({ kind: "block", ruleId: "L1" });
   });
   test("建议只在 context 领取；block/ask 不会在 context 上出现，advise 不会在 evaluate / tool.before / tool.after 上出现", async () => {
-    const { d } = await boot({ mode: "enforce" });
+    const { d } = await boot({ mode: "enforce" }, true);
     const cwd = tmp("sv-nogit-");
     await bash(d, cwd, "ls");
     d.outbox.enqueue({ sessionId: SID, kind: "advise", text: "最近两次失败原因相同，先看第一条报错。", deliveryId: "adv1" });
@@ -177,7 +194,7 @@ describe("harness=opencode", () => {
     expect(s.db.query("SELECT COUNT(*) AS n FROM outbox").get()).toEqual({ n: 0 });
   });
   test("P0-6：context 注入的建议随后作为 user 消息回显 → 该 prompt 事件判为 origin=supervisor", async () => {
-    const { d, home } = await boot({ mode: "enforce" });
+    const { d, home } = await boot({ mode: "enforce" }, true);
     const cwd = tmp("sv-nogit-");
     await bash(d, cwd, "ls");
     const text = "最近两次失败原因相同，先看第一条报错，再决定是否换一种做法。";

@@ -94,27 +94,30 @@ export function installSnippet(o: { launchd?: boolean }): string {
   return parts.join("\n");
 }
 
-/** OpenCode V2 插件源码（自包含的 TS 文件，原样打印）。读的是本仓库里的文件，不是用户目录。 */
-export function opencodePluginSource(): string {
-  return readFileSync(join(import.meta.dir, "../../adapter-opencode/plugin/agent-supervisor.ts"), "utf8");
+/** 插件源码打成一个自包含文件（把 core 里的 x2Check / redactDeep 内联进去）。读的是本仓库里的文件，不是用户目录。 */
+export async function opencodePluginSource(): Promise<string> {
+  const r = await Bun.build({ entrypoints: [join(import.meta.dir, "../../adapter-opencode/plugin/agent-supervisor.ts")], target: "bun", format: "esm", minify: false });
+  if (!r.success || !r.outputs.length) throw new Error("打包 OpenCode 插件失败：" + r.logs.map(String).join("; "));
+  return await r.outputs[0].text();
 }
 
 /**
  * OpenCode V2 接入：只打印插件内容与步骤，不读不写 ~/.config/opencode 或任何用户目录。
  * 插件目录位置、加载方式、`Plugin.define` 的导入路径都没有在 OpenCode 2 上实测——安装前对照当前文档核对。
  */
-export function opencodeInstallSnippet(): string {
+export async function opencodeInstallSnippet(): Promise<string> {
   return [
     "# OpenCode V2 接入（只打印，不改任何文件；本命令不会读取或写入 ~/.config/opencode 等用户目录）",
-    "# 0) 只支持 OpenCode 2 的插件接口（V2）。下面的插件按设计文档（ctx.permission/session/tool.hook）写成，**没有在 OpenCode 2 上实测**：",
-    "#    插件目录、加载方式、Plugin.define 的导入路径、hook 对象的字段形态都要对照当前文档核对；形态对不上时插件会 fail-open（什么都不做）。",
-    "# 1) 启动守护进程：sv start   （默认 mode=shadow：只记录，永不拦截；插件自己也会按守护进程返回的 mode 再过滤一道）",
+    "# 0) 只支持 OpenCode 2 的插件接口（V2）。下面的插件按设计文档（ctx.permission/session/tool.hook）写成，**还没有对照 @opencode/plugin 2.0.32 的类型核实**：",
+    "#    插件目录、加载方式、Plugin.define 的导入路径、hook 对象的字段形态都要核对（见 docs/opencode-verify.md）；形态对不上时插件会 fail-open（什么都不做）。",
+    "# 1) 启动守护进程：sv start   （默认 mode=shadow：只记录，永不拦截）",
     "# 2) 把下面的文件保存为 OpenCode 的插件文件（例如 <opencode 配置目录>/plugins/agent-supervisor.ts），并按文档把它登记到 OpenCode 配置里。",
     "#    它读 ~/.agent-supervisor/hook.json 找守护进程（只读我们自己的目录）；SV_HOME 可改位置。",
-    "# 3) 已知限制：OpenCode 上没有 Stop 注入点（不做收尾续跑）；守护进程不可达时没有本地 X2（X2 只在守护进程里判，故障即放行）；",
-    "#    拦截（deny）依赖 tool.execute.before 先于 permission.evaluate 触发——顺序未核实，在核实之前不要打开 enforce。",
-    "# ---------- agent-supervisor.ts ----------",
-    opencodePluginSource(),
+    "# 3) 真机核对载荷：以 SV_OPENCODE_DUMP=1 启动 OpenCode，脱敏样本写到 ~/.agent-supervisor/dumps/opencode-<日期>.jsonl；再用 `sv opencode-report <文件>` 汇总。",
+    "# 4) 拦截策略：核对通过前**只观察不拦截**（Jack 的决定）。插件内含本地 X2（用 tool 执行前的参数），但 deny 需要 hook.json 的 mode=enforce **并且** SV_OPENCODE_ENFORCE=1 同时满足；",
+    "#    守护进程侧也把 opencode 会话按 advise 处理（block/ask 只记 would_have_*）。OpenCode 上没有 Stop 注入点（session.prompt 收尾仅在研究中，见 docs/opencode-verify.md）。",
+    "# ---------- agent-supervisor.ts（已把 x2Check / redactDeep 内联）----------",
+    await opencodePluginSource(),
     "# ---------- 结束 ----------",
   ].join("\n");
 }

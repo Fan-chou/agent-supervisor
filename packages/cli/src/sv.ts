@@ -100,13 +100,13 @@ async function runStatus(flags: Flags): Promise<number> {
   }
 }
 
-function runInstall(pos: string[], flags: Flags): number {
+async function runInstall(pos: string[], flags: Flags): Promise<number> {
   if (pos[0] === "codex") {
     console.log(codexInstallSnippet());
     return 0;
   }
   if (pos[0] === "opencode") {
-    console.log(opencodeInstallSnippet());
+    console.log(await opencodeInstallSnippet());
     return 0;
   }
   if (pos[0] !== "claude") {
@@ -144,7 +144,7 @@ export async function main(argv: string[]): Promise<number> {
   // ---- 守护进程相关命令 ----
   if (cmd === "start") return runStart(flags, cfg);
   if (cmd === "status") return runStatus(flags);
-  if (cmd === "install") return runInstall(pos.slice(1), flags);
+  if (cmd === "install") return await runInstall(pos.slice(1), flags);
 
   const judge = (typeof flags.judge === "string" ? flags.judge : "off") as string;
   if (judge !== "off" && judge !== "mock" && judge !== "live") {

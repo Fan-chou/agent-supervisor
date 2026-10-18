@@ -1,10 +1,13 @@
 // agent-supervisor 的 OpenCode V2 插件（旁路监督；shadow 下只收事件，永不拦截）。
-// 这个文件自包含（只用 node:*，不 import 本仓库任何东西）：`sv install opencode` 会把它原样打印出来，由用户自己放进 OpenCode 的插件目录。
+// 源文件只依赖 node:* 和 core 里两个纯函数（x2Check、redactDeep）；`sv install opencode` 用 Bun.build 把它们打进同一个文件再打印（自包含，由用户自己放进 OpenCode 的插件目录）。
 // 约束（CLAUDE.md / design §3.3）：插件跑在 OpenCode 进程内，**任何异常都要 catch**，守护进程不可达/超时/响应坏掉一律 fail-open。
-// V2 的 hook 对象字段形态【未实测】，下面对工具名/参数/callID 的取值都做了宽松兜底；接入真机后按实际形态校准。
-import { existsSync, readFileSync } from "node:fs";
+// V2 的 hook 对象字段形态【未核实】（@opencode/plugin 2.0.32 的类型文件本轮读不到，见 docs/opencode-verify.md），下面对工具名/参数/callID 的取值都做了宽松兜底；真机核对后按实际形态校准。
+// Jack 的决定（decisions #88/#89）：本地 X2 在；但真机核对通过前**只观察不拦截**——deny 需要同时满足 守护进程 mode=enforce 且 SV_OPENCODE_ENFORCE=1（核对通过后才由 Jack 设置）。
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { redactDeep } from "../../core/src/redact.ts";
+import { x2Check } from "../../core/src/x2.ts";
 
 type Any = any; // 故意宽松：V2 的真实类型未核实
 type Mode = "shadow" | "advise" | "enforce";
@@ -110,31 +113,129 @@ function lastUserMessage(messages: Any): { id?: string; text: string } | undefin
   return undefined;
 }
 
+// ---------- 真机核对用的载荷样本（SV_OPENCODE_DUMP=1，默认关；只写我们自己的目录，脱敏后落盘，0600/0700）----------
+
+const SHAPE_DEPTH = 5;
+/** 值的「形状」：键 → 类型（数组只看第一个元素）。不含任何值，所以即使正文被截断也能看出字段结构。 */
+function shapeOf(v: Any, depth = 0): Any {
+  if (v === null) return "null";
+  if (Array.isArray(v)) return depth >= SHAPE_DEPTH ? "array" : [`array(${v.length})`, v.length ? shapeOf(v[0], depth + 1) : null];
+  if (typeof v === "function") return "function";
+  if (typeof v === "object") {
+    if (depth >= SHAPE_DEPTH) return "object";
+    const o: Record<string, Any> = {};
+    for (const k of Object.keys(v).slice(0, 60)) o[k] = shapeOf(v[k], depth + 1);
+    return o;
+  }
+  return typeof v;
+}
+/** 值的截断拷贝：字符串 ≤ 400 字符，数组 ≤ 6 项，深度 ≤ 5，函数只记名字。 */
+function sample(v: Any, depth = 0): Any {
+  if (typeof v === "string") return v.length > 400 ? v.slice(0, 400) + `…[+${v.length - 400}]` : v;
+  if (typeof v === "function") return `[function ${v.name || "anonymous"}]`;
+  if (v === null || typeof v !== "object") return v;
+  if (depth >= SHAPE_DEPTH) return "[depth]";
+  if (Array.isArray(v)) return [...v.slice(0, 6).map((x) => sample(x, depth + 1)), ...(v.length > 6 ? [`…[+${v.length - 6} items]`] : [])];
+  const o: Record<string, Any> = {};
+  for (const k of Object.keys(v).slice(0, 60)) o[k] = sample(v[k], depth + 1);
+  return o;
+}
+
+let dumpN = 0;
+function dump(hook: string, phase: "enter" | "exit" | "setup" | "note", e: Any, extra: Record<string, unknown> = {}): void {
+  if (process.env.SV_OPENCODE_DUMP !== "1") return;
+  try {
+    const dir = join(home(), "dumps");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o700);
+    const ts = Date.now();
+    const rec = { n: ++dumpN, ts, pid: process.pid, hook, phase, shape: shapeOf(e), sample: redactDeep(sample(e)), ...extra };
+    appendFileSync(join(dir, `opencode-${new Date(ts).toISOString().slice(0, 10)}.jsonl`), JSON.stringify(rec) + "\n", { mode: 0o600 });
+  } catch {
+    /* 样本落盘失败不影响监督 */
+  }
+}
+
+// ---------- 本地 X2（decisions #88）----------
+
+/** 从 tool.before 的参数里取 shell 命令 / 被写的文件（字段名按 OpenCode 常见写法宽松取；V2 真实形态待核对）。 */
+function x2Inputs(tool: string | undefined, args: Any): { command?: string; files?: string[] } {
+  const t = (tool ?? "").toLowerCase();
+  const a = args && typeof args === "object" ? args : {};
+  if (t === "bash" || t === "shell") return { command: typeof a.command === "string" ? a.command : typeof a.cmd === "string" ? a.cmd : undefined };
+  if (["edit", "write", "multiedit", "patch", "apply_patch"].includes(t)) {
+    const f = a.filePath ?? a.file_path ?? a.path ?? a.file;
+    return { files: typeof f === "string" ? [f] : undefined };
+  }
+  return {};
+}
+
+/** 拦截的最后一道闸：mode=enforce（hook.json）**并且** SV_OPENCODE_ENFORCE=1。核对通过前永远是 false（decisions #89）。 */
+function enforceOpen(): boolean {
+  if (process.env.SV_OPENCODE_ENFORCE !== "1") return false;
+  try {
+    return JSON.parse(readFileSync(join(home(), "hook.json"), "utf8"))?.mode === "enforce";
+  } catch {
+    return false;
+  }
+}
+
 function setup(ctx: Any): void {
+  dump("setup", "setup", ctx, { registered: [] });
   // 每个会话一份状态，全在内存里；重启即清空
+  const preCall = new Map<string, { callId: string; deny?: string; done: boolean; ts: number }>(); // sessionID → 最近一次 tool.before（本地 X2 的拦截绑定到它）
   const lastUser = new Map<string, string>(); // sessionID → 上次上报的 user 消息 id/文本
   const repeat = new Map<string, { text: string; left: number }>(); // context 建议的重复注入（inject_repeat：连续 2 次请求，或到下一次工具调用结束）
 
-  const guard = <F extends (e: Any) => Promise<void>>(f: F) => async (e: Any) => {
+  const guard = (label: string, f: (e: Any) => Promise<void>) => async (e: Any) => {
+    dump(label, "enter", e);
     try {
       await f(e);
-    } catch {
+    } catch (err) {
+      dump(label, "note", undefined, { error: String((err as Error)?.message ?? err).slice(0, 200) });
       /* 任何异常都不能影响 OpenCode */
     }
+    dump(label, "exit", e); // exit 时的事件对象能看出我们有没有改到它（effect/message/system）
   };
-  const hook = (target: Any, name: string, f: (e: Any) => Promise<void>) => {
+  const hook = (target: Any, name: string, f: (e: Any) => Promise<void>, label = name) => {
     try {
-      target?.hook?.(name, guard(f));
-    } catch {
+      if (typeof target?.hook !== "function") {
+        dump(label, "note", undefined, { registered: false, reason: "no .hook function on target" });
+        return;
+      }
+      target.hook(name, guard(label, f));
+      dump(label, "note", undefined, { registered: true });
+    } catch (err) {
+      dump(label, "note", undefined, { registered: false, reason: String((err as Error)?.message ?? err).slice(0, 200) });
       /* 这个 hook 注册不上就算了：fail-open */
     }
   };
 
-  // 拦截（主）：deny 必须带 message，否则 plain rejection 会结束当前 step
+  // 拦截（主）：deny 必须带 message，否则 plain rejection 会结束当前 step。
+  // 来源有二：本地 X2（tool.before 时判好，绑定到那次调用）和守护进程 outbox 里的 block/ask；两者都要过 enforceOpen() 这道闸。
   hook(ctx?.permission, "evaluate", async (e) => {
-    const r = await post({ event: "permission.evaluate", sessionID: sid(e), directory: dirOf(e, ctx) }, EVALUATE_TIMEOUT_MS);
-    const t = text(r?.delivery ?? null);
-    if (!r || !t || (r.delivery?.kind !== "block" && r.delivery?.kind !== "ask") || !allowed(r.mode, r.delivery?.kind)) return;
+    const s = sid(e);
+    const pc = s ? preCall.get(s) : undefined;
+    // 核对用的探针（SV_OPENCODE_PROBE=<子串>，默认关）：命中时拒绝，用来验证 deny/message/异步 hook 在真机上是否有效。只在 Jack 明确设置时才会拦。
+    const probe = process.env.SV_OPENCODE_PROBE;
+    if (probe && JSON.stringify(sample(e)).includes(probe)) {
+      e.effect = "deny";
+      e.message = `agent-supervisor 探针：命中 ${probe}，这是核对用的测试拒绝。`;
+      dump("evaluate", "note", undefined, { probe: true });
+      return;
+    }
+    const r = await post({ event: "permission.evaluate", sessionID: s, directory: dirOf(e, ctx) }, EVALUATE_TIMEOUT_MS);
+    const local = pc && !pc.done && pc.deny && Date.now() - pc.ts < 30_000 ? pc.deny : undefined;
+    const t = local ?? text(r?.delivery ?? null);
+    const viaDaemon = !local && !!r && !!t && (r.delivery?.kind === "block" || r.delivery?.kind === "ask") && allowed(r.mode, r.delivery?.kind);
+    if (!t || !(local || viaDaemon)) {
+      if (local || (r?.delivery && (r.delivery.kind === "block" || r.delivery.kind === "ask"))) dump("evaluate", "note", undefined, { wouldDeny: true, source: local ? "local-x2" : "daemon", withheld: "observe-only" });
+      return;
+    }
+    if (!enforceOpen()) {
+      dump("evaluate", "note", undefined, { wouldDeny: true, source: local ? "local-x2" : "daemon", withheld: "enforce gate closed" });
+      return; // 真机核对通过前只观察（decisions #89）
+    }
     e.effect = "deny";
     e.message = t;
   });
@@ -162,11 +263,29 @@ function setup(ctx: Any): void {
 
   // 观测：before 是 Pre 事件的来源（含完整参数），after 带明确的 completed/error 状态
   hook(ctx?.tool, "execute.before", async (e) => {
-    await post({ event: "tool.before", sessionID: sid(e), directory: dirOf(e, ctx), callID: callId(e), tool: toolName(e), args: plain(e?.args ?? e?.input ?? e?.params) }, BEFORE_TIMEOUT_MS);
+    const s = sid(e);
+    const args = plain(e?.args ?? e?.input ?? e?.params);
+    const tool = toolName(e);
+    if (s) {
+      // 本地 X2：不依赖守护进程；结果先存着，等同一会话的 permission.evaluate 来取（是否真的拦由 enforceOpen 决定）
+      let deny: string | undefined;
+      try {
+        const x = x2Check({ harness: "opencode", ...x2Inputs(tool, args), cwd: dirOf(e, ctx) });
+        if (x) deny = text({ kind: "block", text: x.reason });
+      } catch {
+        /* X2 出错 = 放行 */
+      }
+      preCall.set(s, { callId: callId(e) ?? "", deny, done: false, ts: Date.now() });
+    }
+    await post({ event: "tool.before", sessionID: s, directory: dirOf(e, ctx), callID: callId(e), tool, args }, BEFORE_TIMEOUT_MS);
   });
   hook(ctx?.tool, "execute.after", async (e) => {
     const s = sid(e);
-    if (s) repeat.delete(s); // 下一次工具调用结束，旧建议不再重复
+    if (s) {
+      repeat.delete(s); // 下一次工具调用结束，旧建议不再重复
+      const pc = preCall.get(s);
+      if (pc) pc.done = true; // 这次调用已经结束：绑定在它上面的本地拦截作废（宁可漏拦，不误拦）
+    }
     const status = e?.status === "error" || e?.error ? "error" : "completed";
     await post({ event: "tool.after", sessionID: s, directory: dirOf(e, ctx), callID: callId(e), tool: toolName(e), args: plain(e?.args ?? e?.input ?? e?.params), status, result: plain(e?.result ?? e?.output), error: plain(e?.error) }, EVENT_TIMEOUT_MS);
   });

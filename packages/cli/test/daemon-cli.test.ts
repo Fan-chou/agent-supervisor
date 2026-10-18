@@ -128,20 +128,26 @@ describe("sv install：只打印，不改文件", () => {
       const out = await new Response(p.stdout).text();
       expect(await p.exited).toBe(0);
       expect(out).toContain('id: "agent-supervisor"');
-      expect(out).toContain("没有在 OpenCode 2 上实测");
+      expect(out).toContain("还没有对照 @opencode/plugin 2.0.32 的类型核实");
+      expect(out).toContain("SV_OPENCODE_ENFORCE=1");
       expect(out).toContain("fail-open");
-      expect(out).toBe(opencodeInstallSnippet() + "\n");
+      expect(out).toBe((await opencodeInstallSnippet()) + "\n");
       expect(readdirSync(fakeHome)).toEqual([]);
     } finally {
       rmSync(fakeHome, { recursive: true, force: true });
     }
   });
-  test("OpenCode 插件源码自包含：只 import node:*，不引用本仓库其他模块、不 npx、不读密钥文件", () => {
-    const src = opencodePluginSource();
+  test("OpenCode 插件自包含：打包后只 import node:*（x2Check / redactDeep 已内联）；唯一读文件的地方是我们自己的 hook.json / token", async () => {
+    const src = await opencodePluginSource();
     const imports = [...src.matchAll(/^import .* from "([^"]+)"/gm)].map((m) => m[1]);
     expect(imports.length).toBeGreaterThan(0);
-    expect(imports.every((i) => i.startsWith("node:"))).toBe(true);
-    expect(src.replaceAll("process.env", "")).not.toMatch(/\.env\b|auth\.json|\.claude|\.codex|npx/);
+    expect(imports.every((i) => ["fs", "os", "path", "node:fs", "node:os", "node:path"].includes(i))).toBe(true);
+    expect(src).toContain("function x2Check");
+    expect(src).toContain("function redactDeep");
+    expect(src).not.toMatch(/child_process|Bun\.spawn/);
+    const reads = [...src.matchAll(/readFileSync\((.*)$/gm)].map((m) => m[1]);
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.every((r) => /hook\.json|"token"/.test(r))).toBe(true);
   });
 });
 
