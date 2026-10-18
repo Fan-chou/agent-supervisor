@@ -10,7 +10,7 @@ export interface CodexHookPayload {
   hook_event_name?: string;
   session_id?: string;
   cwd?: string;
-  transcript_path?: string | null;
+  transcript_path?: string;
   /** 通用输入里的模型名：只记录到日志，不参与判定。 */
   model?: string;
   turn_id?: string;

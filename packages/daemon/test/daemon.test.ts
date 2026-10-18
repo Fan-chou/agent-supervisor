@@ -87,7 +87,7 @@ describe("本地鉴权与协议", () => {
     expect((await fetch("http://localhost/v1/hello", { ...uds(d), headers: { "x-sv-protocol": "2" } })).status).toBe(426);
     expect((await fetch("http://localhost/v1/nope", uds(d))).status).toBe(404);
     expect((await fetch("http://localhost/v1/hook", { ...uds(d), method: "POST", body: JSON.stringify({ harness: "claude" }) })).status).toBe(400);
-    expect((await fetch("http://localhost/v1/hook", { ...uds(d), method: "POST", body: JSON.stringify({ harness: "codex", payload: {} }) })).status).toBe(400);
+    expect((await fetch("http://localhost/v1/hook", { ...uds(d), method: "POST", body: JSON.stringify({ harness: "opencode", payload: {} }) })).status).toBe(400);
   });
   test("token 在重启后保持不变；hook.json 记录 mode 与 socket（hook 在守护进程不可达时也知道）", async () => {
     const { d, home } = await boot({ mode: "enforce" });

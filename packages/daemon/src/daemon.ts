@@ -6,10 +6,11 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
-  Engine, LogStore, Outbox, StoreSink, beginRun, checkPrecondition, computeWsFingerprint, createJudgeClient, expandHome, loadInjectionHashes, loadPlan, parsePlanMd, saveInjection, savePlan, wsToString,
-  type Config, type Decision, type JudgeFn, type OutboxKind, type Precondition, type StepRecord, type JudgeClient,
+  Engine, LogStore, Outbox, StoreSink, beginRun, truncate, checkPrecondition, computeWsFingerprint, createJudgeClient, expandHome, loadInjectionHashes, loadPlan, parsePlanMd, saveInjection, savePlan, wsToString,
+  type Config, type Decision, type Delivery, type JudgeFn, type OutboxKind, type Precondition, type StepRecord, type JudgeClient,
 } from "@sv/core";
-import { normalizeClaudeHook, type ClaudeHookPayload, type Delivery, type HookPoint } from "../../adapter-claude/src/index.ts";
+import { normalizeClaudeHook, type ClaudeHookPayload, type HookPoint } from "../../adapter-claude/src/index.ts";
+import { normalizeCodexHook, type CodexHookPayload } from "../../adapter-codex/src/index.ts";
 
 export const PROTOCOL = 1;
 export const DAEMON_VERSION = "0.1.0-m3";
@@ -44,7 +45,11 @@ export interface HookResponse {
   seqs?: number[];
 }
 
+export type HookHarness = "claude" | "codex";
+export const HARNESSES: readonly HookHarness[] = ["claude", "codex"];
+
 interface Runtime {
+  harness: HookHarness;
   sessionId: string;
   engine: Engine;
   sink: StoreSink;
@@ -183,6 +188,7 @@ export class Daemon {
 
   private async route(req: Request, viaUnix: boolean): Promise<Response> {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "x-sv-protocol": String(PROTOCOL), "x-sv-daemon-version": DAEMON_VERSION } });
+    let harness: HookHarness | "claude" = "claude"; // 出错时记到哪个适配器的健康度上（请求体里带了 harness 就用它）
     try {
       if (!this.authorized(req, viaUnix)) return json(401, { error: { code: "unauthorized", message: "缺少或无效的 token", retryable: false } });
       const url = new URL(req.url);
@@ -192,8 +198,9 @@ export class Daemon {
       if (req.method === "GET" && url.pathname === "/v1/status") return json(200, this.status());
       if (req.method === "POST" && url.pathname === "/v1/hook") {
         const body = (await req.json()) as { harness?: string; payload?: ClaudeHookPayload };
-        if (body.harness !== "claude" || !body.payload || typeof body.payload !== "object") return json(400, { error: { code: "bad_request", message: "需要 {harness:'claude', payload}", retryable: false } });
-        return json(200, await this.handleHook(body.payload));
+        if (!HARNESSES.includes(body.harness as HookHarness) || !body.payload || typeof body.payload !== "object") return json(400, { error: { code: "bad_request", message: "需要 {harness:'claude'|'codex', payload}", retryable: false } });
+        harness = body.harness as HookHarness;
+        return json(200, await this.handleHook(body.payload, harness));
       }
       if (req.method === "POST" && url.pathname === "/v1/adapter-health") {
         const b = (await req.json()) as { harness?: string; ok?: boolean; error?: string };
@@ -203,7 +210,7 @@ export class Daemon {
       return json(404, { error: { code: "not_found", message: url.pathname, retryable: false } });
     } catch (err) {
       // fail-open：内部错误不能让 agent 被卡住；返回 200 + 空决定，同时记一条适配器健康异常
-      this.safeHealth("claude", false, `daemon_error: ${String((err as Error)?.message ?? err)}`);
+      this.safeHealth(harness as string, false, `daemon_error: ${String((err as Error)?.message ?? err)}`);
       return json(200, { ok: false, protocol: PROTOCOL, delivery: null, hookPoint: null, mode: this.cfg.mode, error: "internal" } satisfies HookResponse);
     }
   }
@@ -262,8 +269,10 @@ export class Daemon {
 
   // ---------- 会话运行时 ----------
 
-  private runtime(sessionId: string, cwd?: string): Runtime {
-    let rt = this.sessions.get(sessionId);
+  private runtime(harness: HookHarness, sessionId: string, cwd?: string): Runtime {
+    // 按 (harness, sessionId) 分开：两个工具碰巧用了同一个 session id 也不会串
+    const key = `${harness}:${sessionId}`;
+    let rt = this.sessions.get(key);
     if (rt) return rt;
     const ids = new WeakMap<Decision, { decisionId: number; deliveryRowId?: number }>();
     const sink = new StoreSink(this.store, { runId: this.runId, deferredDelivery: true, onDecisionLogged: (d, i) => ids.set(d, i) });
@@ -272,8 +281,8 @@ export class Daemon {
     const plan = loadPlan(this.store, sessionId);
     if (plan) engine.tracker.plan = plan;
     if (cwd) engine.tracker.cwd = cwd;
-    rt = { sessionId, engine, sink, seq: 0, chain: Promise.resolve(), lastActive: this.now(), ids, planChecked: false };
-    this.sessions.set(sessionId, rt);
+    rt = { harness, sessionId, engine, sink, seq: 0, chain: Promise.resolve(), lastActive: this.now(), ids, planChecked: false };
+    this.sessions.set(key, rt);
     return rt;
   }
 
@@ -301,9 +310,9 @@ export class Daemon {
 
   // ---------- hook 处理 ----------
 
-  async handleHook(payload: ClaudeHookPayload): Promise<HookResponse> {
+  async handleHook(payload: ClaudeHookPayload | CodexHookPayload, harness: HookHarness = "claude"): Promise<HookResponse> {
     const sessionIdGuess = String(payload.session_id ?? "unknown");
-    const rt = this.runtime(sessionIdGuess, payload.cwd);
+    const rt = this.runtime(harness, sessionIdGuess, payload.cwd);
     rt.lastActive = this.now();
     // 同一会话的 hook 串行处理，保证事件顺序
     const run = rt.chain.then(() => this.process(rt, payload));
@@ -311,9 +320,10 @@ export class Daemon {
     return run;
   }
 
-  private async process(rt: Runtime, payload: ClaudeHookPayload): Promise<HookResponse> {
+  private async process(rt: Runtime, payload: ClaudeHookPayload | CodexHookPayload): Promise<HookResponse> {
     const t = this.now();
-    const norm = normalizeClaudeHook(payload, { nextSeq: () => rt.seq++, now: t, classify: rt.engine.tracker.opts, model: rt.model });
+    const nopts = { nextSeq: () => rt.seq++, now: t, classify: rt.engine.tracker.opts, model: rt.model };
+    const norm = rt.harness === "codex" ? normalizeCodexHook(payload, nopts) : normalizeClaudeHook(payload, nopts);
     if (norm.model) rt.model = norm.model;
     if (norm.cwd && !rt.engine.tracker.cwd) rt.engine.tracker.cwd = norm.cwd;
     this.loadPlanFile(rt, norm.cwd);
@@ -339,7 +349,7 @@ export class Daemon {
     const skipOutbox = norm.hookPoint === "Stop" && norm.stopHookActive;
     resp.delivery = direct ?? (skipOutbox ? null : this.fromOutbox(rt, norm.hookPoint));
     if (resp.delivery) this.confirmDirect(rt, resp.delivery, norm.hookPoint);
-    this.healthOk(norm.sessionId);
+    this.healthOk(rt.harness);
     return resp;
   }
 
@@ -372,7 +382,7 @@ export class Daemon {
   private toDelivery(rt: Runtime, d: Decision): Delivery {
     const ids = rt.ids.get(d);
     const kind = d.action === "stop_continue" ? "stop_continue" : d.action === "ask" ? "ask" : d.action === "block" ? "block" : "advise";
-    return { kind, text: d.message ?? d.reason, ruleId: d.hit.ruleId, deliveryId: `d-${this.runId}-${ids?.decisionId ?? `${rt.sessionId}-${d.hit.seq}`}`, createdAtSeq: d.hit.seq };
+    return { kind, text: truncate(d.message ?? d.reason), ruleId: d.hit.ruleId, deliveryId: `d-${this.runId}-${ids?.decisionId ?? `${rt.sessionId}-${d.hit.seq}`}`, createdAtSeq: d.hit.seq };
   }
 
   /** 生效的决定：不能立刻送出的（advise、post 阶段的 block、stop 已在续跑中…）放进 outbox 等注入点。 */
@@ -438,11 +448,13 @@ export class Daemon {
         continue;
       }
       const kind = row.kind;
-      const delivery: Delivery = { kind, text: row.text, ruleId: row.rule_id ?? undefined, deliveryId: row.delivery_id, createdAtSeq: row.created_seq ?? undefined };
+      // 登记的必须是「实际输出的字符串」：render 会 trim 并截断到 600 字符，Codex 的 Stop reason 会被当作 user prompt 回显（P0-6）
+      const emitted = truncate(row.text);
+      const delivery: Delivery = { kind, text: emitted, ruleId: row.rule_id ?? undefined, deliveryId: row.delivery_id, createdAtSeq: row.created_seq ?? undefined };
       this.outbox.markDelivered(row.id, this.claimer, hookPoint);
       if (row.decision_id) this.store.markDeliverySentByDecision(row.decision_id, hookPoint, this.now());
-      saveInjection(this.store, rt.sessionId, row.text, this.now());
-      rt.engine.tracker.registry.register(row.text);
+      saveInjection(this.store, rt.sessionId, emitted, this.now());
+      rt.engine.tracker.registry.register(emitted);
       return delivery;
     }
     return null;
@@ -453,7 +465,8 @@ export class Daemon {
     // 来自 outbox 的已经在 fromOutbox 里确认过；这里处理 fromDecisions 的直接送出
     const row = this.store.db.query("SELECT id FROM outbox WHERE delivery_id = ?").get(d.deliveryId ?? "") as { id: number } | null;
     if (row) return;
-    saveInjection(this.store, rt.sessionId, d.text, this.now());
+    saveInjection(this.store, rt.sessionId, d.text, this.now()); // d.text 已经是截断后的输出文本（toDelivery）
+    rt.engine.tracker.registry.register(d.text);
     const decId = Number(String(d.deliveryId ?? "").split("-").pop());
     if (Number.isFinite(decId)) this.store.markDeliverySentByDecision(decId, hookPoint ?? "unknown", this.now());
   }
@@ -471,12 +484,11 @@ export class Daemon {
   }
 
   private healthOk(harness: string): void {
-    void harness;
     const t = this.now();
-    const last = this.lastHealthOk.get("claude") ?? 0;
+    const last = this.lastHealthOk.get(harness) ?? 0;
     if (t - last > 60_000) {
-      this.lastHealthOk.set("claude", t);
-      this.safeHealth("claude", true);
+      this.lastHealthOk.set(harness, t);
+      this.safeHealth(harness, true);
     }
   }
 
