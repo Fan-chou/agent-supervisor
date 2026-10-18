@@ -1,0 +1,13 @@
+{"timestamp":"2026-10-18T10:00:00.000Z","type":"session_meta","payload":{"id":"codex-backfill","cwd":"/work/proj","originator":"codex_cli","cli_version":"0.163.0"}}
+{"timestamp":"2026-10-18T10:00:00.000Z","type":"turn_context","payload":{"cwd":"/work/proj","model":"gpt-5-codex"}}
+{"timestamp":"2026-10-18T10:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n<cwd>/work/proj</cwd>\n</environment_context>"}]}}
+{"timestamp":"2026-10-18T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"run the build"}]}}
+{"timestamp":"2026-10-18T10:00:05.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"npm run build\",\"workdir\":\"/work/proj\",\"yield_time_ms\":1000}","call_id":"b1"}}
+{"timestamp":"2026-10-18T10:00:06.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"b1","output":"Chunk ID: b1\nWall time: 1.0 seconds\nProcess running with session ID 7\nOriginal token count: 10\nOutput:\nbuilding..."}}
+{"timestamp":"2026-10-18T10:00:20.000Z","type":"response_item","payload":{"type":"function_call","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"\"}","call_id":"b2"}}
+{"timestamp":"2026-10-18T10:00:21.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"b2","output":"Chunk ID: b2\nWall time: 9.0 seconds\nProcess exited with code 1\nOriginal token count: 30\nOutput:\nerror TS2322: Type 'string' is not assignable to type 'number'."}}
+{"timestamp":"2026-10-18T10:00:30.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"ls src\"]}","call_id":"b3"}}
+{"timestamp":"2026-10-18T10:00:31.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"b3","output":"{\"output\":\"a.ts\\nb.ts\",\"metadata\":{\"exit_code\":0,\"duration_seconds\":0.2}}"}}
+{"timestamp":"2026-10-18T10:00:35.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"pytest -q\"]}","call_id":"b4"}}
+{"timestamp":"2026-10-18T10:00:36.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"b4","output":"{\"output\":\"FAILED tests/test_a.py::test_x - assert 1 == 2\\n1 failed in 0.1s\",\"metadata\":{\"exit_code\":1,\"duration_seconds\":0.2}}"}}
+{"timestamp":"2026-10-18T10:00:40.000Z","type":"event_msg","payload":{"type":"task_complete"}}
