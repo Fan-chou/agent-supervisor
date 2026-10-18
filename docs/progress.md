@@ -111,8 +111,8 @@
 2. *rollout 里 function_call_output 的写入延迟*：取决于 rollout 跟读（对策 2），那要读 `~/.codex/sessions`，被 CLAUDE.md 禁止，没有做（#60）。
 
 **偏离 / 需要 Jack 确认**
-- `ask → deny`（#57）是我选的保守映射；如果希望 Codex 上的 ask 类降级为 additionalContext 而不是拦截，改 `adapter-codex/src/render.ts` 一处即可（fixture 同步）。
-- 是否授权只读 `~/.codex/sessions/rollout-*.jsonl` 做退出码回填与延迟测量（#60）。
+- 【已决定：Jack 批准，保持现状】`ask → deny`（#57）。原备选：如果希望 Codex 上的 ask 类降级为 additionalContext 而不是拦截，改 `adapter-codex/src/render.ts` 一处即可（fixture 同步）。
+- 【已决定：Jack 不批准】读 `~/.codex/sessions` 做退出码回填与延迟测量（#60）：继续禁止，不做 rollout 跟读与长命令回填；§16 第 2 条后半（rollout 写入延迟）因此不做。
 
 **未完成 / 已知缺口**
 - Codex 真实载荷校准（tool_name 取值、tool_response 形态、cwd 字段、`turn_id`）、hooks 配置格式（timeout 单位、功能开关、`~` 展开）全部未在 0.163 上验证。
