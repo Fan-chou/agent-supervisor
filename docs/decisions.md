@@ -36,3 +36,25 @@
 25. **回放读取器的合成格式**：Claude 样本按公开的 transcript 结构手写（`type: user|assistant`、`message.content[]` 里的 `tool_use`/`tool_result`、`isSidechain`、`isMeta`、`isCompactSummary`）；Codex 样本按 rollout 结构手写（`session_meta`、`turn_context`、`response_item`{message, function_call, function_call_output, custom_tool_call(_output)}、`event_msg`{task_complete, turn_aborted, token_count}）。**真实文件的细节差异需要在 Jack 的机器上校准**——这也是 design §16 第 2 条的未决项。生成器是 `test/fixtures/gen.ts`，输出已提交。
 26. **Codex 长命令回填**：`exec_command` 返回 `Process running with session ID N` 时先标 pending，之后 `write_stdin` 轮询拿到 `Process exited with code M` 时，就地替换最初那条 post 事件的 result（保留原 seq/ts）。这样检测器看到的是最终状态，代价是回放比线上多知道一点「未来」。
 27. **sidechain**：Claude 子 agent（`isSidechain`）的事件默认丢弃，只保留主链；`Task` 工具调用本身仍作为 `agent` 类步骤（S4 用）。
+
+## M2（eval / judge / 契约测试）
+28. **步骤单位**：一律用「工具调用序号，从 1 开始」（`callIndex`）。回放时间线里的 `step` 是命中时已完成的调用数；`pre` 阶段命中时那次调用还没完成，所以 `callIndex = step + 1`，其余阶段 `callIndex = step`（至少 1）。`derail_step` 也用同一单位，表示「从第几次工具调用起开始跑偏」。不这样处理会让首次报警延迟差 1。
+29. **labels.yaml 是 Jack 的人工数据，我不写合成标注进去**。`eval/labels.example.yaml` 只放 schema 和注释；测试用 `test/fixtures/labels.yaml`，指向合成样本。Schema：`sessions[]{ id, file, outcome: ok|derailed, derail_step?, derail_kind?, expected_rules?, plan?, notes? }`，`file` 相对 labels 文件所在目录。
+30. **TP / FP 的定义**（规则级，按会话聚合）：
+    - 规则 R 在会话里「触发」= 至少一次非 observeOnly 的命中（包括只记录的 L 级；INTERNAL 不算）。
+    - 会话 `derailed`：R 有一次命中的 `callIndex ≥ derail_step − window`（`window` 默认 2，可 `--window`）→ 该会话对 R 是 TP；R 只在窗口之前触发 → FP（跑偏前的虚假警报）。
+    - 会话 `ok`：R 触发 → FP。
+    - `precision_R = TP会话 / (TP会话 + FP会话)`；没有触发过则 null。同时给出命中级（hit-level）的 TP/FP 数，避免一个循环会话里 5 次命中被当成 1 次而掩盖噪声。
+    - `recall_R`：分母是标注里 `expected_rules` 含 R 的跑偏会话数；没有任何会话标 `expected_rules` 时为 null（不编造）。总体 recall = 跑偏会话里任意规则触发的比例。
+31. **precision 分类（对应 §12.7 两个门槛）**：按*决策*（policy 之后）分三类，各自算 FDR（= FP 报警数 / 报警总数，等价于 1−precision）：
+    - 拦截类：`block | ask | stop_continue`；门槛 <3%。
+    - 建议类：`advise`（本地预设建议 + judge 给出的建议）；门槛 <25%。
+    - 候选类：`judge_off`（M 级，judge 关闭时「待 judge」）——只在 `--judge=off` 时出现，让每条规则的 precision 在没有 judge 时也可见，不参与门槛。
+    - `observeOnly`、只记录的 L 级、`skip`、`ignore` 不计入报警。FDR 之外同时给出「有拦截的 ok 会话占比」。门槛里 `null`（没有报警）显示为 n/a，不算通过。
+    - **口径说明**：§12.7 写的是「误报率」，没有说是 per-alarm 还是 per-benign-call；这里取 per-alarm（FDR），并给出 per-ok-session 的占比供对照。**请 Jack 确认口径**。
+32. **首次报警延迟**：跑偏会话里，第一条「报警类」决策（block/ask/stop_continue/advise/judge_off）的 `callIndex − derail_step`，可以为负（提前报）。规则级同理（第一条该规则的非观察命中）。汇总 min/median/mean/max 和漏报数（跑偏会话没有任何报警）。
+33. **judge 统计**：每会话和汇总都报 judge 调用数、按 model 的 ignore 率 / 解析失败率 / 超时 / 出错。成本需要 usage，live 之前为 n/a。
+34. **提示 A/B**：`runEval` 接受 `judgeFactory(style)`，对 `recall` 与 `ignore_default` 各跑一遍并输出差异表。`--judge=mock` 下两种写法结果相同（mock 不读提示），所以这一阶段只验证管道；真正比较要等 live（M3）。
+35. **judge 响应修复边界**：`message_to_agent` 超过 600 字符是*修复*（截断）而不是失败；非 ignore 但 message 为空是失败（`message-required`）。confidence 缺失给 0.5（低于拦截门槛 0.8，不会因此拦截）；(1,100] 的数值当百分数。未知 category 映射为 `other`。
+36. **`<untrusted>`**：命令、输出、计划、本地提示都放进 `<untrusted>`；块外的文字（用户 prompt 等）也做脱敏并转义 `<untrusted`；转义后内容里不可能再出现真正的闭合标签。命令/输出/编辑文本/prompt/计划在进入 judge 请求前全部过 `redact()`。
+37. **契约测试（§3.5）的位置**：`render()` 放在 `packages/adapter-claude/src/render.ts`（以后 sv-hook 直接复用），测试放 `test/contract/`，每一格一个固定 fixture JSON，做深比较。本阶段只做 Claude 部分。
