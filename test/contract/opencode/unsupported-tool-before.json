@@ -1,0 +1,6 @@
+{
+  "cell": "OpenCode tool.before 只收事件，任何 delivery 都不输出",
+  "at": "tool.before",
+  "delivery": { "kind": "block", "text": "拦截。" },
+  "expected": null
+}

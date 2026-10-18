@@ -1,0 +1,6 @@
+{
+  "cell": "OpenCode context × stop_continue → 不输出（OpenCode 第一阶段没有 Stop 注入点）",
+  "at": "context",
+  "delivery": { "kind": "stop_continue", "text": "请先跑测试。", "ruleId": "P3" },
+  "expected": null
+}

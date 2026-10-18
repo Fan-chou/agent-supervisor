@@ -70,9 +70,9 @@ describe("harness=codex", () => {
       { harness: "codex", phase: "post", status: "fail", exit_code: 1 },
     ]);
   });
-  test("未知 harness → 400（opencode 等第一阶段不接）", async () => {
+  test("未知 harness → 400", async () => {
     const { d } = await boot();
-    const r = await fetch("http://localhost/v1/hook", { ...uds(d), method: "POST", body: JSON.stringify({ harness: "opencode", payload: { session_id: "x" } }) });
+    const r = await fetch("http://localhost/v1/hook", { ...uds(d), method: "POST", body: JSON.stringify({ harness: "gemini", payload: { session_id: "x" } }) });
     expect(r.status).toBe(400);
   });
   test("同一个 session_id 在 claude 和 codex 上是两个独立的会话运行时", async () => {

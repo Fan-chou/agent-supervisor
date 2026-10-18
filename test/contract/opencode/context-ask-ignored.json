@@ -1,0 +1,6 @@
+{
+  "cell": "OpenCode context × ask → 不输出",
+  "at": "context",
+  "delivery": { "kind": "ask", "text": "确认。", "ruleId": "X2" },
+  "expected": null
+}

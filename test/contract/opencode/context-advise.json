@@ -1,0 +1,6 @@
+{
+  "cell": "OpenCode context × advise → system 追加一条",
+  "at": "context",
+  "delivery": { "kind": "advise", "text": "最近两次测试失败的原因相同，先看第一条报错。", "ruleId": "L3" },
+  "expected": { "system": ["最近两次测试失败的原因相同，先看第一条报错。"] }
+}

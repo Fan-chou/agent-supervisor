@@ -9,7 +9,8 @@ import {
   Engine, LogStore, Outbox, StoreSink, beginRun, truncate, checkPrecondition, computeWsFingerprint, createJudgeClient, expandHome, loadInjectionHashes, loadPlan, parsePlanMd, saveInjection, savePlan, wsToString,
   type Config, type Decision, type Delivery, type JudgeFn, type OutboxKind, type Precondition, type StepRecord, type JudgeClient,
 } from "@sv/core";
-import { normalizeClaudeHook, type ClaudeHookPayload, type HookPoint } from "../../adapter-claude/src/index.ts";
+import { normalizeClaudeHook, type ClaudeHookPayload } from "../../adapter-claude/src/index.ts";
+import { normalizeOpenCodeEvent, type OpenCodePayload } from "../../adapter-opencode/src/index.ts";
 import { normalizeCodexHook, type CodexHookPayload } from "../../adapter-codex/src/index.ts";
 
 export const PROTOCOL = 1;
@@ -38,15 +39,16 @@ export interface HookResponse {
   protocol: number;
   /** 要输出给 harness 的消息；null = 没有要说的（hook 应当 exit 0 且不输出）。 */
   delivery: Delivery | null;
-  hookPoint: HookPoint | null;
+  /** Claude/Codex 的钩子名，或 OpenCode 的 permission.evaluate / context。 */
+  hookPoint: string | null;
   mode: Config["mode"];
   error?: string;
   /** 调试/日志：本次处理了哪些事件。 */
   seqs?: number[];
 }
 
-export type HookHarness = "claude" | "codex";
-export const HARNESSES: readonly HookHarness[] = ["claude", "codex"];
+export type HookHarness = "claude" | "codex" | "opencode";
+export const HARNESSES: readonly HookHarness[] = ["claude", "codex", "opencode"];
 
 interface Runtime {
   harness: HookHarness;
@@ -64,7 +66,10 @@ interface Runtime {
 }
 
 const DIRECT_AT_PRE: OutboxKind[] = ["block", "ask", "advise"];
-const KINDS_AT: Record<HookPoint, OutboxKind[]> = {
+const KINDS_AT: Record<string, OutboxKind[]> = {
+  // OpenCode V2：拦截只在 permission.evaluate（deny 必须带 message），建议只在 context hook；tool.before/after 只收事件
+  "permission.evaluate": ["block", "ask"],
+  context: ["advise"],
   PreToolUse: DIRECT_AT_PRE,
   PostToolUse: ["advise"],
   PostToolUseFailure: ["advise"],
@@ -198,7 +203,7 @@ export class Daemon {
       if (req.method === "GET" && url.pathname === "/v1/status") return json(200, this.status());
       if (req.method === "POST" && url.pathname === "/v1/hook") {
         const body = (await req.json()) as { harness?: string; payload?: ClaudeHookPayload };
-        if (!HARNESSES.includes(body.harness as HookHarness) || !body.payload || typeof body.payload !== "object") return json(400, { error: { code: "bad_request", message: "需要 {harness:'claude'|'codex', payload}", retryable: false } });
+        if (!HARNESSES.includes(body.harness as HookHarness) || !body.payload || typeof body.payload !== "object") return json(400, { error: { code: "bad_request", message: "需要 {harness:'claude'|'codex'|'opencode', payload}", retryable: false } });
         harness = body.harness as HookHarness;
         return json(200, await this.handleHook(body.payload, harness));
       }
@@ -310,9 +315,11 @@ export class Daemon {
 
   // ---------- hook 处理 ----------
 
-  async handleHook(payload: ClaudeHookPayload | CodexHookPayload, harness: HookHarness = "claude"): Promise<HookResponse> {
-    const sessionIdGuess = String(payload.session_id ?? "unknown");
-    const rt = this.runtime(harness, sessionIdGuess, payload.cwd);
+  async handleHook(payload: ClaudeHookPayload | CodexHookPayload | OpenCodePayload, harness: HookHarness = "claude"): Promise<HookResponse> {
+    // OpenCode 的线格式用 sessionID / directory；Claude/Codex 用 session_id / cwd
+    const oc = harness === "opencode" ? (payload as OpenCodePayload) : undefined;
+    const sessionIdGuess = String(oc ? (oc.sessionID ?? "unknown") : ((payload as ClaudeHookPayload).session_id ?? "unknown"));
+    const rt = this.runtime(harness, sessionIdGuess, oc ? oc.directory : (payload as ClaudeHookPayload).cwd);
     rt.lastActive = this.now();
     // 同一会话的 hook 串行处理，保证事件顺序
     const run = rt.chain.then(() => this.process(rt, payload));
@@ -320,10 +327,15 @@ export class Daemon {
     return run;
   }
 
-  private async process(rt: Runtime, payload: ClaudeHookPayload | CodexHookPayload): Promise<HookResponse> {
+  private async process(rt: Runtime, payload: ClaudeHookPayload | CodexHookPayload | OpenCodePayload): Promise<HookResponse> {
     const t = this.now();
     const nopts = { nextSeq: () => rt.seq++, now: t, classify: rt.engine.tracker.opts, model: rt.model };
-    const norm = rt.harness === "codex" ? normalizeCodexHook(payload, nopts) : normalizeClaudeHook(payload, nopts);
+    const norm =
+      rt.harness === "opencode"
+        ? normalizeOpenCodeEvent(payload as OpenCodePayload, nopts)
+        : rt.harness === "codex"
+          ? normalizeCodexHook(payload as CodexHookPayload, nopts)
+          : normalizeClaudeHook(payload as ClaudeHookPayload, nopts);
     if (norm.model) rt.model = norm.model;
     if (norm.cwd && !rt.engine.tracker.cwd) rt.engine.tracker.cwd = norm.cwd;
     this.loadPlanFile(rt, norm.cwd);
@@ -335,7 +347,8 @@ export class Daemon {
       await this.attachFingerprint(rt, e);
       const rec = await rt.engine.feed(e, { deferJudge: true });
       records.push(rec);
-      direct = direct ?? this.fromDecisions(rt, rec, norm.stopHookActive);
+      // OpenCode：tool.before 只收事件，拦截决定一律进 outbox，等同一次调用的 permission.evaluate 来领（deny 只能在 evaluate 上给）
+      direct = direct ?? (rt.harness === "opencode" ? null : this.fromDecisions(rt, rec, norm.stopHookActive));
       this.queueApplied(rt, rec, rec.decisions, direct, norm.stopHookActive);
       this.persistPlan(rt);
       if (rec.deferred) this.runLater(rt, rec);
@@ -432,7 +445,7 @@ export class Daemon {
   }
 
   /** 从 outbox 原子领取一条能在这个注入点送出的消息；投递前复核前置条件，不成立的丢弃（stale）。 */
-  private fromOutbox(rt: Runtime, hookPoint: HookPoint | null): Delivery | null {
+  private fromOutbox(rt: Runtime, hookPoint: string | null): Delivery | null {
     if (!hookPoint) return null;
     this.outbox.expireOld();
     const tr = rt.engine.tracker;
@@ -461,7 +474,7 @@ export class Daemon {
   }
 
   /** 直接送出的决定也要登记：deliveries 标已送达、injections 记哈希（P0-6）。 */
-  private confirmDirect(rt: Runtime, d: Delivery, hookPoint: HookPoint | null): void {
+  private confirmDirect(rt: Runtime, d: Delivery, hookPoint: string | null): void {
     // 来自 outbox 的已经在 fromOutbox 里确认过；这里处理 fromDecisions 的直接送出
     const row = this.store.db.query("SELECT id FROM outbox WHERE delivery_id = ?").get(d.deliveryId ?? "") as { id: number } | null;
     if (row) return;

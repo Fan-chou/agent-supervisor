@@ -1,0 +1,6 @@
+{
+  "cell": "OpenCode permission.evaluate × advise → 不输出（建议只走 context）",
+  "at": "permission.evaluate",
+  "delivery": { "kind": "advise", "text": "建议。", "ruleId": "T1" },
+  "expected": null
+}

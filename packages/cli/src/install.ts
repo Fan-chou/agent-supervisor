@@ -1,5 +1,7 @@
 // sv install：只打印配置片段，不改任何文件（design §1：不自动执行）。
 // Claude Code 的 hooks 配置格式依据官方文档（design §3.1），安装前请对照 Claude Code 当前文档核对。
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const HOOK = "~/.agent-supervisor/bin/sv-hook"; // 固定路径，不是 npx（design §2）
 
@@ -90,4 +92,29 @@ export function installSnippet(o: { launchd?: boolean }): string {
   ];
   if (o.launchd) parts.push("# 4) launchd 用户代理（保存为 ~/Library/LaunchAgents/dev.agent-supervisor.supervisord.plist 后 launchctl load）：", launchdPlist());
   return parts.join("\n");
+}
+
+/** OpenCode V2 插件源码（自包含的 TS 文件，原样打印）。读的是本仓库里的文件，不是用户目录。 */
+export function opencodePluginSource(): string {
+  return readFileSync(join(import.meta.dir, "../../adapter-opencode/plugin/agent-supervisor.ts"), "utf8");
+}
+
+/**
+ * OpenCode V2 接入：只打印插件内容与步骤，不读不写 ~/.config/opencode 或任何用户目录。
+ * 插件目录位置、加载方式、`Plugin.define` 的导入路径都没有在 OpenCode 2 上实测——安装前对照当前文档核对。
+ */
+export function opencodeInstallSnippet(): string {
+  return [
+    "# OpenCode V2 接入（只打印，不改任何文件；本命令不会读取或写入 ~/.config/opencode 等用户目录）",
+    "# 0) 只支持 OpenCode 2 的插件接口（V2）。下面的插件按设计文档（ctx.permission/session/tool.hook）写成，**没有在 OpenCode 2 上实测**：",
+    "#    插件目录、加载方式、Plugin.define 的导入路径、hook 对象的字段形态都要对照当前文档核对；形态对不上时插件会 fail-open（什么都不做）。",
+    "# 1) 启动守护进程：sv start   （默认 mode=shadow：只记录，永不拦截；插件自己也会按守护进程返回的 mode 再过滤一道）",
+    "# 2) 把下面的文件保存为 OpenCode 的插件文件（例如 <opencode 配置目录>/plugins/agent-supervisor.ts），并按文档把它登记到 OpenCode 配置里。",
+    "#    它读 ~/.agent-supervisor/hook.json 找守护进程（只读我们自己的目录）；SV_HOME 可改位置。",
+    "# 3) 已知限制：OpenCode 上没有 Stop 注入点（不做收尾续跑）；守护进程不可达时没有本地 X2（X2 只在守护进程里判，故障即放行）；",
+    "#    拦截（deny）依赖 tool.execute.before 先于 permission.evaluate 触发——顺序未核实，在核实之前不要打开 enforce。",
+    "# ---------- agent-supervisor.ts ----------",
+    opencodePluginSource(),
+    "# ---------- 结束 ----------",
+  ].join("\n");
 }

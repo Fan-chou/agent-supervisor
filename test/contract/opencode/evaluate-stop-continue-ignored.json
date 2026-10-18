@@ -1,0 +1,6 @@
+{
+  "cell": "OpenCode permission.evaluate × stop_continue → 不输出",
+  "at": "permission.evaluate",
+  "delivery": { "kind": "stop_continue", "text": "请先跑测试。", "ruleId": "P3" },
+  "expected": null
+}

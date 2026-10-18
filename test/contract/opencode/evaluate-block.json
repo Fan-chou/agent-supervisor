@@ -1,0 +1,6 @@
+{
+  "cell": "OpenCode permission.evaluate × block → effect deny + message（deny 必须带 message）",
+  "at": "permission.evaluate",
+  "delivery": { "kind": "block", "text": "同一个失败命令已经重复 3 次，请换一种做法。", "ruleId": "L1" },
+  "expected": { "effect": "deny", "message": "同一个失败命令已经重复 3 次，请换一种做法。" }
+}

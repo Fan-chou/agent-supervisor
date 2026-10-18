@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LogStore } from "@sv/core";
 import { main } from "../src/sv.ts";
-import { claudeHooksJson, codexHooksJson, codexInstallSnippet, installSnippet, launchdPlist } from "../src/install.ts";
+import { claudeHooksJson, codexHooksJson, codexInstallSnippet, installSnippet, launchdPlist, opencodeInstallSnippet, opencodePluginSource } from "../src/install.ts";
 
 const ROOT = join(import.meta.dir, "../../..");
 const SV = join(ROOT, "packages/cli/src/sv.ts");
@@ -94,7 +94,7 @@ describe("sv install：只打印，不改文件", () => {
     expect(r.out).toContain("sv-hook");
     expect(r.out).toContain("PreToolUse");
     expect(existsSync(join(process.env.HOME ?? "/nonexistent", ".agent-supervisor-test-marker"))).toBe(before);
-    expect((await run(["install", "opencode"])).code).toBe(2);
+    expect((await run(["install", "gemini"])).code).toBe(2);
   });
   test("Codex 片段：固定命令串 `sv-hook codex`；只含 Codex 有的事件；PreToolUse 20 秒其余 5 秒；没有 npx；提示信任审核与未实测", () => {
     const j = JSON.parse(codexHooksJson()).hooks;
@@ -120,6 +120,28 @@ describe("sv install：只打印，不改文件", () => {
     } finally {
       rmSync(fakeHome, { recursive: true, force: true });
     }
+  });
+  test("CLI：sv install opencode 只打印插件源码与步骤；退出码 0；不读也不写 ~/.config/opencode（假 HOME 下什么都没有被创建）；提示未实测与限制", async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), "sv-fakehome-"));
+    try {
+      const p = Bun.spawn(["bun", SV, "install", "opencode"], { env: { ...process.env, HOME: fakeHome, XDG_CONFIG_HOME: join(fakeHome, "xdg") }, stdout: "pipe", stderr: "pipe" });
+      const out = await new Response(p.stdout).text();
+      expect(await p.exited).toBe(0);
+      expect(out).toContain('id: "agent-supervisor"');
+      expect(out).toContain("没有在 OpenCode 2 上实测");
+      expect(out).toContain("fail-open");
+      expect(out).toBe(opencodeInstallSnippet() + "\n");
+      expect(readdirSync(fakeHome)).toEqual([]);
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+  test("OpenCode 插件源码自包含：只 import node:*，不引用本仓库其他模块、不 npx、不读密钥文件", () => {
+    const src = opencodePluginSource();
+    const imports = [...src.matchAll(/^import .* from "([^"]+)"/gm)].map((m) => m[1]);
+    expect(imports.length).toBeGreaterThan(0);
+    expect(imports.every((i) => i.startsWith("node:"))).toBe(true);
+    expect(src.replaceAll("process.env", "")).not.toMatch(/\.env\b|auth\.json|\.claude|\.codex|npx/);
   });
 });
 

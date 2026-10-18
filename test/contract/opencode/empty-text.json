@@ -1,0 +1,6 @@
+{
+  "cell": "空文本（全是空白）→ 不输出",
+  "at": "permission.evaluate",
+  "delivery": { "kind": "block", "text": "   " },
+  "expected": null
+}

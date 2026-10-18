@@ -1,0 +1,6 @@
+{
+  "cell": "X2 写 .env（OpenCode 上一律 deny，经 evaluate）",
+  "at": "permission.evaluate",
+  "x2": { "rule": "X2", "category": "env", "action": "deny", "reason": "X2：写入 /Users/jack/proj/.env（环境变量/密钥文件）需要用户确认", "subject": "/Users/jack/proj/.env" },
+  "expected": { "effect": "deny", "message": "X2：写入 /Users/jack/proj/.env（环境变量/密钥文件）需要用户确认" }
+}

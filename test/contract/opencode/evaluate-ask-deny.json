@@ -1,0 +1,6 @@
+{
+  "cell": "OpenCode permission.evaluate × ask → deny（evaluate 只用 deny；文字里写明需要用户确认）",
+  "at": "permission.evaluate",
+  "delivery": { "kind": "ask", "text": "即将修改 CI 配置，需要用户确认。", "ruleId": "X2" },
+  "expected": { "effect": "deny", "message": "即将修改 CI 配置，需要用户确认。" }
+}
