@@ -82,3 +82,16 @@
 - 日志 schema v2：X2 命中 `severity='dangerous'` + 类别/对象/原因，决策 `outcome`（`would_have_blocked` ≠ `blocked`），旧库自动补列；`sv stats --by danger`、`--by session`（⚠危险 / 本应拦截 / 已拦截三列，`--sort-danger`）、`--by rule` 带结局分布；回放文本 `⚠` + `◌ 本应拦截·未生效`，`summary.dangerous`。
 - design.md：v2.1 changelog 新增一条，§18.5–18.7；frontend-design.md：各视图的危险徽标/筛选、会话危险数与排序、「本应拦截」指示器及视觉规范（§7.5）、API 字段（§9.1）。
 - 测试：`bun test` 687+ 通过 / 0 失败；`tsc --noEmit` 无错误。
+
+## M3 — 守护进程、outbox、sv-hook、live judge（完成；Claude Code 先行）
+**做了什么**（decisions #48–54）
+- **store**：schema v3 新增运行状态表 `outbox` / `injections` / `plans`；`Outbox`（`packages/core/src/store/runtime.ts`）单条 `UPDATE…RETURNING` 原子领取 + 租约 + 过期回收 + 过期丢弃 + 投递前复核前置条件；并发测试（同进程多连接、**6 个进程同时领取 240 条**、租约回收）证明不会重复确认投递。
+- **守护进程** `packages/daemon`：UDS（socket 0600、目录 0700）或 `127.0.0.1` + Bearer token（常量时间比较）；协议版本头（不一致 426）；`POST /v1/hook` → `normalizeClaudeHook` → 每会话一个 Engine → `LogSink` 一个事务写入；outbox 在注入点原子送出；后台 judge 不挡 hook；`adapter_health`（含 hook 的失败 spool）、`kind='live'` 的 run、优雅退出（`Engine.close()`、结束 run、移除 socket）；重启恢复 injections/plans；`.supervisor/plan.md` 读取；工作区指纹同步复核。
+- **sv-hook** `packages/hook`：本地 X2（仅 enforce）、转发守护进程、`adapter-claude` 白名单输出；**shadow 永不拦截（含 X2，只记 would_have_*）**；任何故障 fail-open；`bun run build:hook` 编出单文件；`sv install claude [--launchd]` 只打印。
+- **live judge**：端点/模型/路由/response_format/超时全部可配（默认 Magpie 路由组 `http://127.0.0.1:3425/v1`，`judge.enabled` 默认 false）；`json_schema` 优先，上游拒绝则回退 `json_object` 并缓存；稳健解析/修复；任何错误 fail-open；`sv replay|eval --judge=live`、`sv start --judge=live`；解析失败率经 `sv stats --by judge`、`/v1/status` 可见；请求/响应脱敏后入日志。测试一律对着本机 `127.0.0.1` mock server，没有调用任何外部服务，没有读任何密钥文件（key 只来自注入的环境变量）。
+- **CLI**：`sv start | status | install`；`.sv-tmp/` 与 `bin/` 已 gitignore 且未被跟踪。
+- 所有规则仍通用、只有一套阈值，模型名只记日志（守护进程测试：换三个模型名，命中序列一致）。
+
+**测试结果**：`bun test` 783 通过 / 0 失败（26 个文件）；`tsc --noEmit` 无错误。
+
+**偏离 / 未完成**：见 decisions #54——hook 不会自动拉起守护进程；Codex/OpenCode 适配器、asyncRewake、`parent_session_id`、前端文档里的查询 API（sessions/hits/judge-calls/rules/danger…）都还没做；Claude hook 载荷格式未经真实输入校准；改 mode 需重启守护进程。

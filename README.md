@@ -7,7 +7,7 @@
 - Opus 评审：[docs/review-opus.md](docs/review-opus.md)
 - 配置示例：[config.example.yaml](config.example.yaml)
 
-状态：第一阶段 M0–M2 的工程部分已完成（core、回放读取器、检测器、policy、`sv replay`、`sv eval`、judge 客户端、Claude 契约测试），守护进程/适配器/sv-hook 尚未开始。详见 [docs/progress.md](docs/progress.md)、[docs/decisions.md](docs/decisions.md)、[docs/frontend-design.md](docs/frontend-design.md)。
+状态：M0–M3 已完成（core、回放、检测器、policy、eval、judge 客户端、日志库、outbox、守护进程 `sv start`、Claude Code 的 `sv-hook`、live judge）；Codex / OpenCode 适配器、前端查询 API、真实载荷校准尚未做。详见 [docs/progress.md](docs/progress.md)、[docs/decisions.md](docs/decisions.md)、[docs/frontend-design.md](docs/frontend-design.md)。
 
 ```
 bun test                                              # 全部测试，不发网络请求
