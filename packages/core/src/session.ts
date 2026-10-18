@@ -120,6 +120,8 @@ export class SessionTracker {
   loopFloor = 0;
   silenced: "none" | "quiet" | "off" = "none";
   stopCount = 0;
+  /** 已经投递给 agent 的监督消息（judge 提示里要列出，避免重复说同样的话）。 */
+  sentMessages: { seq: number; ruleId: string; text: string }[] = [];
   editCount = 0;
   lastEventTs = 0;
   usage = { costUsd: 0, contextTokens: 0, hasCost: false };

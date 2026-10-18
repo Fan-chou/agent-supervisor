@@ -27,7 +27,7 @@
 **测试结果**：`bun test` 528 通过 / 0 失败（12 个文件）；`tsc --noEmit` 无错误。
 
 **偏离 / 需要 Jack 确认**（详见 `docs/decisions.md` 14–27）
-- shadow 模式下 X2 仍然生效（#20）。
+- X2 跟随 mode（shadow 只记录，enforce 才拦）（#20）——请确认。
 - `rm -rf` 的判定范围比 design 字面更窄（#21）。
 - 默认档 T1 没有 H（#16）。
 - 合成样本与真实 transcript 的差异未验证（#25）；P0-2（command 钩子）、outbox 原子领取属于 M3/M4，这一阶段未做。

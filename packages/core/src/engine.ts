@@ -57,6 +57,13 @@ export class Engine {
     if (r4) hits.push(r4);
     if (hits.some((h) => h.ruleId !== "INTERNAL" && h.sev !== "L")) this.lastHitStepCount = this.tracker.steps.length;
     const decisions = await this.policy.handle(e, hits, this.judge);
+    // 真正生效的监督消息：登记 origin 哈希（P0-6），并记入「已发消息」
+    for (const d of decisions) {
+      if (d.applied && d.message && ["advise", "block", "ask", "stop_continue"].includes(d.action)) {
+        this.tracker.registry.register(d.message);
+        this.tracker.sentMessages.push({ seq: e.seq, ruleId: d.hit.ruleId, text: d.message });
+      }
+    }
     const rec = { event: e, hits, decisions };
     this.records.push(rec);
     return rec;
