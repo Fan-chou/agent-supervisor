@@ -4,7 +4,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { applyOverride, beginRun, createJudgeClient, defaultConfig, expandHome, loadConfigFile, LogStore, type Config, type JudgeFn } from "@sv/core";
 import { startDaemon, type Daemon } from "../../daemon/src/index.ts";
-import { installSnippet } from "./install.ts";
+import { codexInstallSnippet, installSnippet } from "./install.ts";
 import { renderText, replayPath, type JudgeMode } from "../../replay/src/index.ts";
 import { runExplain, runExport, runMark, runOverride, runPrune, runStats, type Flags } from "./stats.ts";
 
@@ -29,7 +29,7 @@ const USAGE = `用法：
 
   sv start  [--home <dir>] [--port N] [--mode shadow|advise|enforce] [--judge=live] [--config <config.yaml>]   前台运行守护进程
   sv status [--home <dir>]                                        查询守护进程
-  sv install claude [--launchd]                                   只打印 Claude Code 的 hooks 配置片段 / launchd plist，不改任何文件
+  sv install claude|codex [--launchd]                                只打印 Claude Code / Codex 的 hooks 配置片段（claude 可加 launchd plist），不改任何文件
 
 replay/eval 默认只读本地 transcript、不发网络请求；--judge=live 才会调用 config 里 judge.base_url（默认本地 Magpie 路由组 http://127.0.0.1:3425/v1）。
 key 只从 judge.api_key_env 指定的环境变量（或 ADVISOR_API_KEY）读取，不读任何文件。`;
@@ -101,8 +101,12 @@ async function runStatus(flags: Flags): Promise<number> {
 }
 
 function runInstall(pos: string[], flags: Flags): number {
+  if (pos[0] === "codex") {
+    console.log(codexInstallSnippet());
+    return 0;
+  }
   if (pos[0] !== "claude") {
-    console.error("用法：sv install claude [--launchd]   （只打印，不改任何文件）");
+    console.error("用法：sv install claude|codex [--launchd]   （只打印，不改任何文件）");
     return 2;
   }
   console.log(installSnippet({ launchd: flags.launchd === true }));

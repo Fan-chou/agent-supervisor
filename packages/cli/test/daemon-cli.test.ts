@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LogStore } from "@sv/core";
 import { main } from "../src/sv.ts";
-import { claudeHooksJson, installSnippet, launchdPlist } from "../src/install.ts";
+import { claudeHooksJson, codexHooksJson, codexInstallSnippet, installSnippet, launchdPlist } from "../src/install.ts";
 
 const ROOT = join(import.meta.dir, "../../..");
 const SV = join(ROOT, "packages/cli/src/sv.ts");
@@ -94,7 +94,32 @@ describe("sv install：只打印，不改文件", () => {
     expect(r.out).toContain("sv-hook");
     expect(r.out).toContain("PreToolUse");
     expect(existsSync(join(process.env.HOME ?? "/nonexistent", ".agent-supervisor-test-marker"))).toBe(before);
-    expect((await run(["install", "codex"])).code).toBe(2);
+    expect((await run(["install", "opencode"])).code).toBe(2);
+  });
+  test("Codex 片段：固定命令串 `sv-hook codex`；只含 Codex 有的事件；PreToolUse 20 秒其余 5 秒；没有 npx；提示信任审核与未实测", () => {
+    const j = JSON.parse(codexHooksJson()).hooks;
+    expect(Object.keys(j).sort()).toEqual(["PostToolUse", "PreToolUse", "SessionStart", "Stop", "UserPromptSubmit"]); // 没有 PostToolUseFailure / PostToolBatch
+    expect(j.PreToolUse[0].hooks[0]).toEqual({ type: "command", command: "~/.agent-supervisor/bin/sv-hook codex", timeout: 20 });
+    expect(j.Stop[0].hooks[0].timeout).toBe(5);
+    expect(codexHooksJson()).not.toContain("npx");
+    const s = codexInstallSnippet();
+    expect(s).toContain("/hooks");
+    expect(s).toContain("哈希");
+    expect(s).toContain("没有在 0.163 上实测");
+    expect(s).toContain("SV_HOOK_DUMP=1");
+  });
+  test("CLI：sv install codex 只打印；退出码 0；不读也不写 ~/.codex（用一个假 HOME 验证目录没有被创建）", async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), "sv-fakehome-"));
+    try {
+      const p = Bun.spawn(["bun", SV, "install", "codex"], { env: { ...process.env, HOME: fakeHome }, stdout: "pipe", stderr: "pipe" });
+      const out = await new Response(p.stdout).text();
+      expect(await p.exited).toBe(0);
+      expect(out).toContain("sv-hook codex");
+      expect(existsSync(join(fakeHome, ".codex"))).toBe(false);
+      expect(readdirSync(fakeHome)).toEqual([]);
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
   });
 });
 
