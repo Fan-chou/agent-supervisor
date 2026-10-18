@@ -1,0 +1,26 @@
+# eval/labels.example.yaml —— schema 说明，不含任何真实标注。
+# 真正的标注由 Jack 人工完成，放在 eval/labels.yaml（这个文件我不会生成或改动）。
+#
+# 运行：bun packages/cli/src/sv.ts eval eval/labels.yaml --judge=off
+#
+# 步骤单位：工具调用序号，从 1 开始（和 `sv replay` 时间线里的 callIndex 一致）。
+# 窗口：命中的 callIndex ≥ derail_step − window（默认 window=2，可用 --window 调整）才算「对跑偏的有效报警」。
+
+version: 1
+
+sessions:
+  # 一个正常（没跑偏）的会话：任何规则命中都算误报
+  - id: example-ok                      # 唯一 id
+    file: transcripts/example-ok.jsonl  # 相对本文件所在目录；Claude Code transcript 或 Codex rollout
+    outcome: ok
+    notes: 一次修完、测试通过          # 可选
+
+  # 一个跑偏的会话
+  - id: example-loop
+    file: transcripts/example-loop.jsonl
+    outcome: derailed
+    derail_step: 12                     # 必填：从第几次工具调用起开始跑偏（≥1 的整数）
+    derail_kind: loop                   # 可选：loop | stagnation | over_testing | scope | premature_done | test_gaming | drift | unsafe | other
+    expected_rules: [L1, L3]            # 可选：你认为应该报的规则；有了它才能算单条规则的 recall
+    plan: plans/example-loop.md         # 可选：该会话的 .supervisor/plan.md，用于 P1/P4
+    notes: 同一个失败测试连续重跑
