@@ -1,0 +1,11 @@
+{
+  "cell": "Claude PostToolBatch × advise（主取出点）",
+  "at": "PostToolBatch",
+  "delivery": { "kind": "advise", "text": "已连续 12 步只读取或搜索，没有编辑、构建或测试。", "ruleId": "S1" },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PostToolBatch",
+      "additionalContext": "已连续 12 步只读取或搜索，没有编辑、构建或测试。"
+    }
+  }
+}

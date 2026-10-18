@@ -1,0 +1,11 @@
+{
+  "cell": "Claude PreToolUse × advise（只有 additionalContext）",
+  "at": "PreToolUse",
+  "delivery": { "kind": "advise", "text": "工作区自上次运行 `pytest -q` 以来没有变化，上次结果：3 通过。", "ruleId": "T1", "deliveryId": "d-2" },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "additionalContext": "工作区自上次运行 `pytest -q` 以来没有变化，上次结果：3 通过。"
+    }
+  }
+}

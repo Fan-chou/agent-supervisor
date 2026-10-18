@@ -1,0 +1,12 @@
+{
+  "cell": "X2 写 .env（Claude 上用 ask）",
+  "at": "PreToolUse",
+  "x2": { "rule": "X2", "category": "env", "action": "ask", "reason": "X2：写入 /Users/jack/proj/.env（环境变量/密钥文件）需要用户确认", "subject": "/Users/jack/proj/.env" },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "ask",
+      "permissionDecisionReason": "X2：写入 /Users/jack/proj/.env（环境变量/密钥文件）需要用户确认"
+    }
+  }
+}

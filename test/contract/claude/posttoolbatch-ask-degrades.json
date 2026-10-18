@@ -1,0 +1,11 @@
+{
+  "cell": "Claude PostToolBatch × 请求 ask：降级为 additionalContext",
+  "at": "PostToolBatch",
+  "delivery": { "kind": "ask", "text": "改动了 CI 配置，请确认。" },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PostToolBatch",
+      "additionalContext": "改动了 CI 配置，请确认。"
+    }
+  }
+}

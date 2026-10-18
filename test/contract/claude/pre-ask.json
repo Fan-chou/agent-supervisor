@@ -1,0 +1,12 @@
+{
+  "cell": "Claude PreToolUse × ask（deny/ask 时不带 additionalContext）",
+  "at": "PreToolUse",
+  "delivery": { "kind": "ask", "text": "即将修改 CI 配置，需要用户确认。", "ruleId": "X2" },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "ask",
+      "permissionDecisionReason": "即将修改 CI 配置，需要用户确认。"
+    }
+  }
+}

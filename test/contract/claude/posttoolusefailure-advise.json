@@ -1,0 +1,11 @@
+{
+  "cell": "Claude PostToolUseFailure × advise",
+  "at": "PostToolUseFailure",
+  "delivery": { "kind": "advise", "text": "这条命令连续失败 2 次，工作区没有变化。" },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PostToolUseFailure",
+      "additionalContext": "这条命令连续失败 2 次，工作区没有变化。"
+    }
+  }
+}

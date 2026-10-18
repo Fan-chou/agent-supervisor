@@ -1,0 +1,11 @@
+{
+  "cell": "Claude PostToolUse × 请求 block：降级为 additionalContext，绝不输出 permissionDecision / decision",
+  "at": "PostToolUse",
+  "delivery": { "kind": "block", "text": "这类写法会让测试一直失败。" },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PostToolUse",
+      "additionalContext": "这类写法会让测试一直失败。"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "cell": "Claude PreToolUse × block",
+  "at": "PreToolUse",
+  "delivery": { "kind": "block", "text": "这条调用已连续失败 2 次，错误相同，工作区没有变化。", "deliveryId": "d-1", "ruleId": "L1", "createdAtSeq": 14, "expires": { "errFp": "abc" } },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "这条调用已连续失败 2 次，错误相同，工作区没有变化。"
+    }
+  }
+}

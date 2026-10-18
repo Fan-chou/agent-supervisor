@@ -1,0 +1,11 @@
+{
+  "cell": "Claude PostToolUseFailure × 请求 block：降级为 additionalContext",
+  "at": "PostToolUseFailure",
+  "delivery": { "kind": "block", "text": "同一条命令已失败多次。" },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PostToolUseFailure",
+      "additionalContext": "同一条命令已失败多次。"
+    }
+  }
+}

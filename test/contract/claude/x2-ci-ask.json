@@ -1,0 +1,12 @@
+{
+  "cell": "X2 改 CI 配置（Claude 上用 ask）",
+  "at": "PreToolUse",
+  "x2": { "rule": "X2", "category": "ci", "action": "ask", "reason": "X2：写入 .github/workflows/ci.yml（CI 配置）需要用户确认", "subject": ".github/workflows/ci.yml" },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "ask",
+      "permissionDecisionReason": "X2：写入 .github/workflows/ci.yml（CI 配置）需要用户确认"
+    }
+  }
+}

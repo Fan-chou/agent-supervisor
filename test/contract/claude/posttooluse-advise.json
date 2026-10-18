@@ -1,0 +1,11 @@
+{
+  "cell": "Claude PostToolUse × advise",
+  "at": "PostToolUse",
+  "delivery": { "kind": "advise", "text": "同一个错误已出现 3 次（命令不一定相同）。", "ruleId": "L3", "deliveryId": "d-3", "createdAtSeq": 30 },
+  "expected": {
+    "hookSpecificOutput": {
+      "hookEventName": "PostToolUse",
+      "additionalContext": "同一个错误已出现 3 次（命令不一定相同）。"
+    }
+  }
+}

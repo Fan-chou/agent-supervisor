@@ -1,0 +1,6 @@
+{
+  "cell": "Claude Stop × advise：Stop 没有 additionalContext，输出为空",
+  "at": "Stop",
+  "delivery": { "kind": "advise", "text": "一条建议。" },
+  "expected": null
+}
