@@ -44,7 +44,9 @@ describe("replay：命中时间线", () => {
     expect(rules(r)).toEqual(["P3", "X1", "X2"]);
     const x2 = r.timeline.filter((t) => t.ruleId === "X2");
     expect(x2.map((t) => t.action).sort()).toEqual(["ask", "block"]);
-    expect(x2.every((t) => t.applied)).toBe(true); // shadow 下 X2 也生效
+    expect(x2.every((t) => !t.applied)).toBe(true); // 默认 shadow：X2 只记录
+    const enforced = await replayFile(join(FX, "claude/cheat-danger.jsonl"), { cfg: resolveConfig({ mode: "enforce" }, defaultConfig()) });
+    expect(enforced.timeline.filter((t) => t.ruleId === "X2").every((t) => t.applied)).toBe(true);
   });
   test("readonly-stall：S1 为 M（已发生过编辑）；S2 仅观察", async () => {
     const r = await replayFile(join(FX, "claude/readonly-stall.jsonl"));
@@ -109,6 +111,47 @@ describe("replay：命中时间线", () => {
     expect(t).toContain("L1");
     expect(t).toContain("按规则汇总");
     expect(t).toContain("+00:22");
+  });
+});
+
+describe("落盘前脱敏（P0-7）", () => {
+  const SECRET = "sk-abcdefghijklmnopqrstuvwxyz123456";
+  const BEARER = "Bearer abcdef0123456789tokenvalue";
+  function transcript(): string {
+    const L: object[] = [{ type: "user", sessionId: "sec", timestamp: "2026-10-18T10:00:00Z", message: { role: "user", content: `use key ${SECRET} please` } }];
+    for (let i = 0; i < 4; i++) {
+      const cmd = `curl -s -H "Authorization: ${BEARER}" https://api.example.com/x`;
+      L.push({ type: "assistant", sessionId: "sec", timestamp: `2026-10-18T10:00:${10 + i * 10}Z`, message: { role: "assistant", content: [{ type: "tool_use", id: `t${i}`, name: "Bash", input: { command: cmd } }] } });
+      L.push({ type: "user", sessionId: "sec", timestamp: `2026-10-18T10:00:${12 + i * 10}Z`, message: { role: "user", content: [{ type: "tool_result", tool_use_id: `t${i}`, content: `ok ${SECRET}` }] } });
+    }
+    L.push({ type: "assistant", sessionId: "sec", timestamp: "2026-10-18T10:02:00Z", message: { role: "assistant", content: [{ type: "tool_use", id: "e1", name: "Edit", input: { file_path: "/w/tests/test_a.py", old_string: "assert a == 1\nassert b == 2", new_string: `# ${SECRET}\npass` } }] } });
+    L.push({ type: "user", sessionId: "sec", timestamp: "2026-10-18T10:02:02Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "e1", content: "updated" }] } });
+    return L.map((l) => JSON.stringify(l)).join("\n") + "\n";
+  }
+  test("--out 的 JSON 与文本输出里都找不到密钥（命令参数、Edit 文本、消息、detail）", async () => {
+    const f = join(tmp, "secret.jsonl");
+    writeFileSync(f, transcript());
+    const r = await replayFile(f, { judge: "mock" });
+    expect(r.timeline.length).toBeGreaterThan(0);
+    const json = JSON.stringify(r);
+    const text = renderText(r, { verbose: true });
+    for (const s of [json, text]) {
+      expect(s).not.toContain("abcdefghijklmnopqrstuvwxyz123456");
+      expect(s).not.toContain("abcdef0123456789tokenvalue");
+    }
+    // CLI 写出的文件同样
+    const out = join(tmp, "secret-out.json");
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => void lines.push(a.join(" "));
+    try {
+      await main(["replay", f, "--out", out]);
+    } finally {
+      console.log = orig;
+    }
+    const written = readFileSync(out, "utf8");
+    expect(written).not.toMatch(/abcdefghijklmnopqrstuvwxyz123456|abcdef0123456789tokenvalue/);
+    expect(lines.join("\n")).not.toMatch(/abcdefghijklmnopqrstuvwxyz123456|abcdef0123456789tokenvalue/);
   });
 });
 

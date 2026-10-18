@@ -55,7 +55,7 @@ export class Policy {
   /** R4 抽查间隔减半的截止步数 / 暂停标记。 */
   r4BoostUntilStep = -1;
   paused = false; // judge done=true：暂停 R4 和 P4，直到下一次 M 级命中
-  readonly judgeLog: { ruleId: string; result: JudgeResult["kind"]; model?: string }[] = [];
+  readonly judgeLog: { ruleId: string; result: JudgeResult["kind"]; model?: string; verdict?: string }[] = [];
 
   constructor(
     private readonly cfg: Config,
@@ -120,7 +120,8 @@ export class Policy {
       if (act === "off") return base("log", "X2 disabled by config");
       const ask = h.x2?.action === "ask";
       this.markFired(h, e);
-      return base(ask ? "ask" : "block", "X2 本地规则，不受连续拦截上限约束", { message: h.message, applied: true });
+      // X2 跟随 mode：shadow 只记录（action 仍标 ask/deny 供观察）；advise 模式下也不拦。不受连续拦截上限约束。
+      return base(ask ? "ask" : "block", "X2 本地规则，不受连续拦截上限约束", { message: h.message, applied: this.modeApplies("block") });
     }
 
     // ---- 显式 P1（plan.md 里写了 allow）：本地拦截，不问 judge，不受上限约束 ----
@@ -181,7 +182,7 @@ export class Policy {
       this.judgeCalls++;
       this.lastJudgeTs = e.ts;
       jr = await judge({ hits: [h], sync: true, session: this.s });
-      this.judgeLog.push({ ruleId: h.ruleId, result: jr.kind, model: jr.model });
+      this.judgeLog.push({ ruleId: h.ruleId, result: jr.kind, model: jr.model, verdict: jr.kind === "ok" ? jr.out.verdict : undefined });
     }
     const jsum = jr ? { kind: jr.kind, verdict: jr.kind === "ok" ? jr.out.verdict : undefined, confidence: jr.kind === "ok" ? jr.out.confidence : undefined, model: jr.model } : undefined;
     const doBlock = (reason: string): Decision => {
@@ -238,7 +239,7 @@ export class Policy {
       this.lastJudgeByCategory.set(cat, e.ts);
       if (lead.ruleId !== "R4" && lead.ruleId !== "P4") this.paused = false;
       const jr = await judge({ hits: group, sync: false, session: this.s });
-      this.judgeLog.push({ ruleId: lead.ruleId, result: jr.kind, model: jr.model });
+      this.judgeLog.push({ ruleId: lead.ruleId, result: jr.kind, model: jr.model, verdict: jr.kind === "ok" ? jr.out.verdict : undefined });
       const jsum = { kind: jr.kind, verdict: jr.kind === "ok" ? jr.out.verdict : undefined, confidence: jr.kind === "ok" ? jr.out.confidence : undefined, model: jr.model };
       for (const h of rest) out.push(mk(h, "skip", "与同类命中合并为一次 judge 调用", { judge: jsum }));
       this.markFired(lead, e);

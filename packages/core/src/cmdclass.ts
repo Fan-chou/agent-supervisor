@@ -47,7 +47,11 @@ interface Unwrapped {
   argv: string[];
   scope: string[];
   inner?: string; // sh -c "..." 的内层脚本
+  /** 命令自己带了 CI=1/true（决定 vitest 是不是 watch）；看的是命令里的赋值，不是 supervisor 进程的环境。 */
+  ci: boolean;
 }
+
+const CI_ASSIGN = /^CI=(1|true|yes|on)$/i;
 
 function skipOpts(argv: string[], i: number, withValue: Set<string>): number {
   while (i < argv.length && argv[i].startsWith("-") && argv[i] !== "--") {
@@ -59,9 +63,11 @@ function skipOpts(argv: string[], i: number, withValue: Set<string>): number {
 export function unwrap(input: string[]): Unwrapped {
   let argv = input.slice();
   const scope: string[] = [];
+  let ci = false;
   for (let guard = 0; guard < 12 && argv.length; guard++) {
     // 环境变量赋值
     if (ENV_ASSIGN.test(argv[0])) {
+      if (CI_ASSIGN.test(argv[0])) ci = true;
       argv = argv.slice(1);
       continue;
     }
@@ -69,7 +75,10 @@ export function unwrap(input: string[]): Unwrapped {
     const base = a.replace(/^.*\//, "");
     if (base === "env") {
       let i = 1;
-      while (i < argv.length && (argv[i].startsWith("-") || ENV_ASSIGN.test(argv[i]))) i++;
+      while (i < argv.length && (argv[i].startsWith("-") || ENV_ASSIGN.test(argv[i]))) {
+        if (CI_ASSIGN.test(argv[i])) ci = true;
+        i++;
+      }
       argv = argv.slice(i);
       continue;
     }
@@ -156,11 +165,11 @@ export function unwrap(input: string[]): Unwrapped {
     // sh -c "..."
     if (SHELLS.has(base)) {
       const ci = argv.findIndex((t, idx) => idx > 0 && /^-[a-z]*c[a-z]*$/.test(t));
-      if (ci > 0 && argv[ci + 1] !== undefined) return { argv, scope, inner: argv[ci + 1] };
+      if (ci > 0 && argv[ci + 1] !== undefined) return { argv, scope, inner: argv[ci + 1], ci: false };
     }
     break;
   }
-  return { argv, scope };
+  return { argv, scope, ci };
 }
 
 function countRunOpts(rest: string[], withValue: Set<string>): number {
@@ -335,7 +344,7 @@ function classifyHttp(argv: string[]): boolean {
 }
 
 /** 单段 argv（已剥壳）分类。 */
-function classifyArgv(argv: string[], opts: ClassifyOptions, seg: Segment | undefined, scoped: boolean, rawJoined: string): Classified {
+function classifyArgv(argv: string[], opts: ClassifyOptions, seg: Segment | undefined, scoped: boolean, rawJoined: string, ci = false): Classified {
   if (argv.length === 0) return { cls: "other" };
   const a0 = argv[0];
   const base = a0.replace(/^.*\//, "");
@@ -374,7 +383,7 @@ function classifyArgv(argv: string[], opts: ClassifyOptions, seg: Segment | unde
   if (base === "vitest") {
     if (args[0] === "bench" || args[0] === "typecheck") return { cls: "other" };
     const wantsRun = args[0] === "run" || args.includes("--run") || args.includes("--watch=false");
-    if (!wantsRun && !process.env.CI && !args.includes("--no-watch")) return testKind("watch");
+    if (!wantsRun && !ci && !args.includes("--no-watch")) return testKind("watch");
     const rest = args[0] === "run" ? args.slice(1) : args;
     const k = genericFilterKind(rest, ["-c", "--config", "--root", "-r", "--reporter", "--outputFile", "--project", "--shard", "--environment", "--pool", "-t", "--testNamePattern"]);
     return testKind(scoped && k === "full" ? "targeted" : k);
@@ -475,7 +484,7 @@ function classifyArgv(argv: string[], opts: ClassifyOptions, seg: Segment | unde
     if (["gradle", "gradlew", "mvn", "mvnw", "dotnet", "sbt", "bazel", "mill"].includes(base) && /^(build|assemble|compile|package|install|jar|classes|publish)$/.test(sub)) return { cls: "build", mutating: true };
     if (base === "bundle" && ["install", "update", "add", "remove", "lock"].includes(sub)) return { cls: "other", mutating: true };
     if (base === "bundle" && sub === "exec") {
-      return classifyArgv(args.slice(args.indexOf("exec") + 1), opts, seg, scoped, rawJoined);
+      return classifyArgv(args.slice(args.indexOf("exec") + 1), opts, seg, scoped, rawJoined, ci);
     }
     if (base === "rake" && /^test/.test(sub)) return testKind("full");
     if (base === "rake" && /db:/.test(sub)) return { cls: "other", mutating: true };
@@ -519,7 +528,7 @@ function classifyArgv(argv: string[], opts: ClassifyOptions, seg: Segment | unde
     if (["install", "i", "add", "remove", "rm", "uninstall", "update", "up", "upgrade", "ci", "link", "unlink", "dedupe", "prune", "rebuild", "patch", "create", "init", "publish"].includes(sub)) {
       return { cls: "other", mutating: true };
     }
-    if (sub === "x" || sub === "exec") return classifyArgv(rest, opts, seg, scoped, rest.join(" "));
+    if (sub === "x" || sub === "exec") return classifyArgv(rest, opts, seg, scoped, rest.join(" "), ci);
     return { cls: "other" };
   }
 
@@ -784,7 +793,7 @@ function analyzeSegments(segs: Segment[], opts: ClassifyOptions, depth: number, 
     const base = u.argv[0]?.replace(/^.*\//, "") ?? "";
     const rawJoined = u.argv.join(" ");
     const isTail = prevPipes && PIPE_TAILS.has(base);
-    const cls = isTail ? ({ cls: "other" } as Classified) : classifyArgv(u.argv, opts, seg, u.scope.length > 0, rawJoined);
+    const cls = isTail ? ({ cls: "other" } as Classified) : classifyArgv(u.argv, opts, seg, u.scope.length > 0, rawJoined, u.ci);
     const mut = segmentMutation(u.argv, seg, cls);
     // heredoc 内容里写文件（cat <<EOF > f 已由重定向处理；python/node 无 -c 的 heredoc 另行判断）
     let mutating = mut.mutating;

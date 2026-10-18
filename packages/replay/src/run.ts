@@ -1,7 +1,7 @@
 // 回放：Event 流 → Engine → 命中时间线（JSON + 可读文本）。
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import { defaultConfig, Engine, mockJudge, pickProfile, type Config, type Decision, type Event, type Hit, type JudgeFn, type MockOptions } from "@sv/core";
+import { defaultConfig, Engine, mockJudge, pickProfile, redact, redactDeep, type Config, type Decision, type Event, type Hit, type JudgeFn, type MockOptions } from "@sv/core";
 import { readClaudeTranscript } from "./claude.ts";
 import { readCodexRollout } from "./codex.ts";
 
@@ -26,6 +26,8 @@ export interface TimelineEntry {
   relMs: number;
   /** 命中时已完成的工具调用步数。 */
   step: number;
+  /** 命中所指的工具调用序号（从 1 开始）。eval 的步骤单位用它：pre 阶段命中 = step+1。 */
+  callIndex: number;
   ruleId: string;
   sev: Hit["sev"];
   category: Hit["category"];
@@ -60,6 +62,8 @@ export interface ReplayResult {
     byRule: Record<string, { hits: number; actions: Record<string, number> }>;
     judgeCalls: number;
     firstHitMs: Record<string, number>;
+    /** 按 judge 实际使用的 model 统计（ignore 率、解析失败率、超时、出错）。 */
+    judge: { calls: number; byModel: Record<string, { calls: number; ignores: number; parseFail: number; timeouts: number; errors: number }> };
   };
   warnings: string[];
 }
@@ -102,9 +106,7 @@ export async function replayEvents(events: Event[], opts: ReplayOptions = {}, fi
   const t0 = events[0]?.ts ?? 0;
   const timeline: TimelineEntry[] = [];
   for (const e of events) {
-    const stepsBefore = engine.tracker.steps.length;
     const rec = await engine.feed(e);
-    void stepsBefore;
     const step = engine.tracker.steps.length;
     for (const h of rec.hits) {
       const ds = rec.decisions.filter((d) => d.hit === h);
@@ -114,6 +116,8 @@ export async function replayEvents(events: Event[], opts: ReplayOptions = {}, fi
         ts: h.ts,
         relMs: h.ts - t0,
         step,
+        // pre 阶段命中时这次调用还没完成：它是第 step+1 次调用；其余阶段命中时指向刚完成的第 step 次调用
+        callIndex: h.phase === "pre" ? step + 1 : Math.max(step, 1),
         ruleId: h.ruleId,
         sev: h.sev,
         category: h.category,
@@ -144,7 +148,17 @@ export async function replayEvents(events: Event[], opts: ReplayOptions = {}, fi
   const warnings: string[] = [];
   if (!plan && cfg.plan.source !== "off") warnings.push("没有计划（agent 待办和 plan.md 都没有）：P1、P4 自动停用");
   if (events.some((e) => e.phase === "post" && e.result?.status === "pending")) warnings.push("存在未结束（pending）的调用，未计入 S3 等规则");
-  return {
+  const judgeStats: ReplayResult["summary"]["judge"] = { calls: engine.policy.judgeCallCount, byModel: {} };
+  for (const j of engine.policy.judgeLog) {
+    const m = (judgeStats.byModel[j.model ?? "unknown"] ??= { calls: 0, ignores: 0, parseFail: 0, timeouts: 0, errors: 0 });
+    m.calls++;
+    if (j.result === "parse_fail") m.parseFail++;
+    else if (j.result === "timeout") m.timeouts++;
+    else if (j.result === "error") m.errors++;
+    else if (j.verdict === "ignore") m.ignores++;
+  }
+  // 输出边界统一脱敏（P0-7、design §10）：命令、消息、detail 里可能带密钥
+  return redactDeep({
     file,
     sessionId: events[0]?.sessionId ?? "unknown",
     harness: events[0]?.harness ?? "unknown",
@@ -156,9 +170,9 @@ export async function replayEvents(events: Event[], opts: ReplayOptions = {}, fi
     durationMs: (events[events.length - 1]?.ts ?? t0) - t0,
     plan: plan ? { source: plan.source, current: plan.items.find((i) => i.status === "in_progress")?.text, items: plan.items.length, explicitAllow: plan.explicitAllow } : null,
     timeline,
-    summary: { hits: timeline.length, byRule, judgeCalls: engine.policy.judgeCallCount, firstHitMs },
+    summary: { hits: timeline.length, byRule, judgeCalls: engine.policy.judgeCallCount, firstHitMs, judge: judgeStats },
     warnings,
-  };
+  });
 }
 
 export async function replayFile(path: string, opts: ReplayOptions = {}): Promise<ReplayResult> {
@@ -200,7 +214,7 @@ export async function replayPath(path: string, opts: ReplayOptions = {}): Promis
         durationMs: 0,
         plan: null,
         timeline: [],
-        summary: { hits: 0, byRule: {}, judgeCalls: 0, firstHitMs: {} },
+        summary: { hits: 0, byRule: {}, judgeCalls: 0, firstHitMs: {}, judge: { calls: 0, byModel: {} } },
         warnings: [`读取失败：${String(err)}`],
       });
     }
@@ -250,5 +264,5 @@ export function renderText(r: ReplayResult, opts: { verbose?: boolean } = {}): s
       out.push(`  ${id.padEnd(5)} ${String(v.hits).padStart(3)} 次  首次 ${fmtRel(r.summary.firstHitMs[id])}  ` + Object.entries(v.actions).map(([a, n]) => `${ACTION_LABEL[a] ?? a}×${n}`).join(" "));
     }
   }
-  return out.join("\n");
+  return redact(out.join("\n"));
 }

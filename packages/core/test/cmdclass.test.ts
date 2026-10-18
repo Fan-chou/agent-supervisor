@@ -57,6 +57,9 @@ const CASES: [string, CmdClass][] = [
   ["bun test -t foo", "test_targeted"],
   ["vitest", "test_watch"],
   ["vitest run", "test_full"],
+  ["CI=1 vitest", "test_full"],
+  ["env CI=true npx vitest", "test_full"],
+  ["CI=0 vitest", "test_watch"],
   ["vitest run src/foo.test.ts", "test_targeted"],
   ["vitest run -t 'foo'", "test_targeted"],
   ["vitest --run", "test_full"],
@@ -208,6 +211,21 @@ describe("classifyCommand（≥100 条）", () => {
   test("准确率 100%（汇总）", () => {
     const wrong = CASES.filter(([c, w]) => classifyCommand(c) !== w);
     expect(wrong).toEqual([]);
+  });
+});
+
+describe("vitest watch 只看命令自己的 CI 赋值，不看 supervisor 进程的环境变量", () => {
+  test("进程环境里有 CI=true 也不影响", () => {
+    const old = process.env.CI;
+    process.env.CI = "true";
+    try {
+      expect(classifyCommand("vitest")).toBe("test_watch");
+      expect(classifyCommand("npx vitest")).toBe("test_watch");
+      expect(classifyCommand("CI=1 npx vitest")).toBe("test_full");
+    } finally {
+      if (old === undefined) delete process.env.CI;
+      else process.env.CI = old;
+    }
   });
 });
 

@@ -13,7 +13,7 @@
    - `cargo test -- <name>` 的 `--` 之后出现非选项参数算 targeted。
    - `pnpm -F pkg test`、`--filter` 视为限定了单个包 → targeted。
    - `make test-fast`/`quick`/`single` 之类算 targeted；`make test TEST=…`/`FILE=…` 变量也算。
-   - `vitest` 不带 `run`/`--run` 且 `CI` 环境变量未设置时为 watch。
+   - `vitest` 不带 `run`/`--run`，且**命令自己没有** `CI=1/true`（含 `env CI=1 …`）时为 watch。看的是命令里的赋值，不是 supervisor 进程的环境变量（后者与 agent 那条命令无关，且会让测试依赖运行环境）。
 8. **probe 的「项目包」判定**：分类器不知道项目包名，用「不在常见标准库/常见第三方白名单里的 import」近似；相对导入、`require('./…')`、`assert` 一律算。`import numpy` 这类常见第三方包放进白名单（不算 probe）。heredoc 里有写文件调用 → `other` + mutating。
 9. **smoke/repro 判定需要上下文**：分类器是无状态的，调用方通过 `ClassifyOptions.newScripts`（本会话新建过的脚本）和 `sourceEdited`（是否已改过源码）传入。新建脚本在改源码前运行 → `repro_script`；改源码后且文件名符合 `smoke*/check_*/verify*/try_*`、`/tmp/*.py` → `smoke_script`。
 10. **FailureClassifier**：退出码只认头部（`Output:` 之前，或无 `Output:` 时的前 600 字符），防止输出正文伪造。强失败信号优先于强成功信号；弱信号（`Error:`、`failed` 单词）只对测试/构建/lint/typecheck/脚本类命令采信。带计数的失败模式要求非零（`0 failed`、`Found 0 errors` 不算失败）。
@@ -28,7 +28,7 @@
 17. **「advise」的表示**：L 级 + `message` = 本地预设建议（不经 judge）；L 且无 message = 只记录。T 组的 advise 因此是「L + 事实陈述 message」；M 进 judge。L 级本地建议：非 T 组每规则每会话最多 1 次，T 组靠冷却（10 步 / 5 分钟，两个条件同时满足才算冷却中）。
 18. **阶梯阈值**：`Profile` 里每条 T 规则是 `{L?, advise?, M?, H?}` 次数阶梯，取满足的最高级，且只在「升级的那一次」触发（边沿触发），避免每一步都重复报。`config.example.yaml` 里 `profiles` 的扁平键（`T2_full_per_turn` 等）映射到这些阶梯。
 19. **没有真实指纹时（回放）**：`SessionTracker.unchangedBetween` 返回 `verified | inferred | changed`。`inferred` = 事件流里没有编辑也没有 mutating 命令，但没有真实 `wsFingerprint`。policy 默认（线上）对 `inferred` 不拦，只 advise；回放用 `trustInferredUnchanged=true`，并在时间线里标注 `verified=false` / `wouldBlockIfVerified`。
-20. **X2 与 mode**：shadow 模式下 X2 仍然生效（`rules.X2_dangerous.action` 默认 `block`；设为 `off` 才只记录）。理由：design 把 X2 定义成适配器本地规则、故障也不放行，config.example 里 X2 的配置也独立于 `mode`。如果 Jack 希望 shadow 阶段完全不拦，需要把 `X2_dangerous.action` 设成 `off`——**请确认**。
+20. **X2 与 mode**：X2 **跟随 mode**：shadow 只记录（Decision 里 `action` 仍标 block/ask，`applied=false`），advise 模式也不拦，只有 enforce 才生效。理由：config 注释写 `shadow=只记录`，M4 是 shadow 周、完成标准是「零阻塞事故」，M5 才打开 H 级拦截；design 说的「X2 不依赖守护进程」指的是故障时不放行、不是可以无视 mode。`rules.X2_dangerous.action: off` 则连命中都不产生。**请 Jack 确认**：如果希望 shadow 阶段 X2 就真的拦，需要改这一条。
 21. **X2 的 `rm -rf` 解释**：design 写「删仓库外或 $HOME 下的路径」，但仓库通常就在 $HOME 下。实现为：目标是 `/`、`$HOME` 本身（含 `~/*`）、仓库外的绝对路径/`../` 路径、仓库根或 `.git` 时拦；仓库内普通子目录不拦（可由 git 恢复）；`/tmp`、`/var/folders` 和仓库内构建产物目录（node_modules、dist、build、target…）豁免；含未解析变量（`$X`）的路径无法判断，放行。`git push --force-with-lease` 不拦。
 22. **X1 的判断**：只看测试文件（路径含 tests/、spec/、`test_*.py`、`*.test.ts`、`*_test.go` 等）的 Edit/Write/apply_patch：新增 skip/xfail/`.only`；断言数量减少；上一次测试失败后没改过源码就改了断言行。用户意图/当前计划步骤包含「写测试、补测试、flaky、快照、基准、修 CI」时降为 L。「fix the failing test」**不**算豁免（那通常是要修源码）。
 23. **P1 的允许范围**：plan.md 写了 `allow:` → 显式（H，本地拦，不问 judge，不受连续拦截上限）；否则用当前 in_progress 步骤文本里的路径/glob + 该步期间读过/改过的文件。步骤文本里一个路径都没有 → 自动提取不可靠，P1 不报。匹配：无通配符按「相等或目录前缀」，有通配符用 `Bun.Glob`，不做子串匹配。

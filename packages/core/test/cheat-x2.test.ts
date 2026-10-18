@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { x2Check, classifyWritePath } from "../src/x2.ts";
-import { PYTEST_FAIL, PYTEST_PASS, Sim } from "./sim.ts";
+import { PYTEST_FAIL, PYTEST_PASS, Sim, cfgWith } from "./sim.ts";
 
 const HOME = "/Users/jack";
 const CWD = "/Users/jack/proj";
@@ -81,14 +81,23 @@ describe("X2 危险操作", () => {
 });
 
 describe("X2 在 pre 阶段：本地拦截，不受连续拦截上限约束", () => {
-  test("连续 5 次 X2 全部拦截（上限只管 judge/计数类规则）", async () => {
-    const s = new Sim({ cwd: CWD });
+  test("enforce：连续 5 次 X2 全部拦截（上限只管 judge/计数类规则）", async () => {
+    const s = new Sim({ cwd: CWD, cfg: cfgWith({ mode: "enforce" }) });
     for (let i = 0; i < 5; i++) {
       const [pre] = await s.bash("git reset --hard");
       const d = pre.decisions.find((x) => x.hit.ruleId === "X2");
       expect(d?.action).toBe("block");
-      expect(d?.applied).toBe(true); // shadow 模式下 X2 也生效（规则配置为 block）
+      expect(d?.applied).toBe(true);
     }
+  });
+  test("shadow：X2 照样产生 block/ask 动作供观察，但 applied=false（不生效）", async () => {
+    const s = new Sim({ cwd: CWD });
+    const [pre] = await s.bash("git reset --hard");
+    const d = pre.decisions.find((x) => x.hit.ruleId === "X2");
+    expect(d?.action).toBe("block");
+    expect(d?.applied).toBe(false);
+    const a = new Sim({ cwd: CWD, cfg: cfgWith({ mode: "advise" }) });
+    expect((await a.bash("git reset --hard"))[0].decisions.find((x) => x.hit.ruleId === "X2")?.applied).toBe(false);
   });
   test("Claude 写 .env → ask", async () => {
     const s = new Sim({ cwd: CWD });
