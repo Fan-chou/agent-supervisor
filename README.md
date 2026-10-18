@@ -7,4 +7,10 @@
 - Opus 评审：[docs/review-opus.md](docs/review-opus.md)
 - 配置示例：[config.example.yaml](config.example.yaml)
 
-状态：设计阶段，尚无代码。计划先做回放和评测，再以只记录模式（shadow）上线。计划来源的规则还是暂定，等确认。
+状态：第一阶段 M0–M2 的工程部分已完成（core、回放读取器、检测器、policy、`sv replay`、`sv eval`、judge 客户端、Claude 契约测试），守护进程/适配器/sv-hook 尚未开始。详见 [docs/progress.md](docs/progress.md)、[docs/decisions.md](docs/decisions.md)、[docs/frontend-design.md](docs/frontend-design.md)。
+
+```
+bun test                                              # 全部测试，不发网络请求
+bun packages/cli/src/sv.ts replay test/fixtures/claude --judge=mock
+bun packages/cli/src/sv.ts eval test/fixtures/labels.yaml
+```
