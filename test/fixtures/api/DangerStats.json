@@ -1,0 +1,11 @@
+{
+  "schema": "DangerStats",
+  "value": {
+    "total": 2,
+    "enforced": 0,
+    "wouldHaveBlocked": 2,
+    "byCategory": { "git": 1, "env": 1 },
+    "byOutcome": { "would_have_blocked": 1, "would_have_asked": 1 },
+    "bySession": [{ "runId": 1, "sessionId": "sess-golden-1", "dangerous": 2, "wouldHaveBlocked": 2, "enforced": 0 }]
+  }
+}

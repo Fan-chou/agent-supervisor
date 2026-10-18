@@ -1,0 +1,22 @@
+{
+  "schema": "Hit",
+  "value": {
+    "id": 7,
+    "runId": 1,
+    "sessionId": "sess-golden-1",
+    "seq": 12,
+    "ts": 1700000050000,
+    "ruleId": "X2",
+    "sev": "H",
+    "severity": "dangerous",
+    "dangerous": true,
+    "category": "unsafe",
+    "phase": "pre",
+    "message": "X2：命令包含 git reset --hard，可能丢失未提交的工作",
+    "model": "model-x",
+    "action": "block",
+    "outcome": "would_have_blocked",
+    "applied": false,
+    "label": null
+  }
+}

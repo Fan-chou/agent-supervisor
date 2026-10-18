@@ -1,0 +1,12 @@
+{
+  "schema": "ConfigView",
+  "value": {
+    "source": "daemon-startup",
+    "judge": { "api_key_env": "SUPERVISOR_API_KEY", "api_key_set": false },
+    "config": {
+      "mode": "shadow",
+      "judge": { "enabled": false, "base_url": "http://127.0.0.1:3425/v1", "api_key_env": "SUPERVISOR_API_KEY", "request": { "headers": { "Authorization": "••••" } } },
+      "thresholds": { "L2_repeat": 4 }
+    }
+  }
+}

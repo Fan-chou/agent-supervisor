@@ -1,0 +1,13 @@
+{
+  "schema": "StreamMessage",
+  "values": [
+    { "streamId": "lq9z3k.3", "type": "status", "ts": 1700000000000, "mode": "shadow", "runId": 1, "sessions": 1 },
+    { "streamId": "lq9z3k.4", "type": "session", "ts": 1700000000100, "sessionId": "sess-golden-1", "harness": "claude", "runId": 1 },
+    { "streamId": "lq9z3k.5", "type": "event", "ts": 1700000000200, "sessionId": "sess-golden-1", "harness": "claude", "runId": 1, "seq": 1, "phase": "pre", "tool": "Bash" },
+    { "streamId": "lq9z3k.6", "type": "hit", "ts": 1700000000300, "sessionId": "sess-golden-1", "runId": 1, "seq": 1, "ruleId": "X2", "sev": "H", "category": "unsafe", "dangerous": true },
+    { "streamId": "lq9z3k.7", "type": "decision", "ts": 1700000000400, "sessionId": "sess-golden-1", "runId": 1, "seq": 1, "ruleId": "X2", "action": "block", "applied": false, "outcome": "would_have_blocked", "dangerous": true },
+    { "streamId": "lq9z3k.8", "type": "delivery", "ts": 1700000000500, "sessionId": "sess-golden-1", "deliveryId": "d-1-9", "kind": "advise", "ruleId": "T1", "hookPoint": "PostToolUse" },
+    { "streamId": "lq9z3k.8", "type": "heartbeat", "ts": 1700000015000 },
+    { "streamId": "lq9z3k.8", "type": "reset", "ts": 1700000016000, "reason": "cursor_expired" }
+  ]
+}

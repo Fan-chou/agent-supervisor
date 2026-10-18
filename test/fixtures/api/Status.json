@@ -1,0 +1,15 @@
+{
+  "schema": "Status",
+  "value": {
+    "protocol": 1,
+    "version": "0.1.0",
+    "mode": "shadow",
+    "startedAt": 1700000000000,
+    "runId": 1,
+    "db": "/home/u/.agent-supervisor/state.db",
+    "sessions": 2,
+    "outbox": { "pending": 0, "claimed": 0, "delivered": 1, "stale": 0, "expired": 0 },
+    "adapterFailures15m": { "claude": 0, "codex": 1 },
+    "judge": { "enabled": false }
+  }
+}

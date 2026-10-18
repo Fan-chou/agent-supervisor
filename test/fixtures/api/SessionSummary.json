@@ -1,0 +1,24 @@
+{
+  "schema": "SessionSummary",
+  "value": {
+    "run_id": 1,
+    "session_id": "sess-golden-1",
+    "harness": "claude",
+    "model": "model-x",
+    "project": "proj",
+    "calls": 6,
+    "hits_L": 1,
+    "hits_M": 0,
+    "hits_H": 1,
+    "alarms": 2,
+    "dangerous": 1,
+    "would_have_blocked": 1,
+    "blocked": 0,
+    "judge_calls": 0,
+    "danger": { "total": 1, "wouldHaveBlocked": 1, "enforced": 0 },
+    "first_ts": 1700000000000,
+    "last_ts": 1700000060000,
+    "events": 13,
+    "state": "active"
+  }
+}

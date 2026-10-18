@@ -1,0 +1,4 @@
+{
+  "schema": "Delivery",
+  "value": { "kind": "advise", "text": "工作区自上次运行 pytest 以来没有变化，上次结果：3 passed。", "deliveryId": "d-1-9", "ruleId": "T1", "createdAtSeq": 12 }
+}

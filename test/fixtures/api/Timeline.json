@@ -1,0 +1,35 @@
+{
+  "schema": "Timeline",
+  "value": {
+    "runId": 1,
+    "hasMore": false,
+    "entries": [
+      { "type": "event", "seq": 0, "ts": 1700000000000, "phase": "prompt", "origin": "user", "model": "model-x" },
+      { "type": "call", "seq": 1, "postSeq": 2, "ts": 1700000005000, "toolUseId": "tu_0", "tool": "Bash", "kind": "shell", "cmdClass": "other", "normCmd": "ls", "mutating": false, "status": "ok", "exitCode": 0, "errFp": null, "model": "model-x" },
+      { "type": "call", "seq": 3, "postSeq": null, "ts": 1700000010000, "toolUseId": "tu_1", "tool": "Bash", "kind": "shell", "cmdClass": "other", "normCmd": "git reset --hard HEAD~1", "mutating": true, "status": "pending", "exitCode": null, "errFp": null, "model": "model-x" },
+      {
+        "type": "hit",
+        "seq": 3,
+        "ts": 1700000010000,
+        "hitId": 7,
+        "ruleId": "X2",
+        "sev": "H",
+        "severity": "dangerous",
+        "dangerous": true,
+        "dangerCategory": "git",
+        "dangerSubject": "git reset --hard",
+        "dangerReason": "可能丢失未提交的工作",
+        "category": "unsafe",
+        "phase": "pre",
+        "callIndex": 1,
+        "message": "X2：命令包含 git reset --hard",
+        "observeOnly": false,
+        "decisions": [
+          { "id": 9, "action": "block", "applied": false, "mode": "shadow", "outcome": "would_have_blocked", "suppressedBy": null, "wouldBlockIfVerified": false, "atNextPre": false, "message": "X2：命令包含 git reset --hard" }
+        ],
+        "outcome": "would_have_blocked",
+        "applied": false
+      }
+    ]
+  }
+}

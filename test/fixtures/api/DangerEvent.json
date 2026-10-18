@@ -1,0 +1,17 @@
+{
+  "schema": "DangerEvent",
+  "value": {
+    "hitId": 7,
+    "runId": 1,
+    "sessionId": "sess-golden-1",
+    "ts": 1700000010000,
+    "callIndex": 1,
+    "category": "git",
+    "subject": "git reset --hard",
+    "reason": "可能丢失未提交的工作",
+    "action": "block",
+    "outcome": "would_have_blocked",
+    "mode": "shadow",
+    "model": "model-x"
+  }
+}

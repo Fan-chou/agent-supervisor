@@ -1,0 +1,32 @@
+{
+  "schema": "JudgeCallList",
+  "value": {
+    "calls": [
+      {
+        "id": 3,
+        "runId": 1,
+        "sessionId": "sess-golden-1",
+        "harness": "claude",
+        "ts": 1700000020000,
+        "ruleIds": ["L1", "L3"],
+        "sync": false,
+        "routeModel": "route-a",
+        "model": "model-j",
+        "status": "ok",
+        "verdict": "advise",
+        "confidence": 0.82,
+        "category": "loop",
+        "latencyMs": 900,
+        "promptTokens": 1000,
+        "completionTokens": 50,
+        "cachedTokens": 400,
+        "costUsd": 0.01,
+        "retries": 0,
+        "formatDowngraded": false,
+        "error": null
+      }
+    ],
+    "nextCursor": null,
+    "totals": { "calls": 1, "ok": 1, "failed": 0, "parseFail": 0, "promptTokens": 1000, "completionTokens": 50, "cachedTokens": 400, "costUsd": 0.01, "latencyP50": 900, "latencyP95": 900 }
+  }
+}

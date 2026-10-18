@@ -1,0 +1,17 @@
+{
+  "schema": "Run",
+  "value": {
+    "id": 1,
+    "kind": "live",
+    "label": "daemon",
+    "source": "pid 1234",
+    "mode": "shadow",
+    "judge_mode": "off",
+    "thresholds_hash": "ab12cd34",
+    "overrides_json": null,
+    "started_ts": 1700000000000,
+    "ended_ts": null,
+    "sessions": 2,
+    "hits": 5
+  }
+}

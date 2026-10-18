@@ -1,0 +1,22 @@
+{
+  "schema": "RuleStat",
+  "value": {
+    "rule": "T1",
+    "hits": 4,
+    "sessions": 2,
+    "hitsPer100Calls": 3.2,
+    "sessionRate": 0.5,
+    "bySev": { "L": 2, "H": 2 },
+    "actions": { "advise": 3, "block": 1 },
+    "outcomes": { "would_have_advised": 3, "would_have_blocked": 1 },
+    "suppressed": {},
+    "applied": 0,
+    "labeledFp": 0,
+    "labeledUseful": 1,
+    "fpRate": 0,
+    "delivered": 0,
+    "complied": 0,
+    "notComplied": 0,
+    "complianceRate": null
+  }
+}
