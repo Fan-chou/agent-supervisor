@@ -29,10 +29,7 @@
    人工标注不归你做。
 4. **前端设计文档** `docs/frontend-design.md`（这一阶段只写文档，不写前端代码）：
    - 页面：实时会话、事件和事故时间线、judge 裁决、规则配置、回放结果；
-   - 框架：Jack 说要用「mygo」做跨平台的「naive」。mygo 是 egoist/mygo（https://mygo.egoist.dev，Go 桌面框架，没有 cgo，支持两种界面：**GPU 绘制的 native UI**，或者**系统 webview 加任意 web 前端**）。「naive」可能是 mygo 的 native UI（拼写错误），也可能是 Vue 的 Naive UI（webview 前端）。
-   
-   请对比这两种方案，选一个并说明理由。考虑的因素包括：时间线、表格、图表类界面的需求；和守护进程（Bun/TS）通信的方式（UDS 或 HTTP）；复用 TS 类型；包体积和内存；开发效率。并在文档开头写明「请 Jack 确认是 native 还是 Naive UI」。
-   
+   - 框架（Jack 已确定）：**MyGo native UI**（egoist/mygo，https://mygo.egoist.dev ，纯 Go、GPU 绘制、无 webview）。不用 Naive UI，也不做方案对比。UI 通过守护进程（TS core）的本地鉴权 API（UDS 0600 或 HTTP+token）和它通信。
    文档内容包括：信息架构、每页的线框（文字或 ASCII）、数据接口（守护进程要提供哪些 API）、状态和实时推送、空状态和错误状态、可访问性。
 
 ## 规则
