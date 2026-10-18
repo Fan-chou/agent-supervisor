@@ -1,0 +1,17 @@
+{
+  "model": "sonnet",
+  "advisorModel": "opus",
+  "permissions": {
+    "allow": [
+      "Edit", "Write", "Read", "Glob", "Grep",
+      "Bash(bun:*)", "Bash(bunx:*)", "Bash(go:*)", "Bash(gofmt:*)",
+      "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git show:*)", "Bash(git rev-parse:*)", "Bash(git init:*)",
+      "Bash(ls:*)", "Bash(mkdir:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)", "Bash(rg:*)", "Bash(grep:*)", "Bash(find:*)", "Bash(mv:*)", "Bash(cp:*)", "Bash(rm:*)", "Bash(touch:*)", "Bash(chmod:*)", "Bash(jq:*)", "Bash(sed:*)", "Bash(echo:*)", "Bash(pwd)", "Bash(which:*)", "Bash(sqlite3:*)", "Bash(node:*)"
+    ],
+    "deny": [
+      "Read(~/.claude/**)", "Read(~/.codex/auth.json)", "Read(~/.config/magpie/**)", "Read(**/.env)",
+      "Bash(git push:*)", "Bash(git remote:*)", "Bash(sudo:*)", "Bash(brew:*)", "Bash(npm install -g:*)", "Bash(bun add -g:*)", "Bash(bun install -g:*)", "Bash(go install:*)", "Bash(curl:*)", "Bash(wget:*)", "Bash(launchctl:*)"
+    ],
+    "defaultMode": "acceptEdits"
+  }
+}
