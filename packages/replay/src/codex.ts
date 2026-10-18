@@ -3,7 +3,10 @@
 // 但 function_call_output 的文本头里有 `Process exited with code N`——这里解析它来回填退出码。
 // 样本全部是手写合成的（test/fixtures/codex/），没有读过任何真实的 ~/.codex 数据。
 import { cwdOf, parseExitCode, postEvent, preEvent, shellCommandOf, type ClassifyOptions, type Event, type RawCall, type RawResult } from "@sv/core";
+import { localShellInput, parseFunctionArgs, unpackOutput } from "../../adapter-codex/src/parse.ts";
 import { parseJsonl, type ReadOptions } from "./claude.ts";
+
+export { unpackOutput };
 
 interface Rec {
   timestamp?: string;
@@ -25,26 +28,6 @@ function msgText(content: unknown): string {
   return content
     .map((c) => (c && typeof c === "object" && typeof (c as { text?: unknown }).text === "string" ? (c as { text: string }).text : ""))
     .join("\n");
-}
-
-/** function_call_output 的 output 有两种形态：纯文本，或 JSON 字符串 {"output": "...", "metadata": {"exit_code": N}}。 */
-export function unpackOutput(raw: unknown): { text: string; exitCode?: number } {
-  let s: string;
-  if (typeof raw === "string") s = raw;
-  else if (raw && typeof raw === "object") {
-    const o = raw as Record<string, unknown>;
-    s = typeof o.content === "string" ? o.content : typeof o.output === "string" ? o.output : JSON.stringify(raw);
-  } else s = "";
-  const t = s.trim();
-  if (t.startsWith("{") && t.endsWith("}")) {
-    try {
-      const j = JSON.parse(t) as { output?: unknown; metadata?: { exit_code?: number } };
-      if (typeof j.output === "string") return { text: j.output, exitCode: typeof j.metadata?.exit_code === "number" ? j.metadata.exit_code : undefined };
-    } catch {
-      /* 不是 JSON，按原文处理 */
-    }
-  }
-  return { text: s };
 }
 
 interface Pending {
@@ -114,13 +97,9 @@ export function readCodexRollout(text: string, opts: ReadOptions = {}): Event[] 
       const name = String(p.name ?? (pt === "local_shell_call" ? "local_shell" : "unknown"));
       let input: unknown;
       if (pt === "function_call") {
-        try {
-          input = typeof p.arguments === "string" ? JSON.parse(p.arguments) : (p.arguments ?? {});
-        } catch {
-          input = { raw: p.arguments };
-        }
+        input = parseFunctionArgs(p.arguments);
       } else if (pt === "custom_tool_call") input = p.input;
-      else input = { command: (p.action as { command?: string[] } | undefined)?.command ?? [] };
+      else input = localShellInput(p.action);
       const wd = cwdOf(input);
       if (wd) cwd = wd;
       const call: RawCall = { harness: "codex", sessionId, toolUseId: callId, name, input, ts, model };
