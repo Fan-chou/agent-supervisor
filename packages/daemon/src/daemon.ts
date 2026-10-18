@@ -10,6 +10,7 @@ import {
   type Config, type Decision, type Delivery, type JudgeFn, type OutboxKind, type Precondition, type StepRecord, type JudgeClient,
 } from "@sv/core";
 import { normalizeClaudeHook, type ClaudeHookPayload } from "../../adapter-claude/src/index.ts";
+import { handleCompare, handleQuery } from "./query-api.ts";
 import { normalizeOpenCodeEvent, type OpenCodePayload } from "../../adapter-opencode/src/index.ts";
 import { normalizeCodexHook, type CodexHookPayload } from "../../adapter-codex/src/index.ts";
 
@@ -203,6 +204,14 @@ export class Daemon {
       if (proto !== null && Number(proto) !== PROTOCOL) return json(426, { error: { code: "protocol_mismatch", message: `守护进程协议 ${PROTOCOL}，客户端 ${proto}`, retryable: false } });
       if (req.method === "GET" && url.pathname === "/v1/hello") return json(200, { protocol: PROTOCOL, version: DAEMON_VERSION, mode: this.cfg.mode, startedAt: this.startedAt });
       if (req.method === "GET" && url.pathname === "/v1/status") return json(200, this.status());
+      // 前端的只读查询（不在 hook 路径上；出错只是这一次查询 500，被 catch 住）
+      try {
+        const q = handleQuery(this.store.db, req.method, url) ?? handleCompare(this.store.db, req.method, url);
+        if (q) return json(q.status, q.body);
+      } catch (err) {
+        // 查询失败只影响这一次查询：不算适配器故障，也不动 hook 路径
+        return json(500, { error: { code: "query_failed", message: String((err as Error)?.message ?? err).slice(0, 200), retryable: true } });
+      }
       if (req.method === "POST" && url.pathname === "/v1/hook") {
         const body = (await req.json()) as { harness?: string; payload?: ClaudeHookPayload };
         if (!HARNESSES.includes(body.harness as HookHarness) || !body.payload || typeof body.payload !== "object") return json(400, { error: { code: "bad_request", message: "需要 {harness:'claude'|'codex'|'opencode', payload}", retryable: false } });

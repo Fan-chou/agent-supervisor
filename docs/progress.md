@@ -138,3 +138,9 @@
 - OpenCode 是否需要本地 X2（#74）？
 - 在顺序核实之前 OpenCode 不要开 enforce（#70/#78：拦截已绑定到调用，错序时是漏拦而非误拦，但漏拦率未知）。
 - **OpenCode 本地 X2（#74）是 enforce 的阻塞项**：X2 是唯一应当在守护进程故障时仍生效的规则，目前 OpenCode 上守护进程不可达就放行。单文件不是障碍（可用 bun build 把 `x2Check` 打进插件），真正的障碍是 evaluate 不带参数，要靠 tool.before 的参数。需要 Jack 决定是否做，以及真机确认顺序。
+
+## 前端查询 API 第一批（只读；完成）
+- `packages/daemon/src/query-api.ts` + 路由接入（decisions #79）：sessions / sessions/{id} / hits/{id} / runs / runs/compare / rules/stats / judge-calls/stats / danger/stats / danger/events。全部调用已有的 queries.ts 函数，没有新增 SQL。
+- 测试 `packages/daemon/test/query-api.test.ts`（7 个）：对着真实 daemon 日志查询；shadow 下危险是 would_have_blocked 而非 blocked；参数校验；故意破坏表证明 500 不计入 adapter_health 且恢复后正常；HTTP 无 token 401。
+- **测试结果**：`bun test` 927 通过 / 0 失败（36 个文件），`tsc --noEmit` 无错误。
+- **没做**：见 #79 的清单（timeline/hits 列表需要新查询，是下一步；`/v1/stream`、写入类、schema）。
