@@ -10,7 +10,7 @@
 - `wsfp.ts`：工作区指纹（git status + diff + 暂存 diff + 未跟踪文件 mtime/size，2 秒超时，非 git 识别）。
 - `redact.ts`：密钥脱敏、`redactDeep`、`headTail`。
 
-**测试结果**：`bun test` 360 通过 / 0 失败；`tsc --noEmit` 无错误。分类器 CmdClass 用例 ≥150 条（要求 ≥100），另有 mutating 用例约 75 条。
+**测试结果**：`bun test` 360 通过 / 0 失败；`tsc --noEmit` 无错误。分类器 CmdClass 用例约 185 条（要求 ≥100，测试里有断言），另有 mutating 用例 78 条。
 
 **偏离 / 取舍**：见 `docs/decisions.md` 的 M0 部分。要点：构建命令一律 mutating（偏保守）；`tee` 到仓库文件算 mutating；分类器无状态，smoke/repro 需调用方传入上下文。
 **未做**：design M0 完成标准写的「100 条*真实*命令准确率 ≥95%」——真实命令需要 Jack 机器上的数据，目前是我手写的 150 条代表性用例，需要在真实回放上再校准。
@@ -31,3 +31,23 @@
 - `rm -rf` 的判定范围比 design 字面更窄（#21）。
 - 默认档 T1 没有 H（#16）。
 - 合成样本与真实 transcript 的差异未验证（#25）；P0-2（command 钩子）、outbox 原子领取属于 M3/M4，这一阶段未做。
+
+## M2（工程部分）— eval 框架、judge 客户端、§3.5 契约测试（完成；人工标注不归我做）
+**做了什么**
+- `eval/`：读 `eval/labels.yaml`（schema 与校验见 `eval/src/labels.ts`；`eval/labels.example.yaml` 只放 schema，**没有往 labels.yaml 写任何合成标注**；测试用 `test/fixtures/labels.yaml`）。输出每条规则的 precision / recall、命中数、首次报警延迟，总体 recall，拦截类/建议类/待 judge 候选三类报警的 FDR 以及 §12.7 的两个门槛（<3% / <25%），按 model 的 judge 统计（ignore 率、`judge_parse_fail` 率、超时、出错），以及两种提示写法的 A/B 管道。口径写在 `docs/decisions.md` 28–34（步骤单位 = 工具调用序号、窗口、TP/FP 定义、FDR 口径）。`sv eval <labels.yaml> [--judge=off|mock] [--window N] [--ab] [--format=text|json] [--out]`。
+- judge 客户端（`packages/core/src/judge/`）：
+  - `client.ts`：OpenAI 兼容接口；**传输层可注入**，测试里 `globalThis.fetch` 被换成直接 throw，证明没碰网络；AbortController 超时（同步 15s / 异步 30s 取自 config，测试里 10–50ms）；`routes`（先匹配先用，`rule` 通配 + `sync`）；response_format `json_schema → json_object → none` 降级，被拒时降一级重试一次并按 model 缓存；解析失败只对异步调用重试 1 次；key 只按 `api_key_env`（及 `ADVISOR_API_KEY`）读取，错误信息/统计里不出现 key 和 Authorization 头；按 model 统计 calls/ok/ignores/parseFail/timeouts/errors。
+  - `parse.ts`：§8.5 全部修复步骤（content 数组、`<think>`、代码块、前后散文、字符串感知的括号配平、尾随逗号、单引号键名、中文引号、截断补全、Python 字面量、verdict 同义词、confidence 字符串/百分数），每种一个用例；§8.4 本地语义校验（confidence 0–1、非 ignore 必须有 ≤600 字符的 message、watch ≤3 / `text_contains` null 或 ≥3 / `ttl_steps` 1–50 / 丢弃通配监视器、未知 category→other）。
+  - `prompt.ts`：与模型无关的 system + user 两条消息；`recall`（默认）与 `ignore_default` 两种写法；**命令、输出、计划、本地提示都放进 `<untrusted>`，块内自带的 `<untrusted>` 标签被转义**；所有字段发出前过 `redact()`；≤约 10k token 的字符预算，按优先级截断。
+  - `filter.ts`：judge 输出后过滤（P0-7）；`mock.ts`：确定性 mock。
+  - policy 的 judge 调用/决策现在记录 verdict，供 ignore 率统计；Engine 把真正生效的监督消息登记到 origin 注册表并记入「已发消息」。
+- §3.5 契约测试（Claude 部分）：`packages/adapter-claude/src/render.ts`（白名单 + `sanitize` 兜底，PreToolUse/PostToolUse/PostToolUseFailure/PostToolBatch/Stop 各一格）；`test/contract/claude/*.json` 共 18 个手写 fixture（不是从 render 生成的）+ 不变量测试（只有白名单字段、不泄漏 ruleId/deliveryId/expires、Post 类事件绝不出现 permissionDecision/decision、deny/ask 不带 additionalContext、Stop 遵守 `stop_hook_active`、600 字符截断、空输出）。X2 的真实输出与 fixture 文案做交叉校验。
+- 复盘修复（advisor 复核后）：vitest watch 判定改看命令自己的 `CI=` 赋值；回放输出（JSON 与文本）整体脱敏；X2 改为跟随 mode；时间线新增 `callIndex`。
+
+**测试结果**：`bun test` 636 通过 / 0 失败（16 个文件）；`tsc --noEmit` 无错误。全部测试不发网络请求（judge 测试里 `fetch` 被陷阱）。
+
+**偏离 / 需要 Jack 确认**
+- 误报率口径取 per-alarm（FDR），见 decisions #31。
+- X2 跟随 mode（#20）。
+- **这一阶段没有做 outbox 原子领取**（属于 M3 的 store/outbox，design §3.4/P0-8），也没有做守护进程、`--judge=live`、sv-hook、Codex/OpenCode 的 render 契约测试。
+- 合成样本与真实 transcript 的差异、30 个会话的人工标注与阈值校准都还没做（需要 Jack 的数据）。
