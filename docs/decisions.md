@@ -146,3 +146,9 @@
    - **实现细节（#101 的补充）**：T1–T8 的阈值写成 `{"thresholds":{"ladder":{"advise":4,"M":8}}}`，**只能改规则已有的级别，不能新增级别**（例如不能给没有 H 级的规则加上 H），且必须单调；其余规则用 `GET /v1/rules` 里 `thresholds` 的平铺键。L2a 的 `window_steps` 与 L2 共用，所以只读。L5 的 `segments_L ≤ segments_M`、R2 的 `L < M` 在生效配置上检查。启动配置里 `action: off` 关掉的规则，界面不能重新启用（409 `disabled_by_config`，要改配置文件并重启）。覆盖文件格式 `{version:1, edits:{<规则>:{disabled?, set?:{<配置路径>:数字}}}}`，读入时清洗（X2、未知规则、非数字都丢弃），损坏则忽略并用启动配置。`GET /v1/rules` 每条规则多 `edited`、`protected` 两个字段。run 级别的记录仍是启动配置；每条命中的 `threshold_json` 记录它当时实际用的阈值（编辑后的事实来源）。
 103. **配置值来源标注**：`GET /v1/config` 增加 `sources`（叶子路径 → `default | configured | rules.local`）。守护进程拿不到「启动配置来自哪个文件」，所以只能区分：与内置默认相同 → `default`；不同 → `configured`（启动配置，文件或命令行）；被 `rules.local.json` 覆盖的 → `rules.local`。**不区分全局/项目级配置文件**（没有这个信息）。
 104. **`manual_*` 不影响实时策略**：策略、检测器、outbox、hook 代码里没有任何地方读取 `overrides` 的 `manual_allow/manual_reject`（grep 过）；测试：同一段会话里先后记录若干 `manual_*`，命中/决策序列与不记录时逐条相同。`#sv off/quiet` 是 prompt 里的会话内指令（走 tracker），与 `manual_*` 无关，保持原样。
+
+## 2026-10-18 23:57/23:58：OpenCode 类型已 vendor；Jack 批准探针并委托 opencodeEnforce 开关
+105. **类型已 vendor（23:57）**：`@opencode/plugin@2.0.32` 的 `.d.ts` 和 `package.json`（npm pack 导出）在 `docs/vendor/opencode-plugin-2.0.32/`。以后核对 OpenCode 钩子一律读这些本地类型，**不再需要抓文档站**。核对结果写回 `docs/opencode-verify.md`（成立/不成立/需改适配器）。取代 #92 里「读不到类型」的阻塞。核实通过前继续只观察、不拦截（#89）。
+106. **Jack 批准探针（23:58）**：核对清单里允许用 `SV_OPENCODE_PROBE` 对**一条无害命令**做一次真实 deny。改 `~/.config/opencode` 之前仍须先问 Jack。
+107. **`opencodeEnforce` 开关（Jack 委托，23:58）**：增加 config/CLI 开关，**默认 OFF**；**除非**最新 `opencode-report` 显示核对已通过，否则**拒绝打开**；**每次开关切换都记日志**。具体实现见下方后续条目。
+108. **等 Jack（先记下，不擅自改）**：规则编辑是否立即作用于在跑会话（现在只对新会话）；P1 是否也设为 protected（现在只有 X2）。
