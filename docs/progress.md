@@ -165,4 +165,19 @@
 ## 前端只读查询 API 第三批（完成）
 - judge-calls 列表/详情/CSV、`/v1/rules`、`/v1/config`（只读、凭据遮掉）、sessions 的 recent 排序与 q/state 过滤、黄金样例（decisions #96–99）。新查询在 `core/store/queries-ui.ts`，目录在 `core/src/rules.ts`，视图在 `core/src/config-view.ts`。
 - **测试结果**：`bun test` 1009 通过 / 0 失败；`tsc --noEmit` 无错误。不联网（除两次被拒的文档站请求），不读 `~/.codex`、`~/.claude`、`.env`、`~/.config/opencode`。
-- **仍没做**：`incidents`（口径待 Jack）、写入类接口（#87，待 Jack）、`/v1/overrides`、`/v1/replays*`、`/v1/eval*`、`POST /v1/config/validate`、配置值的「来源文件」标注、Go 侧结构体生成与对应测试。
+- **（已过时，见下一节）** 原「仍没做」清单里的 incidents、写入类接口、/v1/overrides、/v1/replays*、/v1/eval* 已被 Jack 的 23:41 决定否掉；config/validate 与来源标注已在下一节完成。
+
+## Jack 23:41 的决定落地：前端只读，只有规则可编辑（完成）
+**决定**（decisions #100–104，design §19，frontend-design v3）：前端完全只读；唯一可改的是规则；`manual_*` 只记录、永不影响策略；不做 incidents。被否掉的设计（override/标注/批量/回放触发的写接口、`/v1/overrides`、incidents）已从 decisions #86/#87 和 frontend-design 里删除，没有留兼容层（这些接口本来就没实现过；CLI 的 `sv mark`/`sv override` 保留，纯记录）。
+
+**做了什么**
+- **规则编辑路径**（唯一的写接口）`PUT /v1/rules/{id}`：body 只能是 `{disabled}` / `{thresholds}`（T1–T8 写成 `{ladder:{…}}`）/ `{reset:true}`；纯函数校验 `validateRuleEdit`（`core/src/rule-edit.ts`）：未知规则 404、X2 受保护 403、未知字段/键 400、数值范围、阶梯单调且不能新增级别、L5/R2 跨字段一致、`action: off` 的规则不能从界面启用（409）；不能改 mode/judge/预算/日志。通过后原子写 `<home>/rules.local.json`（0600），**只对之后新建的会话生效**，审计追加到 `<home>/rules-edits.jsonl`；额外要求 JSON 内容类型且不能带 `Origin` 头；写失败 500 且内存配置不变；编辑串行化；重启后覆盖仍在，文件损坏则忽略。`GET /v1/rules` 每条多 `edited`/`protected`，并修了「配置里 `id_xxx` 前缀键读不到」的老问题（`ruleConfigKey`）。
+- **`POST /v1/config/validate`**（不改任何状态）：YAML 文本或 `{yaml}`；返回 `valid/errors/warnings/diff/enablesBlocking`（`core/src/config-validate.ts`）。
+- **`GET /v1/config` 增加 `sources`**（default / configured / rules.local；不区分全局/项目文件，因为守护进程不知道）。
+- **`manual_*` 记录而已**：测试①扫描源码，只有 store 类型和 CLI 提到；②同一段会话里记录若干 manual_*，命中/决策序列与不记录时逐条相同。
+- 黄金样例补了 ConfigValidation、ConfigView.sources、Rule.edited/protected；schema 同步。
+
+**测试结果**：`bun test` 1050 通过 / 0 失败；`tsc --noEmit` 无错误。不联网，不读 `~/.codex`、`~/.claude`、`.env`、`~/.config/opencode`。
+
+**还剩什么（不依赖 Jack）**：`/v1/replays*`、`/v1/eval*` 的只读结果接口（回放/评测仍由命令行发起）；`/v1/runs/{id}`；Go 侧结构体生成与对应的黄金样例测试（MyGo 项目）；hook 自动拉起守护进程、mode 热加载（一直按判断不做）；`rules.local.json` 目前只有 API 能写，没有命令行入口。
+**等 Jack**：OpenCode 三项（取类型还是放行文档站、探针是否启用、`opencodeEnforce` 开关方式）——OpenCode 继续只观察、钩子仍未核实；规则编辑的生效范围是否接受「只对新会话生效」（也可以改成对在跑会话立即生效，但会话中途阈值会跳变）；是否要 X2 之外的规则也设为不可停用（例如 P1 显式计划拦截）。
