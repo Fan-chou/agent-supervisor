@@ -128,6 +128,12 @@
    - **校验**：`POST /v1/config/validate` 只校验和 diff，**不应用**（把 mode 改成 enforce 要在返回里显式标 `enablesBlocking:true`）；回放/评估是后台任务，只读 transcript、不联网（`judge:"live"` 需显式开关），任务数有上限、可取消，结果落 `kind=replay|eval` 的 run。
    - **失败语义**：写接口失败只返回 4xx/5xx，不影响 hook 路径；写入用同一个 SQLite 连接（WAL + busy_timeout），写失败不重试风暴。
 
+## 前端只读查询 API 第三批（#86 里不依赖 Jack 的部分）
+96. **`/v1/judge-calls`**：列表（不含正文，带 `harness`，倒序 + id 游标）+ 同一筛选下的 `totals`（calls/ok/failed/parseFail/tokens/cost/p50/p95，**不受游标和 limit 影响**）；过滤 `harness/model/route_model/rule/verdict/status/sync/session/q/since/until/cursor/limit/cache`。`rule` 按逗号分隔的 rule_ids 精确匹配（L1 不匹配 L10）；`q` 在 reason/message_raw/category/error 里做字面子串匹配；`cache=exclude` 只影响 `totals.promptTokens`（扣掉缓存命中），默认 include；`costUsd` 在所有行都没有成本时是 null，不估算。`/v1/judge-calls/{id}` 详情含请求/响应（写入时已脱敏；`store_judge_bodies=false` 时 `bodiesStored=false`、request/response 为 null）、修复记录、关联的命中/决策/投递；`/export.csv` 同筛选（最多 500 行）。非数字路径不是详情（404）。
+97. **`/v1/rules`**：`core/src/rules.ts` 的静态目录（id/title/category/默认级别/出处/harness 限制/observeOnly）+ 从**生效配置**取的 `thresholds`（复用 `thresholdsForRule`）+ `rules.<ID>` 的覆盖和 `disabled`。目录里没有任何模型名；测试扫描检测器源码里出现的 ruleId，保证目录不落后。**`/v1/config`**：生效配置的只读视图，凭据类键（authorization/api_key/token/secret/password/cookie…）的值一律 `••••`，`judge.api_key_env` 只给变量名并给 `api_key_set` 布尔（只看环境变量是否非空，不读值）；`source` 恒为 `daemon-startup`——**不追踪每个值来自哪个配置文件**（frontend-design 里「每个值标注来源」没做）。写入/校验（`POST /v1/config/validate`）仍在 #87 里等 Jack。
+98. **sessions 增强**：每行加 `first_ts/last_ts/events/state`；`state`：`ended`（适配器写了 ended_ts，目前没有适配器写，所以实际不会出现）/`active`（最近 5 分钟内有事件）/`idle`；`sort=recent`（按 last_ts 倒序）、`state=`、`q=`（大小写不敏感，匹配 session_id/project/model/harness）；`state`/`sort` 非法值 400。活动时间用 daemon 的 `now`（测试可注入）。
+99. **黄金样例** `test/fixtures/api/*.json`（`{schema, value|values}`）：TS 侧测试 ① 样例符合 Schema ② 每个对外 Schema 都有样例 ③ 样例字段集合与守护进程真实响应**完全一致**（加/删字段会让测试失败，提醒同步样例）。Go 侧的对应测试和结构体生成**没做**（属于 MyGo 项目）。
+
 ## Jack 对 OpenCode 的决定（监督者转达；#74/#70/#73 的后续）
 88. **Jack 同意**：OpenCode 插件里加**本地 X2**（用 tool 执行前的参数判断危险命令/文件），不再只依赖守护进程（取代 #74 的「没有本地 X2」）。
 89. **Jack 同意**：OpenCode 在**真机核对通过前只观察、不拦截**——命中照记、打危险标记（`severity=dangerous`、`outcome=would_have_blocked`），但不 block；即 OpenCode 不开 enforce，本地 X2 同样受这条约束。

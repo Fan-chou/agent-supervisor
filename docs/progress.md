@@ -151,4 +151,18 @@
 - `GET /v1/stream`（`daemon/src/stream.ts`）：NDJSON/SSE、过滤、游标续传、reset、心跳、慢订阅者断开；daemon 在 hook 处理处 publish（session/event/hit/decision/delivery，轻量字段）。测试 `stream.test.ts`（12 个，含 publish 内部损坏时 hook 仍 200）。
 - 决定见 decisions #80–87；写入类接口只出了设计（#87），没有实现。
 - **测试结果**：`bun test` 957 通过 / 0 失败（39 个文件）；`tsc --noEmit` 无错误。不联网，不读 `~/.codex`、`~/.claude`、`.env`。
-- **没做**：见 #86（incidents、judge-calls 明细、rules/config/replays/eval/overrides、children 实际数据）、Schema 的 Go 生成与黄金样例。
+- **没做**：见 #86（incidents、judge-calls 明细、rules/config/replays/eval/overrides、children 实际数据）、Schema 的 Go 生成与黄金样例。（其中 judge-calls、rules、config、黄金样例已在下面两节补完。）
+
+## OpenCode 2：本地 X2 / 观察模式 / 核对工具（代码完成；**钩子核对本身没完成**）
+**做了什么**（decisions #88–95，Jack 的决定已先记入）
+- 插件里加了本地 X2（`execute.before` 的参数 → `x2Check`，绑定到那次调用，`execute.after` 后作废）；`sv install opencode` 用 `Bun.build` 把 `x2Check`/`redactDeep` 内联成单文件再打印。
+- **观察模式闸门**：deny 需要 `hook.json` mode=enforce 且 `SV_OPENCODE_ENFORCE=1`；守护进程侧 `opencodeEnforce`（默认 false）为 false 时 opencode 会话按 advise 运行，block/ask 只记 `would_have_blocked`（同 daemon 里 claude 会话不受影响）。
+- 真机核对工具：`SV_OPENCODE_DUMP=1` 落样本、`SV_OPENCODE_PROBE` 探针、`sv opencode-report` 汇总（字段、B/E/A 触发顺序、耗时、deny 观察、结论）、`docs/opencode-verify.md` 清单（12 条假设 + 步骤 + 通过标准）。
+- 收尾续跑研究：`adapter-opencode/src/stop.ts`（纯函数 + 护栏 + 测试，未接线，不宣称可用）。
+
+**核对结论（重要）**：**没能对照 `@opencode/plugin` 2.0.32 的类型/文档核实。** 包不在可读位置（全局只装了 `@opencode/cli` 2.0.32，是二进制），项目里不联网装不了；文档站抓取（WebFetch）的权限被拒绝两次。所以「实际存在的钩子清单」「与现有适配器的差异」**给不出来，也没有改设计**；12 条假设全部仍是未核实，逐条写在 `docs/opencode-verify.md` §1。要继续需要 Jack 二选一：把 `@opencode/plugin` 的 `.d.ts` 拷到 `docs/vendor/opencode-plugin-2.0.32/`，或放行文档站抓取。
+
+## 前端只读查询 API 第三批（完成）
+- judge-calls 列表/详情/CSV、`/v1/rules`、`/v1/config`（只读、凭据遮掉）、sessions 的 recent 排序与 q/state 过滤、黄金样例（decisions #96–99）。新查询在 `core/store/queries-ui.ts`，目录在 `core/src/rules.ts`，视图在 `core/src/config-view.ts`。
+- **测试结果**：`bun test` 1009 通过 / 0 失败；`tsc --noEmit` 无错误。不联网（除两次被拒的文档站请求），不读 `~/.codex`、`~/.claude`、`.env`、`~/.config/opencode`。
+- **仍没做**：`incidents`（口径待 Jack）、写入类接口（#87，待 Jack）、`/v1/overrides`、`/v1/replays*`、`/v1/eval*`、`POST /v1/config/validate`、配置值的「来源文件」标注、Go 侧结构体生成与对应测试。
