@@ -1,8 +1,19 @@
 // 结构化日志的 SQLite schema（design §18）。bun:sqlite，WAL。
+// severity：hits.sev 是 L/M/H 三级；hits.severity 是面向人的标签 info/low/medium/high，X2 危险操作一律是 'dangerous'。
+// outcome：真实生效是 blocked/asked/continued/advised；shadow 等不生效时是 would_have_*（X2 在 shadow 下就是 would_have_blocked）。
 // 约定：ts = 事件发生的时间（epoch ms，回放里是历史时间）；logged_ts = 写入日志的墙钟时间（保留期按它清理）。
 // 所有正文（命令、输出、prompt、judge 请求/响应）都是脱敏后的文本。
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
+
+/** v1 → v2 新增的列（旧库打开时按这个表补列）。 */
+export const MIGRATIONS_V2: { table: string; column: string; type: string }[] = [
+  { table: "hits", column: "severity", type: "TEXT" },
+  { table: "hits", column: "danger_category", type: "TEXT" },
+  { table: "hits", column: "danger_subject", type: "TEXT" },
+  { table: "hits", column: "danger_reason", type: "TEXT" },
+  { table: "decisions", column: "outcome", type: "TEXT" },
+];
 
 export const DDL: string[] = [
   `CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
@@ -93,6 +104,10 @@ export const DDL: string[] = [
     blockable INTEGER,
     explicit INTEGER,
     model TEXT,
+    severity TEXT,
+    danger_category TEXT,
+    danger_subject TEXT,
+    danger_reason TEXT,
     logged_ts INTEGER NOT NULL
   )`,
 
@@ -146,6 +161,7 @@ export const DDL: string[] = [
     would_block_if_verified INTEGER,
     at_next_pre INTEGER,
     counted INTEGER,
+    outcome TEXT,
     logged_ts INTEGER NOT NULL
   )`,
 
@@ -203,6 +219,7 @@ export const DDL: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_deliveries_decision ON deliveries (decision_id)`,
   `CREATE INDEX IF NOT EXISTS idx_overrides_target ON overrides (target_type, target_id)`,
   `CREATE INDEX IF NOT EXISTS idx_logged ON events (logged_ts)`,
+  // 注意：依赖 v2 新增列的索引在 store.migrate() 里补列之后再建
 ];
 
 /** 参与保留期清理 / JSONL 导出的表（按依赖顺序）。 */

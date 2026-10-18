@@ -186,6 +186,10 @@ export class StoreSink implements LogSink {
           blockable: h.blockable,
           explicit: h.explicit,
           model: tracker.model ?? e.model,
+          // X2 危险操作：不论 mode 都记为 dangerous，含类别 / 对象 / 原因
+          ...(h.ruleId === "X2"
+            ? { severity: "dangerous", dangerCategory: String(h.detail?.category ?? h.x2?.category ?? ""), dangerSubject: String(h.detail?.subject ?? ""), dangerReason: h.message }
+            : {}),
         });
         hitIds.set(h, id);
       }
@@ -216,6 +220,7 @@ export class StoreSink implements LogSink {
           wouldBlockIfVerified: d.wouldBlockIfVerified,
           atNextPre: d.atNextPre,
           counted: d.counted,
+          outcome: d.outcome,
         });
         if (["advise", "block", "ask", "stop_continue"].includes(d.action)) {
           const watch = watchOf(d.hit, e);

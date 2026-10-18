@@ -33,6 +33,17 @@ export interface Decision {
   counted?: boolean;
   /** 结构化的抑制/降级原因（日志统计用；没有被抑制或降级时为空）。 */
   suppressedBy?: SuppressCode;
+  /** 结局：真实生效是 blocked/asked/continued/advised；shadow 等不生效时是 would_have_*（与真实结局明显区分）。 */
+  outcome?: Outcome;
+}
+
+export type Outcome = "blocked" | "would_have_blocked" | "asked" | "would_have_asked" | "continued" | "would_have_continued" | "advised" | "would_have_advised";
+
+/** 只有会面向 agent 的动作才有结局；log/skip/ignore/judge_off 没有。 */
+export function outcomeOf(d: Pick<Decision, "action" | "applied">): Outcome | undefined {
+  const past = { block: "blocked", ask: "asked", stop_continue: "continued", advise: "advised" }[d.action as string];
+  if (!past) return undefined;
+  return (d.applied ? past : "would_have_" + past) as Outcome;
 }
 
 export type SuppressCode =
@@ -144,6 +155,7 @@ export class Policy {
     // M 级：同一事件上的同类命中合并成一次 judge 调用
     if (mHits.length) out.push(...(await this.judgeBatch(e, mHits, judge)));
     // 连续拦截计数：同一次调用上多个规则同时拦只计 1 次；被放行的不同调用重置
+    for (const d of out) d.outcome = outcomeOf(d);
     if (out.some((d) => d.counted)) this.consecutiveBlocks++;
     if (e.phase === "pre" && e.tool) {
       if (out.some((d) => d.action === "block")) {

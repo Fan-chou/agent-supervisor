@@ -43,6 +43,11 @@ export interface TimelineEntry {
   wouldBlockIfVerified?: boolean;
   observeOnly?: boolean;
   atNextPre?: boolean;
+  /** 危险操作（X2）：不论 mode 都标 dangerous；outcome 区分真实结局与 would_have_*。 */
+  dangerous?: boolean;
+  outcome?: Decision["outcome"];
+  dangerCategory?: string;
+  dangerSubject?: string;
   judge?: Decision["judge"];
   detail?: Record<string, unknown>;
 }
@@ -64,9 +69,16 @@ export interface ReplayResult {
     judgeCalls: number;
     firstHitMs: Record<string, number>;
     /** 按 judge 实际使用的 model 统计（ignore 率、解析失败率、超时、出错）。 */
+    /** 危险操作（X2）统计：本应拦截（shadow 等不生效）与已真实拦截/确认分开计数。 */
+    dangerous: { total: number; wouldHaveBlocked: number; enforced: number };
     judge: { calls: number; byModel: Record<string, { calls: number; ignores: number; parseFail: number; timeouts: number; errors: number }> };
   };
   warnings: string[];
+}
+
+function dangerSummary(timeline: TimelineEntry[]) {
+  const d = timeline.filter((t) => t.dangerous);
+  return { total: d.length, wouldHaveBlocked: d.filter((t) => t.outcome?.startsWith("would_have_")).length, enforced: d.filter((t) => t.outcome === "blocked" || t.outcome === "asked").length };
 }
 
 export function detectFormat(text: string): "claude" | "codex" | "unknown" {
@@ -133,6 +145,10 @@ export async function replayEvents(events: Event[], opts: ReplayOptions = {}, fi
         wouldBlockIfVerified: d.wouldBlockIfVerified,
         observeOnly: h.observeOnly,
         atNextPre: d.atNextPre,
+        dangerous: h.ruleId === "X2" ? true : undefined,
+        outcome: d.outcome,
+        dangerCategory: h.ruleId === "X2" ? String(h.detail?.category ?? "") : undefined,
+        dangerSubject: h.ruleId === "X2" ? String(h.detail?.subject ?? "") : undefined,
         judge: d.judge,
         detail: h.detail,
       });
@@ -172,7 +188,7 @@ export async function replayEvents(events: Event[], opts: ReplayOptions = {}, fi
     durationMs: (events[events.length - 1]?.ts ?? t0) - t0,
     plan: plan ? { source: plan.source, current: plan.items.find((i) => i.status === "in_progress")?.text, items: plan.items.length, explicitAllow: plan.explicitAllow } : null,
     timeline,
-    summary: { hits: timeline.length, byRule, judgeCalls: engine.policy.judgeCallCount, firstHitMs, judge: judgeStats },
+    summary: { hits: timeline.length, byRule, judgeCalls: engine.policy.judgeCallCount, firstHitMs, dangerous: dangerSummary(timeline), judge: judgeStats },
     warnings,
   });
 }
@@ -215,7 +231,7 @@ export async function replayPath(path: string, opts: ReplayOptions = {}): Promis
         durationMs: 0,
         plan: null,
         timeline: [],
-        summary: { hits: 0, byRule: {}, judgeCalls: 0, firstHitMs: {}, judge: { calls: 0, byModel: {} } },
+        summary: { hits: 0, byRule: {}, judgeCalls: 0, firstHitMs: {}, dangerous: { total: 0, wouldHaveBlocked: 0, enforced: 0 }, judge: { calls: 0, byModel: {} } },
         warnings: [`读取失败：${String(err)}`],
       });
     }
@@ -246,6 +262,7 @@ export function renderText(r: ReplayResult, opts: { verbose?: boolean } = {}): s
   out.push(`会话 ${r.sessionId}  [${r.harness}${r.model ? " / " + r.model : ""}]  judge=${r.judgeMode}`);
   if (r.file) out.push(`文件 ${r.file}`);
   out.push(`事件 ${r.events}，工具调用 ${r.steps}，时长 ${fmtRel(r.durationMs).slice(1)}，命中 ${r.summary.hits}，judge 调用 ${r.summary.judgeCalls}`);
+  if (r.summary.dangerous.total) out.push(`⚠ 危险操作 ${r.summary.dangerous.total} 次：本应拦截（未生效）${r.summary.dangerous.wouldHaveBlocked} · 已真实拦截/确认 ${r.summary.dangerous.enforced}`);
   if (r.plan) out.push(`计划 来源=${r.plan.source}  当前步骤=${r.plan.current ?? "（无）"}${r.plan.explicitAllow.length ? "  allow=" + r.plan.explicitAllow.join(",") : ""}`);
   for (const w of r.warnings) out.push(`! ${w}`);
   if (r.timeline.length === 0) out.push("（没有命中）");
@@ -253,10 +270,10 @@ export function renderText(r: ReplayResult, opts: { verbose?: boolean } = {}): s
     out.push("");
     out.push("时间    步   规则   级  阶段  动作        说明");
     for (const t of r.timeline) {
-      const flags = [t.observeOnly ? "仅观察" : "", !t.applied && ["block", "advise", "ask", "stop_continue"].includes(t.action) ? "shadow:不生效" : "", t.verified === false && t.sev === "H" ? "指纹未核实" : "", t.wouldBlockIfVerified ? "核实后会拦" : "", t.atNextPre ? "下个注入点" : ""].filter(Boolean).join(",");
+      const flags = [t.observeOnly ? "仅观察" : "", t.dangerous ? (t.outcome === "blocked" || t.outcome === "asked" ? "■ 已" + (t.outcome === "asked" ? "确认" : "拦截") : "◌ 本应拦截·未生效") : !t.applied && ["block", "advise", "ask", "stop_continue"].includes(t.action) ? "shadow:不生效" : "", t.verified === false && t.sev === "H" ? "指纹未核实" : "", t.wouldBlockIfVerified ? "核实后会拦" : "", t.atNextPre ? "下个注入点" : ""].filter(Boolean).join(",");
       const act = (ACTION_LABEL[t.action] ?? t.action).padEnd(8);
       const msg = (t.message ?? t.reason).replace(/\s+/g, " ").slice(0, 70);
-      out.push(`${fmtRel(t.relMs)}  ${String(t.step).padStart(3)}  ${t.ruleId.padEnd(5)}  ${t.sev}  ${t.phase.padEnd(5)} ${act}  ${msg}${flags ? "  [" + flags + "]" : ""}`);
+      out.push(`${t.dangerous ? "⚠ " : "  "}${fmtRel(t.relMs)}  ${String(t.step).padStart(3)}  ${t.ruleId.padEnd(5)}  ${t.sev}  ${t.phase.padEnd(5)} ${act}  ${msg}${flags ? "  [" + flags + "]" : ""}`);
       if (opts.verbose) out.push(`        原因：${t.reason}；证据 seq=${t.evidence.join(",")}`);
     }
     out.push("");

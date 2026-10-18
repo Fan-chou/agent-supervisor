@@ -1,6 +1,6 @@
 // sv stats / mark / explain / override / export / prune —— 日志库的命令行入口（design §18）。
 import { existsSync } from "node:fs";
-import { compareRuns, expandHome, explainHit, judgeStats, listRuns, LogStore, modelRuleStats, resolveRuns, ruleStats, sessionStats, type Config, type Scope } from "@sv/core";
+import { compareRuns, dangerEvents, dangerStats, expandHome, explainHit, judgeStats, listRuns, LogStore, modelRuleStats, resolveRuns, ruleStats, sessionStats, type Config, type Scope } from "@sv/core";
 
 export interface Flags {
   [k: string]: string | true | string[] | undefined;
@@ -76,8 +76,8 @@ export function runStats(flags: Flags, cfg: Config): number {
         rows.map((r) => ({ rule: r.rule, hits: r.hits, sessions: r.sessions, hits_per_100_calls: r.hitsPer100Calls, session_rate: r.sessionRate, L: r.bySev.L ?? 0, M: r.bySev.M ?? 0, H: r.bySev.H ?? 0, applied: r.applied, labeled_fp: r.labeledFp, labeled_useful: r.labeledUseful, fp_rate: r.fpRate, delivered: r.delivered, complied: r.complied, not_complied: r.notComplied, compliance_rate: r.complianceRate, actions: kv(r.actions), suppressed: kv(r.suppressed) })),
         () =>
           [
-            "规则   命中 会话 /100调用 会话占比  L/M/H      生效 标误报 标有用 误报率  遵从率  处置 · 被抑制",
-            ...rows.map((r) => `${r.rule.padEnd(6)} ${String(r.hits).padStart(4)} ${String(r.sessions).padStart(4)} ${num(r.hitsPer100Calls).padStart(7)} ${pct(r.sessionRate).padStart(8)}  ${`${r.bySev.L ?? 0}/${r.bySev.M ?? 0}/${r.bySev.H ?? 0}`.padEnd(9)} ${String(r.applied).padStart(4)} ${String(r.labeledFp).padStart(5)} ${String(r.labeledUseful).padStart(5)} ${pct(r.fpRate).padStart(7)} ${pct(r.complianceRate).padStart(7)}  ${kv(r.actions)} · ${kv(r.suppressed)}`),
+            "规则   命中 会话 /100调用 会话占比  L/M/H      生效 标误报 标有用 误报率  遵从率  处置 · 被抑制 · 结局",
+            ...rows.map((r) => `${r.rule.padEnd(6)} ${String(r.hits).padStart(4)} ${String(r.sessions).padStart(4)} ${num(r.hitsPer100Calls).padStart(7)} ${pct(r.sessionRate).padStart(8)}  ${`${r.bySev.L ?? 0}/${r.bySev.M ?? 0}/${r.bySev.H ?? 0}`.padEnd(9)} ${String(r.applied).padStart(4)} ${String(r.labeledFp).padStart(5)} ${String(r.labeledUseful).padStart(5)} ${pct(r.fpRate).padStart(7)} ${pct(r.complianceRate).padStart(7)}  ${kv(r.actions)} · ${kv(r.suppressed)} · ${kv(r.outcomes)}`),
             "",
             "误报率 = 已标注命中里被标为误报的比例（sv mark <hit-id> fp|useful）；遵从率 = 被建议/拦截后 agent 没有继续同样做法的比例（只对 L1/L2/L3/T1/T2/T4/T5/T6 可判定）。",
           ].join("\n"),
@@ -92,8 +92,20 @@ export function runStats(flags: Flags, cfg: Config): number {
       );
     } else if (by === "session") {
       const rows = sessionStats(store.db, scope);
-      out(rows, () => ["run 会话                  harness 模型                调用 L/M/H 报警 judge", ...rows.map((r) => `${String(r.run_id).padEnd(3)} ${String(r.session_id).slice(0, 22).padEnd(22)} ${String(r.harness ?? "").padEnd(7)} ${String(r.model ?? "").slice(0, 20).padEnd(20)} ${String(r.calls).padStart(4)} ${r.hits_L}/${r.hits_M}/${r.hits_H} ${String(r.alarms).padStart(4)} ${String(r.judge_calls).padStart(4)}`)].join("\n"));
-    } else throw new Error(`--by 只支持 rule | model | judge | session | runs（收到 ${by}）`);
+      if (flags["sort-danger"]) rows.sort((a, b) => Number(b.dangerous) - Number(a.dangerous));
+      out(rows, () => ["run 会话                  harness 模型                调用 L/M/H 报警 judge ⚠危险 本应拦截 已拦截", ...rows.map((r) => `${String(r.run_id).padEnd(3)} ${String(r.session_id).slice(0, 22).padEnd(22)} ${String(r.harness ?? "").padEnd(7)} ${String(r.model ?? "").slice(0, 20).padEnd(20)} ${String(r.calls).padStart(4)} ${r.hits_L}/${r.hits_M}/${r.hits_H} ${String(r.alarms).padStart(4)} ${String(r.judge_calls).padStart(4)} ${Number(r.dangerous) ? "⚠ " + String(r.dangerous).padStart(3) : "  ·  "} ${String(r.would_have_blocked).padStart(7)} ${String(r.blocked).padStart(6)}`)].join("\n"));
+    } else if (by === "danger") {
+      // 危险操作（X2）：shadow 下只记录、不拦截，但必须醒目——「本应拦截」与真实拦截分开计数
+      const st = dangerStats(store.db, scope);
+      const ev = dangerEvents(store.db, scope);
+      if (format === "json") console.log(JSON.stringify({ ...st, events: ev }, null, 2));
+      else if (format === "csv") console.log(csv(ev as unknown as Record<string, unknown>[]));
+      else {
+        console.log(`⚠ 危险操作 ${st.total} 次 · 本应拦截（未生效）${st.wouldHaveBlocked} · 已真实拦截/确认 ${st.enforced} · 按类别 ${kv(st.byCategory)}`);
+        console.log(`  按会话：${st.bySession.map((x) => `${x.sessionId.slice(0, 18)}=${x.dangerous}`).join("  ") || "–"}`);
+        for (const e of ev) console.log(`  ${e.outcome?.startsWith("would_have_") ? "◌ 本应拦截" : e.outcome ? "■ 已" + (e.outcome === "asked" ? "确认" : "拦截") : "· 仅记录"}  ${e.category ?? "?"}  ${e.subject ?? ""}  — ${e.reason ?? ""}  [run ${e.runId} ${e.sessionId.slice(0, 18)} #${e.callIndex ?? "?"} hit ${e.hitId}]`);
+      }
+    } else throw new Error(`--by 只支持 rule | model | judge | session | danger | runs（收到 ${by}）`);
     return 0;
   } catch (e) {
     console.error(String((e as Error).message ?? e));

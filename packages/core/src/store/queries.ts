@@ -72,6 +72,8 @@ export interface RuleStat {
   sessionRate: number | null;
   bySev: Record<string, number>;
   actions: Record<string, number>;
+  /** 结局分布：blocked / would_have_blocked / advised / would_have_advised …（shadow 下是 would_have_*）。 */
+  outcomes: Record<string, number>;
   suppressed: Record<string, number>;
   applied: number;
   labeledFp: number;
@@ -117,6 +119,7 @@ export function ruleStats(db: Database, scope: Scope = {}): RuleStat[] {
       sessionRate: rate(b.sessions, sessions),
       bySev: {},
       actions: {},
+      outcomes: {},
       suppressed: {},
       applied: 0,
       labeledFp: b.fp,
@@ -139,6 +142,10 @@ export function ruleStats(db: Database, scope: Scope = {}): RuleStat[] {
     s.actions[r.action] = (s.actions[r.action] ?? 0) + r.n;
     if (r.suppressed_by) s.suppressed[r.suppressed_by] = (s.suppressed[r.suppressed_by] ?? 0) + r.n;
     if (r.applied) s.applied += r.n;
+  }
+  for (const r of q<{ rule_id: string; outcome: string; n: number }>(db, `SELECT d.rule_id, d.outcome, COUNT(*) AS n FROM decisions d WHERE d.outcome IS NOT NULL AND ${dw} GROUP BY d.rule_id, d.outcome`, w.args)) {
+    const s = out.get(r.rule_id);
+    if (s) s.outcomes[r.outcome] = r.n;
   }
   for (const r of q<{ rule_id: string; delivered: number; complied: number | null; n: number }>(db, `SELECT d.rule_id, d.delivered, d.complied, COUNT(*) AS n FROM deliveries d WHERE ${dw} GROUP BY d.rule_id, d.delivered, d.complied`, w.args)) {
     const s = out.get(r.rule_id);
@@ -247,10 +254,77 @@ export function sessionStats(db: Database, scope: Scope = {}) {
             (SELECT COUNT(*) FROM hits h WHERE h.run_id=s.run_id AND h.session_id=s.session_id AND h.observe_only=0 AND h.sev='M') AS hits_M,
             (SELECT COUNT(*) FROM hits h WHERE h.run_id=s.run_id AND h.session_id=s.session_id AND h.observe_only=0 AND h.sev='H') AS hits_H,
             (SELECT COUNT(*) FROM decisions d WHERE d.run_id=s.run_id AND d.session_id=s.session_id AND d.action IN ('advise','block','ask','stop_continue')) AS alarms,
+            (SELECT COUNT(*) FROM hits h WHERE h.run_id=s.run_id AND h.session_id=s.session_id AND h.severity='dangerous') AS dangerous,
+            (SELECT COUNT(*) FROM decisions d JOIN hits h ON h.id=d.hit_id WHERE d.run_id=s.run_id AND d.session_id=s.session_id AND h.severity='dangerous' AND d.outcome LIKE 'would_have_%') AS would_have_blocked,
+            (SELECT COUNT(*) FROM decisions d JOIN hits h ON h.id=d.hit_id WHERE d.run_id=s.run_id AND d.session_id=s.session_id AND h.severity='dangerous' AND d.outcome IN ('blocked','asked')) AS blocked,
             (SELECT COUNT(*) FROM judge_calls j WHERE j.run_id=s.run_id AND j.session_id=s.session_id) AS judge_calls
        FROM sessions s WHERE ${w.sql.replace(/\b(run_id|session_id)\b/g, "s.$1").replace(/\bts\b/g, "s.started_ts")} ORDER BY s.run_id, s.session_id`,
     w.args,
   );
+}
+
+// ---------- 危险操作（X2）：shadow 下只记录，但必须醒目 ----------
+
+export interface DangerEvent {
+  hitId: number;
+  runId: number;
+  sessionId: string;
+  ts: number;
+  callIndex: number | null;
+  category: string | null;
+  subject: string | null;
+  reason: string | null;
+  action: string | null;
+  /** blocked / asked（真实生效）或 would_have_blocked / would_have_asked（shadow 等不生效）。 */
+  outcome: string | null;
+  mode: string | null;
+  model: string | null;
+}
+
+export function dangerEvents(db: Database, scope: Scope = {}): DangerEvent[] {
+  const w = where(scope).sql.replace(/\b(run_id|ts|session_id)\b/g, "h.$1");
+  return q<Record<string, unknown>>(
+    db,
+    `SELECT h.id AS hitId, h.run_id AS runId, h.session_id AS sessionId, h.ts, h.call_index AS callIndex, h.danger_category AS category, h.danger_subject AS subject,
+            h.danger_reason AS reason, d.action, d.outcome, d.mode, h.model
+       FROM hits h LEFT JOIN decisions d ON d.hit_id = h.id
+      WHERE h.severity = 'dangerous' AND ${w} ORDER BY h.ts, h.id`,
+    where(scope).args,
+  ) as unknown as DangerEvent[];
+}
+
+export interface DangerStats {
+  total: number;
+  /** 真实拦截 / 要求确认（outcome=blocked|asked）。 */
+  enforced: number;
+  /** shadow 等不生效下「本应拦截」（outcome=would_have_blocked|would_have_asked）。 */
+  wouldHaveBlocked: number;
+  byCategory: Record<string, number>;
+  bySession: { runId: number; sessionId: string; dangerous: number; wouldHaveBlocked: number; enforced: number }[];
+  byOutcome: Record<string, number>;
+}
+
+export function dangerStats(db: Database, scope: Scope = {}): DangerStats {
+  const ev = dangerEvents(db, scope);
+  const st: DangerStats = { total: ev.length, enforced: 0, wouldHaveBlocked: 0, byCategory: {}, bySession: [], byOutcome: {} };
+  const sess = new Map<string, DangerStats["bySession"][number]>();
+  for (const e of ev) {
+    st.byCategory[e.category ?? "unknown"] = (st.byCategory[e.category ?? "unknown"] ?? 0) + 1;
+    const o = e.outcome ?? "none";
+    st.byOutcome[o] = (st.byOutcome[o] ?? 0) + 1;
+    const would = o.startsWith("would_have_");
+    const enforced = o === "blocked" || o === "asked";
+    if (would) st.wouldHaveBlocked++;
+    if (enforced) st.enforced++;
+    const k = `${e.runId}:${e.sessionId}`;
+    const row = sess.get(k) ?? { runId: e.runId, sessionId: e.sessionId, dangerous: 0, wouldHaveBlocked: 0, enforced: 0 };
+    row.dangerous++;
+    if (would) row.wouldHaveBlocked++;
+    if (enforced) row.enforced++;
+    sess.set(k, row);
+  }
+  st.bySession = [...sess.values()].sort((a, b) => b.dangerous - a.dangerous);
+  return st;
 }
 
 // ---------- 对比两次运行（replay 调阈值） ----------

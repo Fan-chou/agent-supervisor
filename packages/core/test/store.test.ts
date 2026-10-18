@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LogStore, StoreSink, beginRun, compareRuns, createJudgeClient, defaultConfig, explainHit, judgeStats, modelRuleStats, ruleStats, resolveRuns, sessionStats, suppressCodeOf, totals, applyOverride, type JudgeTransport } from "../src/index.ts";
+import { LogStore, StoreSink, beginRun, compareRuns, createJudgeClient, dangerEvents, dangerStats, defaultConfig, explainHit, judgeStats, modelRuleStats, ruleStats, resolveRuns, sessionStats, suppressCodeOf, totals, applyOverride, type JudgeTransport } from "../src/index.ts";
 import { PYTEST_FAIL, PYTEST_PASS, Sim, cfgWith } from "./sim.ts";
 
 const dirs: string[] = [];
@@ -28,13 +28,13 @@ describe("schema", () => {
   test("建表、版本号、WAL（文件库）；重复打开不报错", () => {
     const d = tmp();
     const s = new LogStore(join(d, "state.db"));
-    expect(s.schemaVersion).toBe(1);
+    expect(s.schemaVersion).toBe(2);
     expect((s.db.query("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode).toBe("wal");
     const tables = (s.db.query("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map((r) => r.name);
     for (const t of ["runs", "sessions", "events", "hits", "judge_calls", "decisions", "deliveries", "overrides", "adapter_health", "schema_meta"]) expect(tables).toContain(t);
     s.close();
     const s2 = new LogStore(join(d, "state.db"));
-    expect(s2.schemaVersion).toBe(1);
+    expect(s2.schemaVersion).toBe(2);
     s2.close();
   });
   test("日志库版本比程序新 → 拒绝打开", () => {
@@ -391,5 +391,113 @@ describe("suppressCodeOf：每个抑制原因都有结构化代码", () => {
     ];
     for (const [reason, code] of cases) expect(suppressCodeOf(reason)).toBe(code as never);
     expect(suppressCodeOf("judge 判 advise")).toBeUndefined();
+  });
+});
+
+describe("危险操作（X2）：shadow 下只记录、不拦截，但必须醒目", () => {
+  const CWD = "/Users/jack/proj";
+  async function danger(mode: "shadow" | "advise" | "enforce") {
+    const { store, sim } = mkSim({ cwd: CWD, cfg: cfgWith({ mode }) });
+    await sim.start();
+    await sim.prompt("clean up");
+    const [pre1] = await sim.bash("git reset --hard HEAD~1");
+    const [pre2] = await sim.write("/Users/jack/proj/.env", "A=1");
+    await sim.bash("ls");
+    sim.engine.close();
+    return { store, sim, pre1, pre2 };
+  }
+  test("shadow：不拦截（applied=0），记录 severity=dangerous、outcome=would_have_blocked，含类别/对象/原因", async () => {
+    const { store } = await danger("shadow");
+    const hits = store.db.query("SELECT * FROM hits WHERE rule_id='X2' ORDER BY id").all() as Record<string, any>[];
+    expect(hits).toHaveLength(2);
+    expect(hits[0]).toMatchObject({ severity: "dangerous", danger_category: "git", danger_subject: "git reset --hard" });
+    expect(hits[0].danger_reason).toContain("git reset --hard");
+    expect(hits[1]).toMatchObject({ severity: "dangerous", danger_category: "env" });
+    expect(hits[1].danger_subject).toContain(".env");
+    const dec = store.db.query("SELECT * FROM decisions WHERE rule_id='X2' ORDER BY id").all() as Record<string, any>[];
+    expect(dec.map((d) => [d.action, d.applied, d.outcome])).toEqual([
+      ["block", 0, "would_have_blocked"],
+      ["ask", 0, "would_have_asked"], // Claude 上写 .env 是 ask
+    ]);
+    // 没有任何真实 blocked
+    expect(store.db.query("SELECT COUNT(*) AS n FROM decisions WHERE outcome IN ('blocked','asked')").get()).toEqual({ n: 0 });
+    // 非危险的命中不带 dangerous
+    expect(store.db.query("SELECT COUNT(*) AS n FROM hits WHERE severity='dangerous' AND rule_id!='X2'").get()).toEqual({ n: 0 });
+  });
+  test("enforce：真实拦截的 outcome=blocked / asked，与 would_have_* 区分", async () => {
+    const { store } = await danger("enforce");
+    const dec = store.db.query("SELECT outcome FROM decisions WHERE rule_id='X2' ORDER BY id").all();
+    expect(dec).toEqual([{ outcome: "blocked" }, { outcome: "asked" }]);
+    // 严重度标签仍是 dangerous（不随 mode 变）
+    expect(store.db.query("SELECT DISTINCT severity FROM hits WHERE rule_id='X2'").all()).toEqual([{ severity: "dangerous" }]);
+  });
+  test("普通命中的 severity 是 low/medium/high；普通 advise 的 outcome 在 shadow 下是 would_have_advised", async () => {
+    const { store, sim } = mkSim();
+    await sim.start();
+    await sim.prompt("x");
+    for (let i = 0; i < 3; i++) await sim.bash("pytest -q", { out: PYTEST_PASS });
+    const sev = (store.db.query("SELECT DISTINCT severity FROM hits WHERE rule_id='T1' ORDER BY severity").all() as { severity: string }[]).map((r) => r.severity);
+    expect(sev.sort()).toEqual(["high", "low"]);
+    expect((store.db.query("SELECT outcome FROM decisions WHERE rule_id='T1' AND action='advise' LIMIT 1").get() as { outcome: string }).outcome).toBe("would_have_advised");
+  });
+  test("dangerStats / dangerEvents：按类别、按会话计数；本应拦截与真实拦截分开", async () => {
+    const { store } = await danger("shadow");
+    const st = dangerStats(store.db, {});
+    expect(st).toMatchObject({ total: 2, wouldHaveBlocked: 2, enforced: 0, byCategory: { git: 1, env: 1 } });
+    expect(st.bySession).toEqual([{ runId: 1, sessionId: "sess-1", dangerous: 2, wouldHaveBlocked: 2, enforced: 0 }]);
+    const ev = dangerEvents(store.db, {});
+    expect(ev.map((e) => [e.category, e.outcome, e.mode])).toEqual([["git", "would_have_blocked", "shadow"], ["env", "would_have_asked", "shadow"]]);
+    const enforcedStats = dangerStats((await danger("enforce")).store.db, {});
+    expect(enforcedStats).toMatchObject({ total: 2, wouldHaveBlocked: 0, enforced: 2 });
+  });
+  test("sessionStats 带每个会话的危险次数，可按危险数排序", async () => {
+    const store = new LogStore(":memory:");
+    const cfg = defaultConfig();
+    const runId = beginRun(store, cfg, { kind: "replay" });
+    for (const [id, n] of [["calm", 0], ["risky", 3], ["some", 1]] as const) {
+      const sink = new StoreSink(store, { runId });
+      const sim = new Sim({ cwd: CWD, cfg, sink });
+      (sim as unknown as { sessionId: string }).sessionId = id;
+      await sim.start();
+      await sim.prompt("x");
+      for (let i = 0; i < n; i++) await sim.bash(`git reset --hard HEAD~${i + 1}`);
+      await sim.bash("ls");
+      sink.close();
+    }
+    const rows = sessionStats(store.db, {}) as { session_id: string; dangerous: number; would_have_blocked: number; blocked: number }[];
+    const by = Object.fromEntries(rows.map((r) => [r.session_id, r]));
+    expect(by.calm.dangerous).toBe(0);
+    expect(by.risky).toMatchObject({ dangerous: 3, would_have_blocked: 3, blocked: 0 });
+    expect(by.some.dangerous).toBe(1);
+    expect([...rows].sort((a, b) => b.dangerous - a.dangerous).map((r) => r.session_id)).toEqual(["risky", "some", "calm"]);
+  });
+  test("ruleStats 的 X2 行带结局分布", async () => {
+    const { store } = await danger("shadow");
+    expect(ruleStats(store.db, {}).find((r) => r.rule === "X2")!.outcomes).toEqual({ would_have_blocked: 1, would_have_asked: 1 });
+  });
+});
+
+describe("schema v1 → v2 迁移", () => {
+  test("旧库（没有 severity / danger_* / outcome 列）打开时自动补列，数据保留", async () => {
+    const { Database } = await import("bun:sqlite");
+    const d = tmp();
+    const path = join(d, "old.db");
+    const old = new Database(path, { create: true });
+    old.run("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    old.run("INSERT INTO schema_meta VALUES ('schema_version','1')");
+    old.run("CREATE TABLE hits (id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, session_id TEXT NOT NULL, seq INTEGER NOT NULL, ts INTEGER NOT NULL, call_index INTEGER, rule_id TEXT NOT NULL, sev TEXT NOT NULL, category TEXT, phase TEXT, key TEXT, evidence_json TEXT, observed_json TEXT, threshold_json TEXT, detail_json TEXT, message TEXT, verified INTEGER, observe_only INTEGER, blockable INTEGER, explicit INTEGER, model TEXT, logged_ts INTEGER NOT NULL)");
+    old.run("CREATE TABLE decisions (id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, session_id TEXT NOT NULL, hit_id INTEGER NOT NULL, judge_call_id INTEGER, ts INTEGER NOT NULL, rule_id TEXT NOT NULL, action TEXT NOT NULL, applied INTEGER NOT NULL, mode TEXT, reason TEXT, suppressed_by TEXT, message TEXT, would_block_if_verified INTEGER, at_next_pre INTEGER, counted INTEGER, logged_ts INTEGER NOT NULL)");
+    old.run("INSERT INTO hits (run_id, session_id, seq, ts, rule_id, sev, logged_ts) VALUES (1,'s',1,1,'L1','M',1)");
+    old.close();
+    const s = new LogStore(path);
+    expect(s.schemaVersion).toBe(2);
+    const cols = (t: string) => (s.db.query(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((c) => c.name);
+    expect(cols("hits")).toEqual(expect.arrayContaining(["severity", "danger_category", "danger_subject", "danger_reason"]));
+    expect(cols("decisions")).toContain("outcome");
+    expect(s.db.query("SELECT rule_id FROM hits").all()).toEqual([{ rule_id: "L1" }]);
+    // 新写入可用，且重复打开不报错
+    s.insertHit(1, { sessionId: "s", seq: 2, ts: 2, ruleId: "X2", sev: "H", severity: "dangerous", dangerCategory: "git" });
+    s.close();
+    expect(new LogStore(path).count("hits")).toBe(2);
   });
 });

@@ -4,7 +4,7 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { redact } from "../redact.ts";
-import { DDL, SCHEMA_VERSION, TABLES, type TableName } from "./schema.ts";
+import { DDL, MIGRATIONS_V2, SCHEMA_VERSION, TABLES, type TableName } from "./schema.ts";
 
 export function expandHome(p: string): string {
   return p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
@@ -51,9 +51,15 @@ export class LogStore {
   private migrate(): void {
     for (const stmt of DDL) this.db.run(stmt);
     const cur = this.db.query("SELECT value FROM schema_meta WHERE key='schema_version'").get() as { value: string } | null;
-    if (!cur) this.db.run("INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?)", [String(SCHEMA_VERSION)]);
-    else if (Number(cur.value) > SCHEMA_VERSION) throw new Error(`日志库 schema 版本 ${cur.value} 比当前程序（${SCHEMA_VERSION}）新`);
-    // 以后加版本：在这里按 cur.value 逐级升级
+    if (cur && Number(cur.value) > SCHEMA_VERSION) throw new Error(`日志库 schema 版本 ${cur.value} 比当前程序（${SCHEMA_VERSION}）新`);
+    // v1 → v2：旧库的 hits / decisions 缺新增的列，补上（CREATE TABLE IF NOT EXISTS 不会改已有的表）
+    for (const m of MIGRATIONS_V2) {
+      const cols = this.db.query(`PRAGMA table_info(${m.table})`).all() as { name: string }[];
+      if (!cols.some((c) => c.name === m.column)) this.db.run(`ALTER TABLE ${m.table} ADD COLUMN ${m.column} ${m.type}`);
+    }
+    this.db.run("CREATE INDEX IF NOT EXISTS idx_hits_severity ON hits (severity, run_id)");
+    this.db.run("CREATE INDEX IF NOT EXISTS idx_decisions_outcome ON decisions (outcome)");
+    this.db.run("INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [String(SCHEMA_VERSION)]);
   }
 
   get schemaVersion(): number {
@@ -160,7 +166,7 @@ export class LogStore {
 
   insertHit(
     runId: number,
-    h: { sessionId: string; seq: number; ts: number; callIndex?: number; ruleId: string; sev: string; category?: string; phase?: string; key?: string; evidence?: number[]; observed?: unknown; threshold?: unknown; detail?: unknown; message?: string; verified?: boolean; observeOnly?: boolean; blockable?: boolean; explicit?: boolean; model?: string },
+    h: { sessionId: string; seq: number; ts: number; callIndex?: number; ruleId: string; sev: string; category?: string; phase?: string; key?: string; evidence?: number[]; observed?: unknown; threshold?: unknown; detail?: unknown; message?: string; verified?: boolean; observeOnly?: boolean; blockable?: boolean; explicit?: boolean; model?: string; severity?: string; dangerCategory?: string; dangerSubject?: string; dangerReason?: string },
   ): number {
     return this.insert("hits", {
       run_id: runId,
@@ -183,6 +189,10 @@ export class LogStore {
       blockable: h.blockable ? 1 : 0,
       explicit: h.explicit ? 1 : 0,
       model: h.model ?? null,
+      severity: h.severity ?? ({ L: "low", M: "medium", H: "high" } as Record<string, string>)[h.sev] ?? null,
+      danger_category: h.dangerCategory ?? null,
+      danger_subject: h.dangerSubject ? redact(h.dangerSubject) : null,
+      danger_reason: h.dangerReason ? redact(h.dangerReason) : null,
     });
   }
 
@@ -223,7 +233,7 @@ export class LogStore {
 
   insertDecision(
     runId: number,
-    d: { sessionId: string; hitId: number; judgeCallId?: number; ts: number; ruleId: string; action: string; applied: boolean; mode?: string; reason?: string; suppressedBy?: string; message?: string; wouldBlockIfVerified?: boolean; atNextPre?: boolean; counted?: boolean },
+    d: { sessionId: string; hitId: number; judgeCallId?: number; ts: number; ruleId: string; action: string; applied: boolean; mode?: string; reason?: string; suppressedBy?: string; message?: string; wouldBlockIfVerified?: boolean; atNextPre?: boolean; counted?: boolean; outcome?: string },
   ): number {
     return this.insert("decisions", {
       run_id: runId,
@@ -241,6 +251,7 @@ export class LogStore {
       would_block_if_verified: bool(d.wouldBlockIfVerified),
       at_next_pre: bool(d.atNextPre),
       counted: bool(d.counted),
+      outcome: d.outcome ?? null,
     });
   }
 

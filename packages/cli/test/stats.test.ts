@@ -115,6 +115,33 @@ describe("replay --log / --label / --set → sv stats", () => {
     expect(before).toBe(false);
     expect(existsSync(join(dir, "never.db"))).toBe(false);
   });
+  test("危险操作：replay 文本醒目标记「本应拦截·未生效」；sv stats --by danger / --by session 统计", async () => {
+    const r = await run(["replay", join(FX, "claude/cheat-danger.jsonl"), "--log", DB, "--label", "danger"]);
+    expect(r.out).toContain("⚠ 危险操作 2 次：本应拦截（未生效）2 · 已真实拦截/确认 0");
+    expect(r.out).toContain("◌ 本应拦截·未生效");
+    expect(r.out).not.toContain("■ 已拦截");
+    const j = JSON.parse((await run(["replay", join(FX, "claude/cheat-danger.jsonl"), "--format", "json"])).out);
+    expect(j.summary.dangerous).toEqual({ total: 2, wouldHaveBlocked: 2, enforced: 0 });
+    const x2 = j.timeline.filter((t: { ruleId: string }) => t.ruleId === "X2");
+    expect(x2.map((t: { outcome: string; dangerous: boolean }) => [t.dangerous, t.outcome])).toEqual([[true, "would_have_asked"], [true, "would_have_blocked"]]);
+    const enforced = await run(["replay", join(FX, "claude/cheat-danger.jsonl"), "--mode", "enforce"]);
+    expect(enforced.out).toContain("■ 已拦截");
+    expect(enforced.out).toContain("已真实拦截/确认 2");
+
+    const label = await run(["stats", "--db", DB, "--by", "danger", "--label", "danger"]);
+    expect(label.out).toContain("⚠ 危险操作 2 次 · 本应拦截（未生效）2 · 已真实拦截/确认 0");
+    expect(label.out).toContain("git×1");
+    expect(label.out).toContain("◌ 本应拦截");
+    const js = JSON.parse((await run(["stats", "--db", DB, "--by", "danger", "--label", "danger", "--format", "json"])).out);
+    expect(js.total).toBe(2);
+    expect(js.bySession[0]).toMatchObject({ sessionId: "claude-cheat-danger", dangerous: 2 });
+    const sess = await run(["stats", "--db", DB, "--by", "session", "--sort-danger", "--label", "danger", "--format", "json"]);
+    const rows = JSON.parse(sess.out) as { session_id: string; dangerous: number }[];
+    expect(rows[0].session_id).toBe("claude-cheat-danger");
+    expect(rows[0].dangerous).toBe(2);
+    expect(rows).toHaveLength(1);
+    expect((await run(["stats", "--db", DB, "--by", "danger", "--label", "danger", "--format", "csv"])).out.split("\n")[0]).toContain("outcome");
+  });
   test("--set 写错 → 明确报错而不是悄悄忽略", async () => {
     const r = await run(["replay", FX, "--set", "nope.x=1"]);
     expect(r.code).toBe(2);

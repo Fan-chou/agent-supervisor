@@ -14,8 +14,10 @@ const USAGE = `用法：
   sv eval   <labels.yaml> [--judge=off|mock] [--window N] [--ab] [--set k=v ...] [--format=text|json] [--out <path>]
             [--sweep thresholds.T1.H=3,4,5]                      阈值扫描：每个取值各跑一遍并各写一条 eval 运行记录
             [--log [db]] [--label name]                          写结构化日志
-  sv stats  [--by rule|model|judge|session|runs] [--run N,M] [--label L] [--since 7d|2026-10-01] [--session ID]
+  sv stats  [--by rule|model|judge|session|danger|runs] [--run N,M] [--label L] [--since 7d|2026-10-01] [--session ID]
             [--format text|json|csv] [--db path]
+  sv stats  --by danger                                           危险操作（X2）：本应拦截 / 已拦截，按类别、按会话
+  sv stats  --by session --sort-danger                            会话按危险数排序
   sv stats  --compare A,B                                         对比两次运行（thresholds 不同的回放）
   sv mark <hit-id> fp|useful [--note ...]                         把命中标为误报 / 有用
   sv override <decision-id> allow|reject [--note ...]             手动放行 / 驳回某次决策
