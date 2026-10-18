@@ -215,6 +215,44 @@ describe("policy：H 级与上限", () => {
   });
 });
 
+describe("deferJudge：M 级 judge 不挡住 feed", () => {
+  test("feed 立刻返回；后台 judge 完成后 runDeferred 给出迟到的决策并写进 rec", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const calls: unknown[] = [];
+    const slow = async (req: Parameters<ReturnType<typeof mockJudge>>[0]) => {
+      calls.push(req);
+      await gate;
+      return mockJudge()(req);
+    };
+    const s = new Sim({ judge: slow, cfg: enforce, deferJudge: true });
+    await s.prompt("x");
+    let last: Awaited<ReturnType<typeof s.bash>>[1] | undefined;
+    const t0 = Date.now();
+    for (let i = 0; i < 4; i++) last = (await s.bash("cat x.log", { out: "same" }))[1];
+    expect(Date.now() - t0).toBeLessThan(500); // 没有被 judge 卡住
+    expect(calls).toHaveLength(0); // judge 还没开始
+    expect(last!.deferred).toBeTypeOf("function");
+    expect(last!.decisions.find((d) => d.hit.ruleId === "L2")).toBeUndefined(); // L2 的决策还没有
+    const pending = s.engine.runDeferred(last!);
+    release();
+    const late = await pending;
+    expect(calls).toHaveLength(1);
+    expect(late.find((d) => d.hit.ruleId === "L2")).toMatchObject({ action: "advise", applied: true, outcome: "advised" });
+    expect(last!.decisions.some((d) => d.hit.ruleId === "L2")).toBe(true);
+    expect(last!.deferred).toBeUndefined();
+    expect(await s.engine.runDeferred(last!)).toEqual([]); // 只跑一次
+  });
+  test("不带 judge 时不延迟：M 级直接是 judge_off", async () => {
+    const s = new Sim({ deferJudge: true });
+    await s.prompt("x");
+    let last;
+    for (let i = 0; i < 4; i++) last = (await s.bash("cat x.log", { out: "same" }))[1];
+    expect(last!.deferred).toBeUndefined();
+    expect(last!.decisions.find((d) => d.hit.ruleId === "L2")?.action).toBe("judge_off");
+  });
+});
+
 describe("judge 输出后过滤（P0-7）", () => {
   const fb = "本地预设提示：这条规则的预设文字。";
   test("去掉标签、URL、代码块、shell 命令行", () => {

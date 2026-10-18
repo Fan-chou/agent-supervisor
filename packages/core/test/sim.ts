@@ -10,6 +10,7 @@ export interface SimOpts {
   trustInferred?: boolean;
   planMd?: string;
   sink?: import("../src/index.ts").LogSink;
+  deferJudge?: boolean;
   /** 每步前进的毫秒数。 */
   dt?: number;
 }
@@ -91,13 +92,13 @@ export class Sim {
     const pre = preEvent(raw, this.seq++, copts);
     if (o.ws) pre.wsFingerprint = o.ws;
     pre.cwd = this.opts.cwd ?? "/work/proj";
-    const r1 = await this.engine.feed(pre);
+    const r1 = await this.engine.feed(pre, { deferJudge: this.opts.deferJudge });
     this.advance(1000);
     const res: RawResult = { output: o.out ?? "", isError: this.harness === "claude" ? !!o.fail : undefined, exitCode: this.harness === "codex" ? (o.exit ?? (o.fail ? 1 : 0)) : o.exit, pending: o.pending, ts: this.ts };
     const post = postEvent(raw, res, this.seq++, copts);
     if (o.ws) post.wsFingerprint = o.ws;
     if (o.created && post.edit) post.edit.created = true;
-    const r2 = await this.engine.feed(post);
+    const r2 = await this.engine.feed(post, { deferJudge: this.opts.deferJudge });
     return [r1, r2];
   }
 

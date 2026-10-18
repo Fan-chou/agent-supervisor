@@ -116,6 +116,17 @@ export class Policy {
     private readonly opts: PolicyOptions = {},
   ) {}
 
+  private deferring = false;
+  private deferredM: Hit[] = [];
+  private deferredWork?: () => Promise<Decision[]>;
+
+  /** 取走（并清空）上一次 handle 留下的后台 judge 工作。 */
+  takeDeferred(): (() => Promise<Decision[]>) | undefined {
+    const w = this.deferredWork;
+    this.deferredWork = undefined;
+    return w;
+  }
+
   get judgeCallCount(): number {
     return this.judgeCalls;
   }
@@ -144,7 +155,14 @@ export class Policy {
   }
 
   /** 处理一条事件上产生的全部命中。 */
-  async handle(e: Event, hits: Hit[], judge?: JudgeFn): Promise<Decision[]> {
+  /**
+   * deferM=true（守护进程）：M 级的异步 judge 不在这里等——hook 不能被 30 秒的 judge 拖住。
+   * 这时 handle 只同步处理 L / H（含同步 judge），M 级工作留在 takeDeferred() 里，由调用方在响应之后再跑。
+   */
+  async handle(e: Event, hits: Hit[], judge?: JudgeFn, opts: { deferM?: boolean } = {}): Promise<Decision[]> {
+    this.deferring = !!opts.deferM && !!judge;
+    this.deferredM = [];
+    this.deferredWork = undefined;
     const out: Decision[] = [];
     const sorted = [...hits].sort((a, b) => sevOrder[a.sev] - sevOrder[b.sev]);
     const mHits: Hit[] = [];
@@ -153,7 +171,11 @@ export class Policy {
       if (d) out.push(d);
     }
     // M 级：同一事件上的同类命中合并成一次 judge 调用
-    if (mHits.length) out.push(...(await this.judgeBatch(e, mHits, judge)));
+    if (this.deferring) {
+      const all = [...mHits, ...this.deferredM];
+      if (all.length) this.deferredWork = () => this.judgeBatch(e, all, judge);
+      this.deferring = false;
+    } else if (mHits.length) out.push(...(await this.judgeBatch(e, mHits, judge)));
     // 连续拦截计数：同一次调用上多个规则同时拦只计 1 次；被放行的不同调用重置
     for (const d of out) d.outcome = outcomeOf(d);
     if (out.some((d) => d.counted)) this.consecutiveBlocks++;
@@ -224,9 +246,13 @@ export class Policy {
     return base("advise", "L 级本地预设建议", { message: h.message, applied: this.modeApplies("advise") });
   }
 
-  private async hardLevel(e: Event, h: Hit, judge: JudgeFn | undefined, base: (a: Action, r: string, x?: Partial<Decision>) => Decision): Promise<Decision> {
+  private async hardLevel(e: Event, h: Hit, judge: JudgeFn | undefined, base: (a: Action, r: string, x?: Partial<Decision>) => Decision): Promise<Decision | null> {
     // H 只能在 pre 上拦截；不是 pre 就降级为 M 处理
     if (!(h.blockable && h.phase === "pre")) {
+      if (this.deferring) {
+        this.deferredM.push({ ...h, sev: "M" });
+        return null;
+      }
       const m = await this.judgeBatch(e, [{ ...h, sev: "M" }], judge);
       return m[0];
     }

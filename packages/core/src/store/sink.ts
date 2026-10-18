@@ -43,6 +43,8 @@ export interface FeedInfo {
 
 export interface LogSink {
   onFeed(info: FeedInfo): void;
+  /** 后台 judge 完成后的迟到决策（守护进程用；回放里不会出现）。 */
+  onLate?(info: FeedInfo): void;
   close(): void;
 }
 
@@ -53,6 +55,10 @@ export interface StoreSinkOptions {
   sourceFile?: string;
   /** 是否在 close 时结束 run。 */
   endRunOnClose?: boolean;
+  /** 守护进程：applied 的消息先入 outbox，deliveries.delivered 在真正送出后才改为 1。 */
+  deferredDelivery?: boolean;
+  /** 每写完一个决策回调一次（守护进程用它把 applied 的消息入 outbox，并拿到 decision / delivery 行 id）。 */
+  onDecisionLogged?: (d: Decision, ids: { decisionId: number; deliveryRowId?: number }, e: Event) => void;
 }
 
 interface Watch {
@@ -98,6 +104,8 @@ export class StoreSink implements LogSink {
   private lastSilenced = "none";
   private started = new Set<string>();
   private readonly prefix: string;
+  /** 已写入的命中 id（按 run/session/seq/rule/key 查），后台 judge 的迟到决策要挂回原命中。 */
+  private hitIdByKey = new Map<string, number>();
 
   constructor(readonly store: LogStore, private readonly o: StoreSinkOptions) {
     this.prefix = o.channelPrefix ? o.channelPrefix + ":" : "";
@@ -111,8 +119,12 @@ export class StoreSink implements LogSink {
     return this.prefix + (e.phase === "pre" ? "PreToolUse" : e.phase === "stop" ? "Stop" : "PostToolBatch");
   }
 
+  private hk(h: { sessionId: string; seq: number; ruleId: string; key: string }): string {
+    return `${h.sessionId}:${h.seq}:${h.ruleId}:${h.key}`;
+  }
+
   onFeed(info: FeedInfo): void {
-    const { event: e, hits, decisions, judgeCalls, tracker, cfg } = info;
+    const { event: e, hits, tracker, cfg } = info;
     const runId = this.o.runId;
     this.store.transaction(() => {
       if (!this.started.has(e.sessionId) || e.phase === "session") {
@@ -126,42 +138,7 @@ export class StoreSink implements LogSink {
       // 先处理上一批投递的遵从情况：本事件若是一次调用，就是「之后的调用」
       this.advanceCompliance(e);
 
-      const callIdByHit = new Map<Hit, number>();
-      const callIds: number[] = [];
-      for (const jc of judgeCalls) {
-        const r = jc.result;
-        const meta = r.meta ?? {};
-        const out = r.kind === "ok" ? r.out : undefined;
-        const id = this.store.insertJudgeCall(runId, {
-          sessionId: e.sessionId,
-          ts: jc.ts,
-          ruleIds: jc.req.hits.map((h) => h.ruleId),
-          sync: jc.req.sync,
-          routeModel: meta.routeModel,
-          model: r.model,
-          status: r.kind,
-          verdict: out?.verdict,
-          confidence: out?.confidence,
-          category: out?.category,
-          messageRaw: out?.message_to_agent,
-          reason: out?.reason,
-          latencyMs: meta.latencyMs,
-          promptTokens: meta.promptTokens,
-          completionTokens: meta.completionTokens,
-          cachedTokens: meta.cachedTokens,
-          costUsd: meta.costUsd,
-          retries: meta.retries,
-          httpRequests: meta.httpRequests,
-          formatLevel: meta.formatLevel,
-          formatDowngraded: meta.formatDowngraded,
-          repairs: meta.repairs,
-          error: r.kind === "error" ? r.error : r.kind === "timeout" ? "timeout" : r.kind === "parse_fail" ? "parse_fail" : undefined,
-          request: meta.requestBody,
-          response: meta.responseBody ?? (out ? JSON.stringify(out) : undefined),
-        });
-        callIds.push(id);
-        for (const h of jc.req.hits) callIdByHit.set(h, id);
-      }
+      const callIdByHit = this.writeJudgeCalls(info);
 
       const hitIds = new Map<Hit, number>();
       const callIndex = tracker.steps.length + (e.phase === "pre" ? 1 : 0);
@@ -192,54 +169,11 @@ export class StoreSink implements LogSink {
             : {}),
         });
         hitIds.set(h, id);
+        this.hitIdByKey.set(this.hk(h), id);
       }
+      if (this.hitIdByKey.size > 20_000) for (const k of [...this.hitIdByKey.keys()].slice(0, 10_000)) this.hitIdByKey.delete(k);
 
-      const newPending: Pending[] = [];
-      for (const d of decisions) {
-        let hitId = hitIds.get(d.hit);
-        if (hitId === undefined) {
-          // 降级路径里 policy 会克隆 hit（如 H→M）：按 rule+key+seq 回找
-          const m = hits.find((h) => h.ruleId === d.hit.ruleId && h.key === d.hit.key && h.seq === d.hit.seq);
-          hitId = m ? hitIds.get(m) : undefined;
-        }
-        if (hitId === undefined) continue;
-        let jcId: number | undefined;
-        for (const [h, id] of callIdByHit) if (h === d.hit || (h.ruleId === d.hit.ruleId && h.key === d.hit.key && h.seq === d.hit.seq)) jcId = id;
-        const decId = this.store.insertDecision(runId, {
-          sessionId: e.sessionId,
-          hitId,
-          judgeCallId: jcId,
-          ts: e.ts,
-          ruleId: d.hit.ruleId,
-          action: d.action,
-          applied: d.applied,
-          mode: cfg.mode,
-          reason: d.reason,
-          suppressedBy: d.suppressedBy,
-          message: d.message,
-          wouldBlockIfVerified: d.wouldBlockIfVerified,
-          atNextPre: d.atNextPre,
-          counted: d.counted,
-          outcome: d.outcome,
-        });
-        if (["advise", "block", "ask", "stop_continue"].includes(d.action)) {
-          const watch = watchOf(d.hit, e);
-          const delId = this.store.insertDelivery(runId, {
-            sessionId: e.sessionId,
-            decisionId: decId,
-            ruleId: d.hit.ruleId,
-            ts: e.ts,
-            channel: this.channelOf(e),
-            delivered: d.applied,
-            deliveredTs: d.applied ? e.ts : undefined,
-            expiredReason: d.applied ? undefined : `not_applied_in_mode_${cfg.mode}`,
-            text: d.message ?? d.reason,
-            watch,
-          });
-          if (watch && d.applied) newPending.push({ deliveryId: delId, watch, seen: 0 });
-        }
-      }
-      this.pending.push(...newPending);
+      this.writeDecisions(info, callIdByHit, hitIds);
 
       // 用户覆盖：#sv off / #sv quiet
       if (tracker.silenced !== this.lastSilenced) {
@@ -248,6 +182,109 @@ export class StoreSink implements LogSink {
       }
       if (e.phase === "post") this.store.setSessionCalls(runId, e.sessionId, tracker.steps.length);
     });
+  }
+
+  /** 后台 judge 完成后补记：只写 judge 调用和决策（命中与事件已在 onFeed 里写过）。 */
+  onLate(info: FeedInfo): void {
+    this.store.transaction(() => {
+      const callIdByHit = this.writeJudgeCalls(info);
+      this.writeDecisions(info, callIdByHit, new Map());
+    });
+  }
+
+  private writeJudgeCalls(info: FeedInfo): Map<Hit, number> {
+    const { event: e, judgeCalls } = info;
+    const runId = this.o.runId;
+    const callIdByHit = new Map<Hit, number>();
+    for (const jc of judgeCalls) {
+      const r = jc.result;
+      const meta = r.meta ?? {};
+      const out = r.kind === "ok" ? r.out : undefined;
+      const id = this.store.insertJudgeCall(runId, {
+        sessionId: e.sessionId,
+        ts: jc.ts,
+        ruleIds: jc.req.hits.map((h) => h.ruleId),
+        sync: jc.req.sync,
+        routeModel: meta.routeModel,
+        model: r.model,
+        status: r.kind,
+        verdict: out?.verdict,
+        confidence: out?.confidence,
+        category: out?.category,
+        messageRaw: out?.message_to_agent,
+        reason: out?.reason,
+        latencyMs: meta.latencyMs,
+        promptTokens: meta.promptTokens,
+        completionTokens: meta.completionTokens,
+        cachedTokens: meta.cachedTokens,
+        costUsd: meta.costUsd,
+        retries: meta.retries,
+        httpRequests: meta.httpRequests,
+        formatLevel: meta.formatLevel,
+        formatDowngraded: meta.formatDowngraded,
+        repairs: meta.repairs,
+        error: r.kind === "error" ? r.error : r.kind === "timeout" ? "timeout" : r.kind === "parse_fail" ? "parse_fail" : undefined,
+        request: meta.requestBody,
+        response: meta.responseBody ?? (out ? JSON.stringify(out) : undefined),
+      });
+      for (const h of jc.req.hits) callIdByHit.set(h, id);
+    }
+    return callIdByHit;
+  }
+
+  private writeDecisions(info: FeedInfo, callIdByHit: Map<Hit, number>, hitIds: Map<Hit, number>): void {
+    const { event: e, hits, decisions, cfg } = info;
+    const runId = this.o.runId;
+    const newPending: Pending[] = [];
+    for (const d of decisions) {
+      // 降级路径里 policy 会克隆 hit（如 H→M）：按 rule+key+seq 回找；后台 judge 的迟到决策靠 hitIdByKey
+      let hitId = hitIds.get(d.hit);
+      if (hitId === undefined) {
+        const m = hits.find((h) => h.ruleId === d.hit.ruleId && h.key === d.hit.key && h.seq === d.hit.seq);
+        hitId = (m ? hitIds.get(m) : undefined) ?? this.hitIdByKey.get(this.hk(d.hit));
+      }
+      if (hitId === undefined) continue;
+      let jcId: number | undefined;
+      for (const [h, id] of callIdByHit) if (h === d.hit || (h.ruleId === d.hit.ruleId && h.key === d.hit.key && h.seq === d.hit.seq)) jcId = id;
+      const decId = this.store.insertDecision(runId, {
+        sessionId: e.sessionId,
+        hitId,
+        judgeCallId: jcId,
+        ts: e.ts,
+        ruleId: d.hit.ruleId,
+        action: d.action,
+        applied: d.applied,
+        mode: cfg.mode,
+        reason: d.reason,
+        suppressedBy: d.suppressedBy,
+        message: d.message,
+        wouldBlockIfVerified: d.wouldBlockIfVerified,
+        atNextPre: d.atNextPre,
+        counted: d.counted,
+        outcome: d.outcome,
+      });
+      let deliveryRowId: number | undefined;
+      if (["advise", "block", "ask", "stop_continue"].includes(d.action)) {
+        const watch = watchOf(d.hit, e);
+        // 守护进程（deferredDelivery）里，applied 的消息先入 outbox，真正送出去之后才把 delivered 改成 1
+        const queued = !!this.o.deferredDelivery && d.applied;
+        deliveryRowId = this.store.insertDelivery(runId, {
+          sessionId: e.sessionId,
+          decisionId: decId,
+          ruleId: d.hit.ruleId,
+          ts: e.ts,
+          channel: queued ? "queued" : this.channelOf(e),
+          delivered: queued ? false : d.applied,
+          deliveredTs: !queued && d.applied ? e.ts : undefined,
+          expiredReason: d.applied ? (queued ? "queued" : undefined) : `not_applied_in_mode_${cfg.mode}`,
+          text: d.message ?? d.reason,
+          watch,
+        });
+        if (watch && d.applied) newPending.push({ deliveryId: deliveryRowId, watch, seen: 0 });
+      }
+      this.o.onDecisionLogged?.(d, { decisionId: decId, deliveryRowId }, e);
+    }
+    this.pending.push(...newPending);
   }
 
   private advanceCompliance(e: Event): void {

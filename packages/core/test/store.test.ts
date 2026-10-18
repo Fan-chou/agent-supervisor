@@ -501,3 +501,25 @@ describe("schema v1 → v2 迁移", () => {
     expect(new LogStore(path).count("hits")).toBe(2);
   });
 });
+
+describe("后台 judge 的迟到决策（sink.onLate）", () => {
+  test("决策和 judge 调用挂回原来的命中，不重复写事件/命中", async () => {
+    const { mockJudge } = await import("../src/judge/mock.ts");
+    const { store, sim } = mkSim({ judge: mockJudge(), cfg: cfgWith({ mode: "enforce" }), deferJudge: true });
+    await sim.start();
+    await sim.prompt("x");
+    let last;
+    for (let i = 0; i < 4; i++) last = (await sim.bash("cat x.log", { out: "same" }))[1];
+    expect(store.count("judge_calls")).toBe(0);
+    expect(store.db.query("SELECT COUNT(*) AS n FROM decisions WHERE rule_id='L2'").get()).toEqual({ n: 0 });
+    const events = store.count("events");
+    const hits = store.count("hits");
+    await sim.engine.runDeferred(last!);
+    expect(store.count("events")).toBe(events);
+    expect(store.count("hits")).toBe(hits);
+    expect(store.count("judge_calls")).toBe(1);
+    const d = store.db.query("SELECT d.*, h.rule_id AS hr FROM decisions d JOIN hits h ON h.id = d.hit_id WHERE d.rule_id='L2'").get() as Record<string, any>;
+    expect(d).toMatchObject({ hr: "L2", action: "advise", applied: 1, outcome: "advised" });
+    expect(d.judge_call_id).toBeGreaterThan(0);
+  });
+});
