@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { applyOverride, beginRun, createJudgeClient, defaultConfig, expandHome, loadConfigFile, LogStore, type Config, type JudgeFn } from "@sv/core";
 import { startDaemon, type Daemon } from "../../daemon/src/index.ts";
 import { codexInstallSnippet, installSnippet, opencodeInstallSnippet } from "./install.ts";
+import { analyze, formatReport, parseDump } from "./opencode-report.ts";
 import { renderText, replayPath, type JudgeMode } from "../../replay/src/index.ts";
 import { runExplain, runExport, runMark, runOverride, runPrune, runStats, type Flags } from "./stats.ts";
 
@@ -29,6 +30,7 @@ const USAGE = `用法：
 
   sv start  [--home <dir>] [--port N] [--mode shadow|advise|enforce] [--judge=live] [--config <config.yaml>]   前台运行守护进程
   sv status [--home <dir>]                                        查询守护进程
+  sv opencode-report <dump.jsonl> [--format json]                汇总 OpenCode 插件的核对样本（SV_OPENCODE_DUMP=1）
   sv install claude|codex|opencode [--launchd]                              只打印 Claude Code / Codex 的 hooks 配置片段、OpenCode V2 的插件内容（claude 可加 launchd plist），不改任何文件
 
 replay/eval 默认只读本地 transcript、不发网络请求；--judge=live 才会调用 config 里 judge.base_url（默认本地 Magpie 路由组 http://127.0.0.1:3425/v1）。
@@ -145,6 +147,15 @@ export async function main(argv: string[]): Promise<number> {
   if (cmd === "start") return runStart(flags, cfg);
   if (cmd === "status") return runStatus(flags);
   if (cmd === "install") return await runInstall(pos.slice(1), flags);
+  if (cmd === "opencode-report") {
+    if (!pos[1]) {
+      console.error("用法：sv opencode-report <dump.jsonl> [--format json]   （汇总 SV_OPENCODE_DUMP=1 落下的样本，见 docs/opencode-verify.md）");
+      return 2;
+    }
+    const rep = analyze(parseDump(readFileSync(pos[1], "utf8")));
+    console.log(flags.format === "json" ? JSON.stringify(rep, null, 2) : formatReport(rep));
+    return 0;
+  }
 
   const judge = (typeof flags.judge === "string" ? flags.judge : "off") as string;
   if (judge !== "off" && judge !== "mock" && judge !== "live") {
