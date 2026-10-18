@@ -169,6 +169,7 @@ export class SessionTracker {
       case "prompt": {
         const text = e.text ?? "";
         const origin = e.origin === "user" && this.registry.isSupervisor(text) ? "supervisor" : e.origin;
+        e.origin = origin; // 日志里也记成 supervisor（P0-6）
         if (origin === "user") {
           this.turn++;
           this.turnStartStepIdx = this.steps.length;

@@ -274,6 +274,22 @@ export class LogStore {
     });
   }
 
+  /** 守护进程真正把消息送出去之后：更新 deliveries（按行 id）。 */
+  markDeliverySent(deliveryRowId: number, channel: string, ts = this.now()): void {
+    this.db.run("UPDATE deliveries SET delivered = 1, delivered_ts = ?, channel = ?, expired_reason = NULL WHERE id = ?", [ts, channel, deliveryRowId]);
+    this.mirror("deliveries", { id: deliveryRowId, delivered: 1, delivered_ts: ts, channel, update: true });
+  }
+
+  /** 消息没送出去（复核失败 stale / 过期 expired）：按决策 id 记原因。 */
+  markDeliveryDropped(decisionId: number, reason: string): void {
+    this.db.run("UPDATE deliveries SET delivered = 0, expired_reason = ? WHERE decision_id = ? AND delivered = 0", [reason, decisionId]);
+  }
+
+  /** 按决策 id 标记已送达（outbox 里只存了 decision_id）。 */
+  markDeliverySentByDecision(decisionId: number, channel: string, ts = this.now()): void {
+    this.db.run("UPDATE deliveries SET delivered = 1, delivered_ts = ?, channel = ?, expired_reason = NULL WHERE decision_id = ?", [ts, channel, decisionId]);
+  }
+
   setCompliance(deliveryId: number, complied: boolean | null, note?: string): void {
     this.db.run("UPDATE deliveries SET complied = ?, compliance_note = ? WHERE id = ?", [bool(complied), note ?? null, deliveryId]);
     this.mirror("deliveries", { id: deliveryId, complied, compliance_note: note, update: true });

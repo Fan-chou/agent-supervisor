@@ -66,6 +66,8 @@ export interface LogConfig {
 export interface Config {
   mode: "shadow" | "advise" | "enforce";
   judge: {
+    /** 守护进程是否真的调用 judge（默认 false：未启用时 M 级只记录「待 judge」）。 */
+    enabled: boolean;
     base_url: string;
     api_key_env: string;
     model: string;
@@ -143,6 +145,7 @@ export function defaultConfig(): Config {
   return {
     mode: "shadow",
     judge: {
+      enabled: false,
       base_url: "http://127.0.0.1:3425/v1",
       api_key_env: "SUPERVISOR_API_KEY",
       model: "supervisor-judge",

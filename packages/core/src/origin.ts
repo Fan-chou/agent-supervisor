@@ -21,6 +21,11 @@ export class OriginRegistry {
     return h;
   }
 
+  /** 重启后从 injections 表恢复（只有哈希，没有原文，所以包含匹配会丢失）。 */
+  addHash(hash: string): void {
+    this.hashes.add(hash);
+  }
+
   isSupervisor(text: string): boolean {
     const n = norm(text);
     if (!n) return false;
