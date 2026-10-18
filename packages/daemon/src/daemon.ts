@@ -270,7 +270,7 @@ export class Daemon {
   // ---------- 会话运行时 ----------
 
   private runtime(harness: HookHarness, sessionId: string, cwd?: string): Runtime {
-    // 按 (harness, sessionId) 分开：两个工具碰巧用了同一个 session id 也不会串
+    // 内存里的运行时按 (harness, sessionId) 分开；持久化表（sessions/outbox/injections/plans）仍只按 session_id，依赖 session id 是 UUID
     const key = `${harness}:${sessionId}`;
     let rt = this.sessions.get(key);
     if (rt) return rt;

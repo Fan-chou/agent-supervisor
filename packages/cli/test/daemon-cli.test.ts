@@ -81,7 +81,7 @@ describe("sv install：只打印，不改文件", () => {
   test("hooks 片段：固定路径的 command 钩子；PreToolUse 20 秒，其余 5 秒；没有 npx", () => {
     const j = JSON.parse(claudeHooksJson()).hooks;
     expect(Object.keys(j).sort()).toEqual(["PostToolBatch", "PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionStart", "Stop", "UserPromptSubmit"]);
-    expect(j.PreToolUse[0].hooks[0]).toMatchObject({ type: "command", command: "~/.agent-supervisor/bin/sv-hook", timeout: 20 });
+    expect(j.PreToolUse[0].hooks[0]).toMatchObject({ type: "command", command: "~/.agent-supervisor/bin/sv-hook claude", timeout: 20 });
     expect(j.PostToolUse[0].hooks[0].timeout).toBe(5);
     expect(claudeHooksJson()).not.toContain("npx");
     expect(launchdPlist()).toContain("supervisord");

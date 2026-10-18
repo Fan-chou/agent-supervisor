@@ -4,7 +4,7 @@
 const HOOK = "~/.agent-supervisor/bin/sv-hook"; // 固定路径，不是 npx（design §2）
 
 export function claudeHooksJson(): string {
-  const entry = (timeout: number, matcher?: string) => [{ ...(matcher ? { matcher } : {}), hooks: [{ type: "command", command: HOOK, timeout }] }];
+  const entry = (timeout: number, matcher?: string) => [{ ...(matcher ? { matcher } : {}), hooks: [{ type: "command", command: `${HOOK} claude`, timeout }] }];
   return JSON.stringify(
     {
       hooks: {

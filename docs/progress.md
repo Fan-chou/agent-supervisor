@@ -41,7 +41,7 @@
   - `prompt.ts`：与模型无关的 system + user 两条消息；`recall`（默认）与 `ignore_default` 两种写法；**命令、输出、计划、本地提示都放进 `<untrusted>`，块内自带的 `<untrusted>` 标签被转义**；所有字段发出前过 `redact()`；≤约 10k token 的字符预算，按优先级截断。
   - `filter.ts`：judge 输出后过滤（P0-7）；`mock.ts`：确定性 mock。
   - policy 的 judge 调用/决策现在记录 verdict，供 ignore 率统计；Engine 把真正生效的监督消息登记到 origin 注册表并记入「已发消息」。
-- §3.5 契约测试（Claude 部分）：`packages/adapter-claude/src/render.ts`（白名单 + `sanitize` 兜底，PreToolUse/PostToolUse/PostToolUseFailure/PostToolBatch/Stop 各一格）；`test/contract/claude/*.json` 共 18 个手写 fixture（不是从 render 生成的）+ 不变量测试（只有白名单字段、不泄漏 ruleId/deliveryId/expires、Post 类事件绝不出现 permissionDecision/decision、deny/ask 不带 additionalContext、Stop 遵守 `stop_hook_active`、600 字符截断、空输出）。X2 的真实输出与 fixture 文案做交叉校验。
+- §3.5 契约测试（Claude 部分）：`packages/adapter-claude/src/render.ts`（白名单 + `sanitize` 兜底，PreToolUse/PostToolUse/PostToolUseFailure/PostToolBatch/Stop 各一格）；`test/contract/claude/*.json` 共 19 个手写 fixture（不是从 render 生成的）+ 不变量测试（只有白名单字段、不泄漏 ruleId/deliveryId/expires、Post 类事件绝不出现 permissionDecision/decision、deny/ask 不带 additionalContext、Stop 遵守 `stop_hook_active`、600 字符截断、空输出）。X2 的真实输出与 fixture 文案做交叉校验。
 - 复盘修复（advisor 复核后）：vitest watch 判定改看命令自己的 `CI=` 赋值；回放输出（JSON 与文本）整体脱敏；X2 改为跟随 mode；时间线新增 `callIndex`。
 
 **测试结果**：`bun test` 639 通过 / 0 失败（16 个文件）；`tsc --noEmit` 无错误。全部测试不发网络请求（judge 测试里 `fetch` 被陷阱）。
@@ -99,12 +99,12 @@
 ## M4（代码部分）— Codex 0.163.x 适配器（完成；shadow 一周与真机校准不归我做）
 **做了什么**（decisions #55–66）
 - `packages/adapter-codex`：`parse.ts`（与 replay 共用的解析，replay 反过来依赖它）、`normalize.ts`（`normalizeCodexHook`，与 adapter-claude 同构：`Normalized{hookPoint, events, stopHookActive…}`；PostToolUse 的退出码来自输出头 / `metadata.exit_code`，否则交给 FailureClassifier，不默认成功；`apply_patch` 两种形态、`exec_command`/`shell`/`Bash`、`update_plan`、`cwd` 回退到 `workdir`、`tool_input` 为 JSON 字符串）、`render.ts`（白名单 render：Pre = deny 三字段或仅 additionalContext，Post = additionalContext，Stop = decision:block+reason；**`ask → deny`**；PostToolUseFailure/PostToolBatch 等返回 null）。
-- §3.5 契约测试（Codex 部分）：`test/contract/codex/*.json` 共 18 个手写 fixture（不是从 render 生成的，每个注入点 × 每种 kind 都有）+ 不变量（任何输出都不含 `"ask"`、`continue`、`stopReason`、`suppressOutput`、`updatedInput`、`updatedMCPToolOutput`、`systemMessage` 和 Delivery 内部字段；Post 不出现 permissionDecision/decision；`stop_hook_active` 遵守；≤600 字符；`emittedText` 与实际输出一致）+ X2 文案交叉校验。
+- §3.5 契约测试（Codex 部分）：`test/contract/codex/*.json` 共 19 个手写 fixture（不是从 render 生成的，每个注入点 × 每种 kind 都有）+ 不变量（任何输出都不含 `"ask"`、`continue`、`stopReason`、`suppressOutput`、`updatedInput`、`updatedMCPToolOutput`、`systemMessage` 和 Delivery 内部字段；Post 不出现 permissionDecision/decision；`stop_hook_active` 遵守；≤600 字符；`emittedText` 与实际输出一致）+ X2 文案交叉校验。
 - 守护进程：`/v1/hook` 按 `harness ∈ {claude, codex}` 选归一化器（未知 400）；会话运行时按 `(harness, session_id)`；`adapter_health`/`adapterFailures15m` 按真实 harness 记；**origin 登记改用实际输出（截断后）的字符串**（P0-6，Claude 一并修复）。
 - sv-hook：同一个二进制，`sv-hook codex`（参数优先）；forward 体、spool 标签、本地 X2（`harness:"codex"`）、render 全部按 harness；shadow 永不拦截，advise 只放行 advise，守护进程不可达/超时/坏响应/自己抛异常一律 exit 0 不输出并写 spool；`SV_HOOK_DUMP=1` 写脱敏载荷样本（默认关）。
-- `sv install codex`：只打印 hooks.json 片段与步骤（固定命令串 `…/sv-hook codex`、`/hooks` 里按哈希信任、未实测提示），不读也不写 `~/.codex`（测试用假 HOME 验证）。
+- `sv install codex`：只打印 hooks.json 片段与步骤（固定命令串 `…/sv-hook codex`、`/hooks` 里按哈希信任、未实测提示），不读也不写 `~/.codex`（测试用假 HOME 验证）。 `sv install claude` 的命令串也改成显式的 `sv-hook claude`，不再依赖兜底判断。
 
-**测试结果**：`bun test` 858 通过 / 0 失败（30 个文件）；`tsc --noEmit` 无错误。所有测试不发网络请求，没有读 `~/.codex`、`.env` 或任何密钥文件；`bun run build:hook` 仍能编出单文件。
+**测试结果**：`bun test` 864 通过 / 0 失败（31 个文件；含 `main-argv.test.ts`，真的拉起 `main.ts` 进程验证 argv 路由：同一输入写 `.env`，无参数/`claude` 是 ask，`codex`/`--harness=codex` 是 deny）；`tsc --noEmit` 无错误。所有测试不发网络请求，没有读 `~/.codex`、`.env` 或任何密钥文件；`bun run build:hook` 仍能编出单文件。
 
 **§16 第 2 条的结论：仍未决，这一轮无法回答**（两个子问题都需要真实的 Codex 运行）：
 1. *钩子能不能收到 `update_plan`*：适配器**如果**收到会正确处理（kind=plan、tracker 计划更新，有测试），但合成样本不能证明 Codex 真的会触发。回答它只需要 Jack 以 `SV_HOOK_DUMP=1` 跑一次带计划的 Codex 会话，看 `~/.agent-supervisor/dumps/codex-<日期>.jsonl` 里有没有 `tool_name: update_plan`。
@@ -116,6 +116,7 @@
 
 **未完成 / 已知缺口**
 - Codex 真实载荷校准（tool_name 取值、tool_response 形态、cwd 字段、`turn_id`）、hooks 配置格式（timeout 单位、功能开关、`~` 展开）全部未在 0.163 上验证。
-- 长命令在钩子路径上无法回填退出码（#59）；Codex async 钩子输出（design §3.2「异步建议」）未用；Stop 的 reason 措辞目前与 Claude 共用同一套文案，没有专门改成「用户口吻的事实陈述」。
+- 长命令在钩子路径上无法回填退出码（#59）；Codex async 钩子输出（design §3.2「异步建议」）未用。
+- Stop reason 的措辞（design §3.2「用户口吻的事实陈述」）：**判定为基本满足**。本地预设 P3 文案是「最后一次编辑之后没有运行过相关测试、targeted 测试或构建。」——事实陈述，没有规则 ID、没有 supervisor 的元口吻；judge 提示要求 `message_to_agent` 是事实加一个具体的下一步、不含代码/命令/URL/系统式指令，输出后过滤再去掉标签/URL/代码块/shell 行并限 600 字符。保留的缺口：文案只做了人工审读，没有在真实 Codex 上看过模型对「reason 变成 user prompt」的反应；P3 预设只有观察、没有下一步。
 - M3 遗留不变：hook 不会自动拉起守护进程、改 mode 需重启、前端查询 API、OpenCode 适配器、asyncRewake、`parent_session_id`。
 - M4 的「shadow 跑一周、零阻塞事故」需要 Jack 的机器与时间，不是代码问题。
