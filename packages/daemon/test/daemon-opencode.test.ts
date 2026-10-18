@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LogStore, defaultConfig, resolveConfig } from "@sv/core";
+import { LogStore, defaultConfig, resolveConfig, writeEnforceState } from "@sv/core";
 import { Daemon, startDaemon, type HookResponse } from "../src/index.ts";
 
 const dirs: string[] = [];
@@ -17,7 +17,7 @@ afterEach(async () => {
   while (daemons.length) await daemons.pop()!.stop();
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
-async function boot(over: Record<string, unknown> = {}, opencodeEnforce = false) {
+async function boot(over: Record<string, unknown> = {}, opencodeEnforce?: boolean) {
   const home = tmp();
   const d = await startDaemon({ cfg: resolveConfig(over, defaultConfig()), home, dbPath: join(home, "state.db"), socketPath: join(home, "sock"), opencodeEnforce });
   daemons.push(d);
@@ -141,6 +141,23 @@ describe("harness=opencode", () => {
     expect(s.db.query("SELECT COUNT(*) AS n FROM outbox WHERE session_id = ? AND kind IN ('block','ask')").get(SID)).toEqual({ n: 0 });
     const oc = s.db.query("SELECT d.outcome, d.applied, d.mode FROM decisions d JOIN hits h ON h.id = d.hit_id WHERE h.rule_id = 'X2' AND d.session_id = ?").all(SID) as Record<string, unknown>[];
     expect(oc).toEqual([{ outcome: "would_have_blocked", applied: 0, mode: "advise" }]);
+  });
+  test("开关文件（opencode-enforce.json）：OFF/缺失/损坏 → opencode 不拦；写入 ON 后**之后新建**的 opencode 会话才会拦，已在跑的会话不变；写回 OFF 又不拦（不需要重启）", async () => {
+    const { d, home } = await boot({ mode: "enforce" });
+    const cwd = gitRepo();
+    const reset = async (sid: string, id: string) => {
+      await post(d, { ...before(cwd, "bash", { command: "git reset --hard HEAD~1" }, id), sessionID: sid });
+      return post(d, { ...evaluate(cwd), sessionID: sid });
+    };
+    await post(d, { ...context(cwd), sessionID: "early" }); // 开关打开之前就建好的会话
+    expect((await reset("early", "e0")).delivery).toBeNull(); // 缺失文件 = 关
+    writeEnforceState(home, { version: 1, enabled: true, ts: 1, actor: "jack", report: { path: "/x", sha256: "0".repeat(64) } });
+    expect((await reset("early", "e1")).delivery).toBeNull(); // 老会话保持 advise
+    expect((await reset("late", "l1")).delivery).toMatchObject({ kind: "block", ruleId: "X2" }); // 新会话按 enforce
+    writeFileSync(join(home, "opencode-enforce.json"), "{oops"); // 损坏 = 关
+    expect((await reset("later", "t1")).delivery).toBeNull();
+    writeEnforceState(home, { version: 1, enabled: false, ts: 2, actor: "jack", report: null });
+    expect((await reset("latest", "z1")).delivery).toBeNull();
   });
   test("enforce：写 .env（edit 工具）也走 evaluate 的 block", async () => {
     const { d } = await boot({ mode: "enforce" }, true);

@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   Engine, LogStore, Outbox, StoreSink, beginRun, truncate, checkPrecondition, computeWsFingerprint, createJudgeClient, expandHome, loadInjectionHashes, loadPlan, parsePlanMd, saveInjection, savePlan, wsToString,
-  outcomeOf, applyRuleEdits, loadRuleEdits, ruleViews, saveRuleEdits, validateConfigDraft, validateRuleEdit, type Config, type RuleEdits, type Decision, type Delivery, type JudgeFn, type OutboxKind, type Precondition, type StepRecord, type JudgeClient,
+  outcomeOf, applyRuleEdits, loadRuleEdits, readEnforceState, ruleViews, saveRuleEdits, validateConfigDraft, validateRuleEdit, type Config, type RuleEdits, type Decision, type Delivery, type JudgeFn, type OutboxKind, type Precondition, type StepRecord, type JudgeClient,
 } from "@sv/core";
 import { normalizeClaudeHook, type ClaudeHookPayload } from "../../adapter-claude/src/index.ts";
 import { handleCompare, handleQuery } from "./query-api.ts";
@@ -421,7 +421,9 @@ export class Daemon {
     const ids = new WeakMap<Decision, { decisionId: number; deliveryRowId?: number }>();
     const sink = new StoreSink(this.store, { runId: this.runId, deferredDelivery: true, onDecisionLogged: (d, i) => ids.set(d, i) });
     // OpenCode 在真机核对通过前只观察、不拦截（decisions #89）：全局 mode=enforce 时，opencode 会话按 advise 处理——block/ask 记为 would_have_*，不进 outbox；opencodeEnforce 是核对通过后的显式开关
-    const rtCfg = harness === "opencode" && this.cfg.mode === "enforce" && !this.opts.opencodeEnforce ? { ...this.cfg, mode: "advise" as const } : this.cfg;
+    // 开关来源：构造选项（测试用）优先，否则读数据目录里的 opencode-enforce.json（sv opencode-enforce 写的；缺失/损坏 = 关）。每次新建 opencode 会话时读一次，所以切换不用重启，只影响之后新建的会话
+    const ocEnforce = this.opts.opencodeEnforce ?? readEnforceState(this.home).enabled;
+    const rtCfg = harness === "opencode" && this.cfg.mode === "enforce" && !ocEnforce ? { ...this.cfg, mode: "advise" as const } : this.cfg;
     const engine = new Engine({ cfg: rtCfg, judge: this.judge, sink, policy: { trustInferredUnchanged: false } });
     for (const h of loadInjectionHashes(this.store, sessionId)) engine.tracker.registry.addHash(h);
     const plan = loadPlan(this.store, sessionId);
