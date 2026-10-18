@@ -340,7 +340,7 @@ export class LogStore {
     mkdirSync(d, { recursive: true });
     const counts: Record<string, number> = {};
     for (const t of TABLES) {
-      const rows = this.db.query(`SELECT * FROM ${t} ORDER BY id`).all() as Row[];
+      const rows = this.db.query(`SELECT * FROM ${t} ORDER BY rowid`).all() as Row[];
       writeFileSync(join(d, `${t}.jsonl`), rows.map((r) => JSON.stringify(r)).join("\n") + (rows.length ? "\n" : ""));
       counts[t] = rows.length;
     }

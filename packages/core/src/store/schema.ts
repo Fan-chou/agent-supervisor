@@ -4,7 +4,7 @@
 // 约定：ts = 事件发生的时间（epoch ms，回放里是历史时间）；logged_ts = 写入日志的墙钟时间（保留期按它清理）。
 // 所有正文（命令、输出、prompt、judge 请求/响应）都是脱敏后的文本。
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3; // v3 新增运行状态表 outbox / injections / plans（新表由 CREATE TABLE IF NOT EXISTS 建出，无需补列）
 
 /** v1 → v2 新增的列（旧库打开时按这个表补列）。 */
 export const MIGRATIONS_V2: { table: string; column: string; type: string }[] = [
@@ -208,6 +208,56 @@ export const DDL: string[] = [
     logged_ts INTEGER NOT NULL
   )`,
 
+  // ---- 运行状态表（design §3.4、§10；M3）----
+  // outbox：要投递给 agent 的消息。原子领取 + 租约（lease）+ 投递前复核前置条件 + 过期丢弃。
+  //   state: pending → claimed(lease_until) → delivered | stale(前置条件不再成立) | expired(超过有效期)
+  //   租约过期的 claimed 会被下一次 claim 回收（attempts+1）。delivery_id 唯一：同一条消息只入队一次。
+  `CREATE TABLE IF NOT EXISTS outbox (
+    id INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    run_id INTEGER,
+    decision_id INTEGER,
+    rule_id TEXT,
+    category TEXT,
+    kind TEXT NOT NULL,
+    text TEXT NOT NULL,
+    delivery_id TEXT NOT NULL UNIQUE,
+    created_seq INTEGER,
+    created_ts INTEGER NOT NULL,
+    expires_ts INTEGER,
+    precondition_json TEXT,
+    state TEXT NOT NULL DEFAULT 'pending',
+    lease_until INTEGER,
+    claimed_by TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    delivered_ts INTEGER,
+    delivered_channel TEXT,
+    stale_reason TEXT,
+    logged_ts INTEGER NOT NULL
+  )`,
+  // injections：我们注入过的文本哈希（P0-6 origin 登记），守护进程重启后还能认出回显。
+  `CREATE TABLE IF NOT EXISTS injections (
+    id INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    text_len INTEGER,
+    logged_ts INTEGER NOT NULL,
+    UNIQUE (session_id, hash)
+  )`,
+  // plans：每个会话最近一次提取到的计划（守护进程重启后恢复）。
+  `CREATE TABLE IF NOT EXISTS plans (
+    session_id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    items_json TEXT NOT NULL,
+    text TEXT,
+    explicit_allow_json TEXT,
+    updated_ts INTEGER NOT NULL,
+    logged_ts INTEGER NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_outbox_claim ON outbox (session_id, state, lease_until)",
+  "CREATE INDEX IF NOT EXISTS idx_outbox_state ON outbox (state, expires_ts)",
+  "CREATE INDEX IF NOT EXISTS idx_injections_session ON injections (session_id)",
   `CREATE INDEX IF NOT EXISTS idx_events_session ON events (run_id, session_id, seq)`,
   `CREATE INDEX IF NOT EXISTS idx_events_ts ON events (ts)`,
   `CREATE INDEX IF NOT EXISTS idx_events_model ON events (model)`,
@@ -223,5 +273,5 @@ export const DDL: string[] = [
 ];
 
 /** 参与保留期清理 / JSONL 导出的表（按依赖顺序）。 */
-export const TABLES = ["runs", "sessions", "events", "hits", "judge_calls", "decisions", "deliveries", "overrides", "adapter_health"] as const;
+export const TABLES = ["runs", "sessions", "events", "hits", "judge_calls", "decisions", "deliveries", "overrides", "adapter_health", "outbox", "injections", "plans"] as const;
 export type TableName = (typeof TABLES)[number];

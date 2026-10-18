@@ -28,13 +28,13 @@ describe("schema", () => {
   test("建表、版本号、WAL（文件库）；重复打开不报错", () => {
     const d = tmp();
     const s = new LogStore(join(d, "state.db"));
-    expect(s.schemaVersion).toBe(2);
+    expect(s.schemaVersion).toBe(3);
     expect((s.db.query("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode).toBe("wal");
     const tables = (s.db.query("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map((r) => r.name);
     for (const t of ["runs", "sessions", "events", "hits", "judge_calls", "decisions", "deliveries", "overrides", "adapter_health", "schema_meta"]) expect(tables).toContain(t);
     s.close();
     const s2 = new LogStore(join(d, "state.db"));
-    expect(s2.schemaVersion).toBe(2);
+    expect(s2.schemaVersion).toBe(3);
     s2.close();
   });
   test("日志库版本比程序新 → 拒绝打开", () => {
@@ -490,7 +490,7 @@ describe("schema v1 → v2 迁移", () => {
     old.run("INSERT INTO hits (run_id, session_id, seq, ts, rule_id, sev, logged_ts) VALUES (1,'s',1,1,'L1','M',1)");
     old.close();
     const s = new LogStore(path);
-    expect(s.schemaVersion).toBe(2);
+    expect(s.schemaVersion).toBe(3);
     const cols = (t: string) => (s.db.query(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((c) => c.name);
     expect(cols("hits")).toEqual(expect.arrayContaining(["severity", "danger_category", "danger_subject", "danger_reason"]));
     expect(cols("decisions")).toContain("outcome");
