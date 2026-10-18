@@ -1,0 +1,58 @@
+# ~/.agent-supervisor/config.yaml  （项目级 .supervisor/config.yaml 覆盖；计划文件 .supervisor/plan.md）
+mode: shadow            # shadow=只记录 | advise=只建议 | enforce=允许拦截
+
+judge:
+  base_url: http://127.0.0.1:3425/v1     # 任意 OpenAI 兼容端点
+  api_key_env: SUPERVISOR_API_KEY        # 只写环境变量名；也会读 ADVISOR_API_KEY
+  model: supervisor-judge                # 例：Magpie 意图路由组名（Opus/Astra/Kimi 等）
+  response_format: auto                  # auto | json_schema | json_object | none（auto 遇拒绝自动降级）
+  timeout_async_s: 30
+  timeout_sync_s: 15
+  request:                               # 原样透传
+    temperature: 0
+    max_tokens: 800
+    # extra_body: {}
+    # headers: {}
+  routes:                                # 可选：按情境换模型（先匹配先用）
+    # - when: { sync: true }
+    #   model: fast-judge
+    # - when: { rule: "T*" }
+    #   model: supervisor-judge
+  block_confidence: 0.8                  # 回放校准
+
+budgets:
+  judge_calls_per_session: 12
+  judge_cooldown_s: 60
+  rule_cooldown_steps: 10
+  max_consecutive_blocks: 2              # 不作用于 X2 与显式 plan 的 P1
+  max_stop_continues: 2
+  max_async_rewakes: 2
+
+model_profiles:                          # 按 agent 的模型名选阈值档；拿不到模型名用 default
+  - { match: "^(gpt-|o\\d|codex)", profile: gpt }
+
+profiles:
+  default: { L2_repeat: 4, S1_readonly: 12, T2_full_per_turn: 3, T4_probes: 6, T5_smoke_scripts: 3 }
+  gpt:     { L2_repeat: 4, S1_readonly: 12, T2_full_per_turn: 2, T4_probes: 4, T5_smoke_scripts: 2, verify_calls_per_turn: 12 }
+
+rules:
+  X2_dangerous: { action: block }        # Claude 上 CI/.env 类用 ask
+  S2_phase_stall: { mode: replay_only }
+  T1_rerun_unchanged: { block_on: 3 }
+
+plan:
+  source: auto                           # auto（agent 待办）| file（.supervisor/plan.md）| off   【暂定】
+
+test:
+  full: []       # 例: ["make test"]
+  fast: []       # 例: ["make test-fast"]
+  extra_patterns: []
+
+harness:
+  claude:   { enabled: true }
+  codex:    { enabled: true }
+  opencode: { enabled: true, api: v2 }   # 仅 V2
+
+runtime:
+  socket: ~/.agent-supervisor/sock       # UDS 0600；HTTP 需 ~/.agent-supervisor/token
+  autostart_daemon: true
