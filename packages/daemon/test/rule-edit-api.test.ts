@@ -30,6 +30,50 @@ const get = async (d: Daemon, p: string) => (await fetch(`http://localhost${p}`,
 const post = (d: Daemon, sid: string, extra: Record<string, unknown>) => fetch("http://localhost/v1/hook", { unix: d.socketPath!, method: "POST", body: JSON.stringify({ harness: "claude", payload: { session_id: sid, cwd: "/tmp", ...extra } }) });
 const ruleOf = async (d: Daemon, id: string) => (await get(d, "/v1/rules")).rules.find((r: any) => r.id === id);
 
+describe("POST /v1/config/validate 与 /v1/config 的 sources", () => {
+  const validateReq = (d: Daemon, body: string, ct = "text/yaml") => fetch("http://localhost/v1/config/validate", { unix: d.socketPath!, method: "POST", headers: { "content-type": ct }, body });
+  test("YAML 文本 / {yaml} 两种请求；返回 valid、diff、enablesBlocking；符合 schema；不应用、不写任何东西", async () => {
+    const { d, home } = await boot();
+    const r = await validateReq(d, "mode: enforce\nthresholds:\n  L2_repeat: 5\n");
+    expect(r.status).toBe(200);
+    const j = (await r.json()) as any;
+    expect(validate(schemaFor("ConfigValidation")!, j)).toEqual([]);
+    expect(j).toMatchObject({ valid: true, enablesBlocking: true });
+    expect(j.diff).toEqual([{ path: "mode", from: "shadow", to: "enforce" }, { path: "thresholds.L2_repeat", from: 4, to: 5 }]);
+    const j2 = (await (await validateReq(d, JSON.stringify({ yaml: "thresholds:\n  L2_repeat: 5\n" }), "application/json")).json()) as any;
+    expect(j2.valid).toBe(true);
+    // 没有任何副作用
+    expect(d.cfg.mode).toBe("shadow");
+    expect(d.cfg.thresholds.L2_repeat).toBe(4);
+    expect(existsSync(join(home, "rules.local.json"))).toBe(false);
+    expect(existsSync(join(home, "rules-edits.jsonl"))).toBe(false);
+  });
+  test("无效草稿仍是 200（valid:false + errors）；请求形态错误才是 4xx", async () => {
+    const { d } = await boot();
+    expect(((await (await validateReq(d, "mode: yolo\n")).json()) as any)).toMatchObject({ valid: false });
+    expect((await validateReq(d, "x", "application/octet-stream")).status).toBe(415);
+    expect((await validateReq(d, "{oops", "application/json")).status).toBe(400);
+    expect((await validateReq(d, JSON.stringify({ nope: 1 }), "application/json")).status).toBe(400);
+    expect((await validateReq(d, "a: " + "b".repeat(80_000))).status).toBe(413);
+  });
+  test("/v1/config 带 sources：编辑规则后对应叶子变成 rules.local，其余 default / configured", async () => {
+    const { d } = await boot(undefined, { thresholds: { L3_repeat: 5 } });
+    let c = await get(d, "/v1/config");
+    expect(validate(schemaFor("ConfigView")!, c)).toEqual([]);
+    expect(c.sources["thresholds.L3_repeat"]).toBe("configured");
+    expect(c.sources["thresholds.L2_repeat"]).toBe("default");
+    await put(d, "L2", { thresholds: { repeat: 6 } });
+    c = await get(d, "/v1/config");
+    expect(c.sources["thresholds.L2_repeat"]).toBe("rules.local");
+    expect(c.config.thresholds.L2_repeat).toBe(6);
+    expect(c.config.mode).toBe("shadow");
+  });
+  test("HTTP 无 token → 401", async () => {
+    const { d } = await boot(undefined, {}, 0);
+    expect((await fetch(`http://127.0.0.1:${d.port}/v1/config/validate`, { method: "POST", headers: { "content-type": "text/yaml" }, body: "" })).status).toBe(401);
+  });
+});
+
 describe("PUT /v1/rules/{id}", () => {
   test("改阈值：200，返回新的规则视图（符合 schema）、变更清单、appliesTo=new_sessions；GET /v1/rules 马上反映；写出 rules.local.json（0600）和审计行", async () => {
     const { d, home } = await boot();

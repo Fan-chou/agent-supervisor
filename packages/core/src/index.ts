@@ -29,5 +29,6 @@ export * from "./store/queries-ui.ts";
 export * from "./rules.ts";
 export * from "./rule-edit.ts";
 export * from "./config-view.ts";
+export * from "./config-validate.ts";
 export * from "./store/runtime.ts";
 export * from "./delivery.ts";

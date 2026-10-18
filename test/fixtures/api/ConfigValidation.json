@@ -1,0 +1,13 @@
+{
+  "schema": "ConfigValidation",
+  "values": [
+    {
+      "valid": true,
+      "errors": [],
+      "warnings": ["这份草稿把 mode 设为 enforce：应用后 block/ask/Stop 续跑会真的生效（OpenCode 在核对通过前仍只观察）"],
+      "diff": [{ "path": "mode", "from": "shadow", "to": "enforce" }, { "path": "thresholds.L2_repeat", "from": 4, "to": 5 }],
+      "enablesBlocking": true
+    },
+    { "valid": false, "errors": ["YAML 解析失败：bad indentation"], "warnings": [], "diff": [], "enablesBlocking": false }
+  ]
+}

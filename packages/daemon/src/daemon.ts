@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   Engine, LogStore, Outbox, StoreSink, beginRun, truncate, checkPrecondition, computeWsFingerprint, createJudgeClient, expandHome, loadInjectionHashes, loadPlan, parsePlanMd, saveInjection, savePlan, wsToString,
-  outcomeOf, applyRuleEdits, loadRuleEdits, ruleViews, saveRuleEdits, validateRuleEdit, type Config, type RuleEdits, type Decision, type Delivery, type JudgeFn, type OutboxKind, type Precondition, type StepRecord, type JudgeClient,
+  outcomeOf, applyRuleEdits, loadRuleEdits, ruleViews, saveRuleEdits, validateConfigDraft, validateRuleEdit, type Config, type RuleEdits, type Decision, type Delivery, type JudgeFn, type OutboxKind, type Precondition, type StepRecord, type JudgeClient,
 } from "@sv/core";
 import { normalizeClaudeHook, type ClaudeHookPayload } from "../../adapter-claude/src/index.ts";
 import { handleCompare, handleQuery } from "./query-api.ts";
@@ -226,7 +226,30 @@ export class Daemon {
       if (req.method === "GET" && url.pathname === "/v1/status") return json(200, this.status());
       // 前端的只读查询（不在 hook 路径上；出错只是这一次查询 500，被 catch 住）
       if (req.method === "GET" && url.pathname === "/v1/stream") return this.openStream(req, url, viaUnix, server);
-      const ruleMatch = /^\/v1\/rules\/([A-Za-z0-9]+)$/.exec(url.pathname);
+      if (req.method === "POST" && url.pathname === "/v1/config/validate") {
+        // 只校验、不应用、不写任何东西。草稿是 YAML 文本（content-type: text/yaml）或 {"yaml": "..."}。
+        const bad = (status: number, code: string, message: string) => json(status, { error: { code, message, retryable: false } });
+        const ct = (req.headers.get("content-type") ?? "").toLowerCase();
+        const text = await req.text();
+        if (text.length > 70_000) return bad(413, "too_large", "草稿太大");
+        let yaml: string;
+        if (ct.startsWith("application/json")) {
+          try {
+            const j = JSON.parse(text) as { yaml?: unknown };
+            if (typeof j?.yaml !== "string") return bad(400, "bad_request", "需要 {\"yaml\": \"...\"}");
+            yaml = j.yaml;
+          } catch {
+            return bad(400, "bad_request", "body 不是合法 JSON");
+          }
+        } else if (ct.startsWith("text/yaml") || ct.startsWith("application/yaml") || ct.startsWith("text/plain")) yaml = text;
+        else return bad(415, "unsupported_media_type", "content-type 需要是 text/yaml 或 application/json");
+        try {
+          return json(200, validateConfigDraft(yaml, this.cfg));
+        } catch (err) {
+          return bad(500, "validate_failed", String((err as Error)?.message ?? err).slice(0, 200));
+        }
+      }
+      const ruleMatch =/^\/v1\/rules\/([A-Za-z0-9]+)$/.exec(url.pathname);
       if (req.method === "PUT" && ruleMatch) {
         // 唯一的写接口：除了 UDS/token 鉴权，还要求 JSON 内容类型，并拒绝带 Origin 的请求（浏览器跨站请求一定带 Origin）
         const bad = (status: number, code: string, message: string) => json(status, { error: { code, message, retryable: false } });
@@ -250,7 +273,7 @@ export class Daemon {
         }
       }
       try {
-        const q = handleQuery(this.store.db, req.method, url, this.now(), this.cfg, new Set(Object.keys(this.ruleEdits))) ?? handleCompare(this.store.db, req.method, url);
+        const q = handleQuery(this.store.db, req.method, url, this.now(), this.cfg, new Set(Object.keys(this.ruleEdits)), this.baseCfg) ?? handleCompare(this.store.db, req.method, url);
         if (q?.contentType) return new Response(String(q.body), { status: q.status, headers: { "content-type": q.contentType, "x-sv-protocol": String(PROTOCOL) } });
         if (q) return json(q.status, q.body);
       } catch (err) {
