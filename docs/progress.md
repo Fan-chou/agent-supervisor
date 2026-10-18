@@ -180,4 +180,16 @@
 **测试结果**：`bun test` 1050 通过 / 0 失败；`tsc --noEmit` 无错误。不联网，不读 `~/.codex`、`~/.claude`、`.env`、`~/.config/opencode`。
 
 **还剩什么（不依赖 Jack）**：`/v1/replays*`、`/v1/eval*` 的只读结果接口（回放/评测仍由命令行发起）；`/v1/runs/{id}`；Go 侧结构体生成与对应的黄金样例测试（MyGo 项目）；hook 自动拉起守护进程、mode 热加载（一直按判断不做）；`rules.local.json` 目前只有 API 能写，没有命令行入口。
-**等 Jack**：OpenCode 三项（取类型还是放行文档站、探针是否启用、`opencodeEnforce` 开关方式）——OpenCode 继续只观察、钩子仍未核实；规则编辑的生效范围是否接受「只对新会话生效」（也可以改成对在跑会话立即生效，但会话中途阈值会跳变）；是否要 X2 之外的规则也设为不可停用（例如 P1 显式计划拦截）。
+**等 Jack**：OpenCode 三项（取类型还是放行文档站、探针是否启用、`opencodeEnforce` 开关方式）——OpenCode 继续只观察、钩子仍未核实；规则编辑的生效范围是否接受「只对新会话生效」（也可以改成对在跑会话立即生效，但会话中途阈值会跳变）；是否要 X2 之外的规则也设为不可停用（例如 P1 显式计划拦截）。（上面三项里 OpenCode 的部分已被 Jack 23:57/23:58 的决定取代，见下一节。）
+
+## run11：OpenCode 类型核对 + opencodeEnforce 开关 + 剩余只读接口（完成；真机验证未做）
+**决定**（decisions #105–111）：类型已 vendor 到 `docs/vendor/opencode-plugin-2.0.32/`，不再抓文档站；探针获批；`opencodeEnforce` 开关委托实现；规则编辑是否作用于在跑会话、P1 是否 protected 记为「等 Jack」（#108），未擅自改。
+
+**1. 类型核对（`docs/opencode-verify.md` 已重写，#109）**：12 条假设里，钩子名和事件字段大体成立，但发现并修了 5 处与假设不符：①hook 注册返回 `Promise<Registration>`（原先同步忽略）→ `setup` async、await 注册、返回清理函数；②`context.system` 是 `Array<SystemPart>` 不是字符串数组 → 只在形态可确认时才注入；③工具事件字段是 `id`/`input`、没有 `directory`；④有专门的 `session.hook("prompt")` → 新增 `event=prompt`，作为 user 消息入口；⑤`PermissionEvaluation.source.id` 是工具调用 id → 本地 X2 按它精确绑定调用。**发现**：`execute.before` 可以以 `Tool.Error` 失败（官方拒绝通道，不依赖 evaluate 顺序），暂未使用。**仍未核实**：`Permission.Effect` 取值、`SystemPart`/`Message`/`Location`/`PromptInput` 形态、触发顺序、是否每次调用都触发 evaluate、interrupt 事件、`session.prompt` 参数、插件在 OpenCode 里怎么登记——引用的类型包（`@opencode/schema`、`@opencode/ai`、`@opencode/client`）没有 vendor，清单 §4 列了需要补哪些。
+**2. `opencodeEnforce` 开关（#110）**：`sv opencode-enforce status|on|off`；默认 OFF；`on` 要求最新 opencode-report 的机器门槛全过（五个钩子注册、≥5 次完整调用、evaluate 全在 before 之后、写类工具都触发 evaluate、探针 deny 生效、无异常、样本 ≤14 天）**并且** `--approved-by`；每次切换（含拒绝、noop）写 `opencode-enforce.log.jsonl`，日志写不进去就不改状态；守护进程新建 opencode 会话时读 `opencode-enforce.json`（损坏/缺失=关），不用重启。真正拦截要三个条件：全局 `mode=enforce` + 开关 ON + 插件进程 `SV_OPENCODE_ENFORCE=1`。`sv opencode-report` 输出新增「机器门槛」一节。
+**3. 探针（#106）**：代码和清单已就绪（`SV_OPENCODE_PROBE`，清单 §3 步骤 4）。**我没有在真机上跑**：需要 Jack 决定插件放哪、怎么登记（会碰 `~/.config/opencode`，按约束必须先问 Jack）。
+**4. 剩余只读接口（#111）**：`/v1/runs/{id}`、`/v1/replays[/{id}]`、`/v1/eval/reports`（均只读，无 POST/DELETE）；`sv rules show|set|reset` 命令行入口（与 API 同一套校验和文件），守护进程在新会话前自动重读 `rules.local.json`。
+**测试结果**：`bun test` 1076 通过 / 0 失败；`tsc --noEmit` 无错误。不联网，不读 `~/.codex`、`~/.claude`、`.env`、`~/.config/opencode`，没碰 session ab4727f2。
+
+**还剩什么（不依赖 Jack）**：Go 侧结构体生成和对应测试（MyGo 项目）；`Tool.Error` 拒绝通道（等类型补齐再评估）；interrupt 事件订阅（等 `@opencode/client` 的事件模型）；hook 自动拉起守护进程、mode 热加载（一直按判断不做）。
+**等 Jack**：①真机核对：把 `@opencode/schema`/`@opencode/ai`/`@opencode/client`（同为 2.0.32）的 `.d.ts` 拷到 `docs/vendor/`，可以不用真机就定下大部分标 ? 的项；②插件放哪、怎么登记到 OpenCode（我不碰 `~/.config/opencode`），然后一起按清单 §3 跑（含探针）；③规则编辑是否立即作用于在跑会话（现在只新会话）；④P1 是否也 protected（现在只有 X2）。
