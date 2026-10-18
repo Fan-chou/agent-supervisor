@@ -514,7 +514,7 @@ agent-supervisor/
 | `judge_calls` | 每次 judge 调用（重试合并成一行） | `rule_ids, sync, route_model, model, status(ok/parse_fail/timeout/error), verdict, confidence, category, message_raw, latency_ms, prompt_tokens, completion_tokens, cached_tokens, cost_usd, retries, http_requests, format_level, format_downgraded, repairs_json, error, request_json, response_json`（请求/响应均脱敏） |
 | `decisions` | 策略对每个命中的决定 | `hit_id, judge_call_id, action(log/advise/block/ask/stop_continue/ignore/judge_off/skip), applied, mode, reason, suppressed_by`（结构化抑制/降级代码）`, message, would_block_if_verified, at_next_pre, counted` |
 | `deliveries` | 一条消息的投递结果 | `decision_id, rule_id, channel`（PreToolUse/PostToolBatch/Stop/asyncRewake…；回放里带 `replay:` 前缀）`, delivered, delivered_ts, expired_reason, text, watch_json, complied, compliance_note` |
-| `overrides` | 用户覆盖 | `kind`（`sv_off` / `sv_quiet` / `manual_allow` / `manual_reject` / `mark_false_positive` / `mark_useful`）`, target_type(session/hit/decision/judge_call), target_id, actor, note` |
+| `overrides` | 用户覆盖 | `kind`（`sv_off` / `sv_quiet` / `sv_unmute` / `manual_allow` / `manual_reject` / `mark_false_positive` / `mark_useful` / `mark_reviewed`）`, target_type(session/hit/decision/judge_call), target_id, actor, note` |
 | `adapter_health` | 适配器 → 守护进程的连接成功/失败 | `harness, ok, error`（§1 的「静默失效」监控） |
 
 - `suppressed_by` 取值：`user_off, user_quiet, observe_only, cooldown, category_dedupe, l_once, consecutive_cap, unverified_ws, judge_merged, judge_budget, judge_cooldown, paused, fail_open, stop_budget, block_downgraded`。

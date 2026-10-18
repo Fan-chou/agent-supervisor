@@ -59,3 +59,14 @@
 
 ## 前端设计文档（完成，仅文档）
 `docs/frontend-design.md`：按更新后的 CLAUDE.md，框架已定为 **MyGo native UI**，因此没有做 native / Naive UI 的方案对比，也没有「请 Jack 确认」那一句。内容：信息架构；5 个页面（实时会话、事件与事故时间线、Judge 裁决、规则与配置、回放结果）的 ASCII 线框与每页的空/错误状态；守护进程要提供的 API 表（UDS / HTTP+token，协议版本头，v1 唯一的写接口是会话静音）；以 JSON Schema 为唯一来源、Go 结构体生成、共享黄金样例的类型复用方案；SSE（HTTP）/ NDJSON（UDS）实时推送，`since` 断线续传与 `reset`；UI 状态机与重连退避、Go 侧 Store 与 10 Hz 合并；可访问性（并把「GPU 自绘界面可能没有系统无障碍树」写成风险项）；隐私展示规则；以及**需在 MyGo 上验证的清单**（表格虚拟化、自绘图形、文本选择复制、输入法、系统无障碍、焦点管理、缩放与深浅色、线程模型、通知、体积与内存、打包）。**没有编造 MyGo 的组件名或 API，也没有给出体积/内存数字**（本阶段不联网、未实测）。
+
+## 监督者（Jack）的追加决定（M2 收尾后处理）
+1. **前端只用 MyGo native UI**：CLAUDE.md 的改动已单独提交（`docs: frontend is MyGo native UI only`）。
+2. **`rm -rf` 口径**：Jack 同意窄化规则，decisions #21 标为已确认，design §5.5 同步。
+3. **不要任何模型特定规则**：删除 GPT/默认 profile 与 `model_profiles`（代码、`config.example.yaml`、design §6、测试），所有规则只有一套 `thresholds`；模型名只记录到日志，测试断言「换任意模型名，命中时间线完全一致」；decisions #16 作废，新增 #41（统一后的初值）；design 增加 v2.1 changelog。
+4. **日志与可观测性**（design §18，decisions #42–45）：`packages/core/src/store/`——schema（runs / sessions / events / hits / judge_calls / decisions / deliveries / overrides / adapter_health，schema 版本号）、写入（`LogSink` 在一个事务里写事件、命中（含规则、指纹 key、证据、观测值与当时阈值）、judge 调用（模型、延迟、token、重试、response_format 降级、修复、脱敏后的请求/响应）、决策（含结构化的抑制/降级代码）、投递（通道、是否送达、遵从）、用户覆盖（`#sv off/quiet`、手动放行/驳回、标误报/有用））、保留期（按写入时间清理，人工标注过的命中不清理）、可选 JSONL 镜像与导出、fail-open。命令：`sv replay --log --label --set`（回放写库并记录当时的阈值集合）、`sv stats`（`--by rule|model|judge|session|runs`、`--compare A,B`、text/json/csv）、`sv mark`、`sv override`、`sv explain`、`sv export`、`sv prune`。可以产出按规则的命中率/误报率/遵从率统计，并通过 replay + `--set` 对比调阈值。测试里发现并修了两个泄漏/误伤：事件 `body_json` 与命中 `detail_json` 最初没有脱敏；`redact` 会把 `prompt_tokens: 1200` 当密钥抹掉。
+5. **前端文档第二版**（`docs/frontend-design.md`）：MyGo native；7 个视图与日志表一一对应——实时会话（按项目目录分组、可展开子 agent、多选批量）、事件与事故时间线、Judge 裁决（Magpie Usage 风格：顶部筛选 + 日期区间 + 搜索 + CSV 导出 + 含/不含缓存合计；点行进请求详情页：状态、错误类型、上游返回、数据来源、关联会话文件、可复制命令）、Judge 路由（Magpie Routing 风格：每个用途当前路由状态与「为什么改道」）、规则配置（只读 + 校验）、规则统计与误报标注、回放结果；每个视图写明调用的 API 端点；已去掉所有「待确认」注记，MyGo 相关假设集中在「需在 MyGo 上验证的清单」（含恢复会话命令模板需在 Jack 机器上核对）。
+
+**测试结果**：`bun test` 671 通过 / 0 失败（19 个文件）；`tsc --noEmit` 无错误。所有测试不发网络请求。
+
+**仍未做**：outbox 原子领取、守护进程、`--judge=live`、sv-hook、Codex/OpenCode 的 render 契约测试、用真实 transcript 校准、30 个会话的人工标注（需要 Jack 的数据）。新增日志只有「写入 + 查询 + CLI」的最小版；`adapter_health` 与 `live` 类型的 run 要等 M3 的守护进程来写。

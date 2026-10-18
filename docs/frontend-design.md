@@ -1,349 +1,458 @@
-# agent-supervisor 前端设计（第一版，仅文档）
+# agent-supervisor 前端设计（第二版，仅文档）
 
-日期：2026-10-18（UTC+8）。状态：设计稿，本阶段**不写前端代码**。依据：`docs/design.md`（v2）、`docs/decisions.md`、`CLAUDE.md`。
+日期：2026-10-18（UTC+8）。状态：设计稿，本阶段**不写前端代码**。依据：`docs/design.md`（v2.1，尤其 §18 日志与可观测性）、`docs/decisions.md`、`CLAUDE.md`。第二版相对第一版的变化：视图与 §18 的日志表一一对应；信息密度和交互参考 Magpie（列表 + 顶部筛选 + CSV 导出 + 合计 + 详情页；按项目分组的会话页；路由状态页）；新增「规则统计 / 误报标注」和「Judge 路由」视图；写入类操作扩展到「标注」（标误报/有用、手动放行/驳回、静音），配置仍只读。
 
-## 0. 已定的前提与边界
-- **框架：MyGo native UI**（egoist/mygo，https://mygo.egoist.dev ，纯 Go、GPU 绘制、无 webview）。这是 Jack 已经定下的，本文不做方案对比。
-- UI 是守护进程（Bun/TS，`supervisord`）的**客户端**，只通过本地鉴权 API 通信：UDS（`~/.agent-supervisor/sock`，0600）优先，HTTP（只绑 127.0.0.1，`Authorization: Bearer <~/.agent-supervisor/token>`）备选。UI 不直接读 SQLite、不直接读 transcript。
-- **本文不假设 MyGo 的任何具体组件名或 API**（这一阶段不联网，也没有实测过）。凡是依赖 MyGo 能力的地方，都放进 §10「需在 MyGo 上验证的清单」，线框只描述信息和交互，不描述具体控件类。
-- **第一版 UI 只读**，唯一的写操作是「静音/恢复某个会话」（等价于 prompt 里的 `#sv quiet|off`）。改配置（尤其是 `mode: enforce`）仍然通过编辑 `~/.agent-supervisor/config.yaml`；UI 只做「查看生效配置 + 校验草稿」。理由：避免在图形界面里一键打开拦截；写配置放到 UI 第二期，并且要二次确认。
-- 数据一律是**脱敏后**的（design §10、P0-7）：守护进程在落盘和对外输出时已经过 `redact()`，UI 不应该有任何路径拿到原文；UI 自己的「复制」也只复制屏幕上显示的（脱敏）文本。
+## 0. 前提与边界
+- **框架：MyGo native UI**（egoist/mygo，https://mygo.egoist.dev ，纯 Go、GPU 绘制、无 webview）。这是既定决定，本文只在这个前提下设计。
+- UI 只通过 TS core 守护进程（`supervisord`）的**本地鉴权 API**通信：UDS（`~/.agent-supervisor/sock`，0600）优先，或 127.0.0.1 HTTP + token（`~/.agent-supervisor/token`，0600）。UI 不读 SQLite、不读 transcript、不读 `.env`。
+- **本文不假设 MyGo 的任何具体组件名或 API**（本阶段不联网、没有实测）。线框只描述信息与交互；依赖 MyGo 能力的地方集中列在 §11「需在 MyGo 上验证的清单」。
+- **写操作的范围**：标注类（标误报/有用、手动放行/驳回某次决策、会话静音/恢复、批量标注已复盘）和「新建回放」。**配置本身只读**（查看生效配置 + 校验草稿，不应用）；改 `mode`/阈值仍通过编辑 `config.yaml` 或 `sv replay --set` 试算。
+- 所有展示的命令、输出、prompt、judge 请求/响应、消息都是**脱敏后**的文本（守护进程落盘和对外输出时已过 `redact()`）。UI 没有「显示原文」开关；复制出的文本与屏幕一致。
 
 ## 1. 信息架构
 ```
-┌ 顶栏（始终可见）：守护进程连接状态 · mode 徽标 · 适配器连接失败数 · judge 健康 · 协议版本
+┌ 顶栏（始终可见）：守护进程连接 · mode 徽标 · 适配器连接失败数 · judge 健康 · 日志库状态 · 协议版本
 ├ 侧栏
-│   1. 实时会话          Live Sessions
-│   2. 事件与事故        Events & Incidents（按会话进入，也可全局检索）
-│   3. Judge 裁决        Verdicts
-│   4. 规则与配置        Rules & Config（只读 + 校验）
-│   5. 回放结果          Replay & Eval
-└ 底栏：最近一次错误 / 后台任务（回放任务）进度
+│   1. 实时会话            Sessions（按项目目录分组，含子 agent，多选批量）
+│   2. 事件与事故          Events & Incidents（时间线）
+│   3. Judge 裁决          Judge Calls（请求列表 + 详情页）
+│   4. Judge 路由          Judge Routing（各用途当前走哪个模型、为什么改道）
+│   5. 规则配置            Rules & Config（只读 + 校验）
+│   6. 规则统计与标注      Rule Stats & Review（命中率/误报率/遵从率，误报标注）
+│   7. 回放结果            Replay & Eval（运行列表、对比、评测报告）
+└ 底栏：后台任务（回放）进度 · 最近错误
 ```
-- 页面之间的跳转关系：实时会话 →（点会话）→ 事件与事故（带会话过滤）→（点某次 judge 调用）→ Judge 裁决详情；规则与配置 →（点规则）→ 回放结果里该规则的命中；回放结果 →（点命中）→ 事件与事故（回放视图，只读）。
-- **全局状态在顶栏里而不是藏在设置页**：design §1 要求 `sv status` 显示最近 N 分钟内适配器连不上守护进程的次数，避免监督静默失效——这个数字必须一直看得见。
+页面跳转：会话 →（点会话）→ 事件与事故 →（点命中）→ 命中详情（explain）→（点 judge）→ Judge 详情；规则统计 →（点规则）→ 该规则的命中列表 → 命中详情；回放结果 →（点运行）→ 该运行的规则统计 / 会话时间线（回放视图）。
+**全局状态放顶栏**：适配器连接失败次数（design §1，防止监督静默失效）、当前 `mode`（shadow/advise/enforce）、judge 最近失败、日志库大小与保留期。
 
-### 1.1 术语对照（与 core 类型一致）
-| UI 里的词 | 数据来源 |
+### 1.1 日志表 → 视图 对照（§18）
+| 日志表 | 主要用在 |
 |---|---|
-| 会话 | `SessionSummary`（sessionId、harness、model、cwd、profile、mode、silenced） |
-| 事件 | `Event`（phase、tool、shell、edit、result、origin、seq、ts）；展示时按 pre/post 合并成「一次调用」 |
-| 命中 | `Hit`（ruleId、sev L/M/H、category、evidence、detail） |
-| 处置 | `Decision`（action：log/advise/block/ask/stop_continue/ignore/judge_off/skip；applied；reason） |
-| 事故 | 把同一会话里相邻、同类（category）、相同指纹的命中聚成一组；组内按时间排序 |
-| 裁决 | `Verdict`（judge 的 verdict/confidence/category/message_to_agent/reason/evidence_steps、model、延迟、repairs、是否 parse_fail） |
+| `runs` | 回放结果（运行列表、对比）、所有页面的「数据来源」筛选 |
+| `sessions` | 实时会话（分组、子 agent）、事件与事故的头部 |
+| `events` | 事件与事故（时间线左栏/详情） |
+| `hits` | 事件与事故（命中子行）、规则统计与标注、命中详情 |
+| `decisions` | 命中详情（处置与抑制原因）、规则统计（处置分布） |
+| `judge_calls` | Judge 裁决列表/详情、Judge 路由、规则统计的 judge 部分 |
+| `deliveries` | 命中详情（送达与遵从）、规则统计（遵从率） |
+| `overrides` | 实时会话（静音状态）、规则统计与标注（误报/有用）、命中详情（标注历史） |
+| `adapter_health` | 顶栏适配器连接失败数、实时会话页的空/错误状态 |
 
-## 2. 页面 1：实时会话
-**目的**：一眼看出现在有哪些会话在跑、哪些被监督盯上了、监督本身是否健康。
+### 1.2 通用交互约定（借鉴 Magpie 的列表页）
+- **列表页结构一致**：顶部筛选条 → 合计条 → 表格 → 底部分页/加载更多。筛选条的值写进窗口标题栏下的「筛选摘要」，可一键复制为 `sv stats …` 命令（方便回到命令行复盘）。
+- **日期区间选择器**：预设（今天 / 近 24 小时 / 近 7 天 / 近 14 天 / 本次运行）+ 自定义起止；所有列表页共用，选择记在页面状态里。
+- **搜索框**：对当前列表的主要文本列做子串匹配（规则 id、命令摘要、会话 id、目录、模型、错误类型）。
+- **CSV 导出**：每个列表页都有「导出 CSV」，导出**当前筛选结果**（不是当前页），服务端生成（`…/export.csv`），已脱敏；同时给「复制为 JSON」。
+- **合计条**：显示当前筛选下的汇总；带「含/不含 …」切换（见各页）。
+- **点一行 → 详情页**（整页或右侧抽屉，由 MyGo 能力决定，§11 第 13 项）；详情页顶部有「上一条/下一条」。
+- **多选**：表格左侧复选框，Shift 连选，顶部出现批量操作条。
+- 所有数字列右对齐，时间列统一为本地时区 `MM-DD HH:mm:ss`，悬停显示 ISO 与毫秒。
+
+## 2. 视图 1：实时会话（Sessions）
+**目的**：一眼看出哪些会话在跑、哪些被盯上了、监督本身是否健康；按**项目目录分组**，子 agent 可展开，支持多选批量操作。
 
 ```
-┌ 实时会话 ─────────────────────────────────────────────────────────────────────┐
-│ 过滤：[全部 harness ▾] [仅有告警 ☐] [含已结束 ☐]            搜索：[路径/模型/id_____] │
-├────────────────────────────────────────────────────────────────────────────────┤
-│ ● 状态  harness  模型              目录              调用  命中(L/M/H)  最近动作        静音 │
-│ ● live  claude   claude-sonnet-5-5 ~/dev/agent-sup…   132   5 / 2 / 0    advise 2m前       –  │
-│ ● live  codex    gpt-5-codex       ~/dev/api          57   9 / 3 / 1    block  41s前   quiet │
-│ ○ idle  claude   claude-opus-5-5   ~/dev/web          210  1 / 0 / 0    –                 –  │
-│ ✕ ended codex    gpt-5-codex       ~/dev/tools        88   2 / 1 / 0    advise 1h前       –  │
-├────────────────────────────────────────────────────────────────────────────────┤
-│ 选中：codex / gpt-5-codex  profile=gpt  mode=shadow                                │
-│  计划：agent 待办（自动提取）· 当前步骤「修改 src/auth/login.py」                    │
-│  预算：judge 3/12 · 连续拦截 1/2 · Stop 续跑 0/2 · 冷却中规则 T1                    │
-│  最近 5 条命中：+00:35 T1 L 建议 …  +00:50 T1 H 拦截（shadow，未生效） …            │
-│  [打开事件与事故]  [静音 quiet]  [静音 off]                                         │
-└────────────────────────────────────────────────────────────────────────────────┘
+┌ 实时会话 ────────────────────────────────────────────────────────── [导出 CSV] [刷新 ●实时] ┐
+│ 状态 [live idle ended ▾]  harness [全部▾]  被监督模型 [全部▾]  日期 [近 24 小时 ▾]  搜索 [____] │
+│ 合计：项目 4 · 会话 17（live 2）· 调用 1,284 · 命中 L 61 / M 18 / H 3 · 已静音 1              │
+├──────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ☐  状态  会话/项目                    harness  模型              调用  命中(L/M/H) 最近处置      静音 │
+│ ▾ ~/dev/agent-supervisor  (5 个会话 · live 2)                                  合计 412  21/6/1     │
+│ ☐  ● live  claude-7f3a…               claude   claude-sonnet-5-5   132   5 / 2 / 0   advise 2m前  –  │
+│ ☐    ▸ 子 agent ×3（Explore, Plan, general）                                                       │
+│ ☐  ● live  codex-b21c…                codex    gpt-5-codex          57   9 / 3 / 1   block* 41s前 quiet │
+│ ☐  ○ idle  claude-2e90…               claude   claude-opus-5-5     210   1 / 0 / 0   –            –  │
+│ ▸ ~/dev/api  (3 个会话)                                                        合计 188  12/4/0       │
+│ ▸ ~/dev/web  (9 个会话 · 已结束 9)                                             合计 684  28/8/2       │
+├──────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 已选 2 项： [静音 quiet] [静音 off] [恢复] [标记已复盘] [用选中会话新建回放] [导出所选 CSV]       │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+ * block 在 shadow 模式下标「未生效」；所有「拦截/建议」都带 applied 标记，避免误以为已经拦住了。
 ```
-- 列：状态（live=最近 60 秒有事件；idle=有会话但超过 60 秒无事件；ended=收到 session 结束或超过 30 分钟无事件）、harness、模型、目录（缩写，悬停显示全路径）、已完成调用数、L/M/H 命中数、最近一次处置（动作 + 相对时间）、静音状态。
-- 排序默认：有 H 命中的在前，其次最近活动时间。
-- **mode 与生效性要显眼**：`shadow` 下所有「拦截」都标注「未生效（shadow）」；`applied=false` 的处置在任何页面都带这个标记，避免误以为已经拦住了。
-- 静音按钮：`POST /v1/sessions/{id}/mute`，需要确认对话框说明「X2 本地规则不受 `#sv off` 影响」。
+- **分组**：按 `sessions.project`（会话的工作目录，家目录缩写为 `~`）分组；分组行可折叠，显示组内会话数、live 数和命中合计。组内按最近活动时间排序，含 H 命中的在前。
+- **子 agent**：`parent_session_id` 非空的会话归到父会话下，点 `▸ 子 agent ×N` 展开；子 agent 的命中计入父会话合计，但展开后可单独看。
+- **状态定义**：live = 最近 60 秒有事件；idle = 超过 60 秒无事件；ended = 收到结束信号或超过 30 分钟无事件。
+- **列**：状态、会话 id（缩写）、harness、被监督 agent 的模型（**只展示，不参与判定**）、已完成调用数、L/M/H 命中数、最近一次处置（动作 + 相对时间 + 是否生效）、静音状态（`#sv off/quiet` 或 UI 静音）。
+- **批量操作**：静音 quiet / off、恢复、标记已复盘（写一条 `overrides`，仅用于筛选「未复盘」）、用选中会话新建回放（跳到视图 7 并预填路径）、导出所选 CSV。静音确认框说明「X2 本地规则不受 `#sv off` 影响」。
+- 选中单个会话时右侧出现**会话摘要**：计划（来源、当前步骤）、预算用量（judge n/12、连续拦截 n/2、Stop 续跑 n/2、冷却中的规则）、最近 5 条命中、`sv replay <源文件>` 与恢复会话命令（可复制，见 §4 详情页）。
 
-**本页专有状态**
+**调用的 API**：`GET /v1/sessions?group=project&state=&harness=&model=&q=&since=&until=`（分组结果，含 L/M/H 计数、最近处置、静音）、`GET /v1/sessions/{id}`（摘要）、`GET /v1/sessions/{id}/children`（子 agent）、`POST /v1/sessions/batch`（`{ids, action: mute_quiet|mute_off|unmute|mark_reviewed}`）、`GET /v1/sessions/export.csv`（同筛选条件）、`GET /v1/stream`（`session|hit|decision|status` 增量）。
+
 | 状态 | 表现 |
 |---|---|
-| 空（没有任何会话） | 「还没有会话。监督已就绪，等待 Claude Code / Codex 的第一次工具调用。」下方列出各适配器的最近连接时间和安装提示（`sv install` 的位置，不自动执行） |
-| 过滤后为空 | 「没有符合过滤条件的会话」+ 一键清除过滤 |
-| 只有 ended | 默认隐藏，提示「有 N 个已结束会话」 |
-| 守护进程离线 | 整页变灰，顶栏红色；显示最后一次成功数据的时间，保留旧数据只读；按钮「重试连接」「如何启动」（显示 `sv start` / launchd 提示） |
-| 协议版本不一致 | 顶栏黄色「守护进程协议 vX，UI 支持 vY」；降级为只读列表，禁用静音 |
+| 空（没有任何会话） | 「还没有会话。监督已就绪，等待 Claude Code / Codex 的第一次工具调用。」下方列出各适配器最近连接时间、`adapter_health` 失败次数和 `sv install` 的提示（UI 不执行任何命令） |
+| 过滤后为空 | 「没有符合条件的会话」+ 一键清除筛选 |
+| 只有已结束会话 | 默认隐藏，提示「另有 N 个已结束会话」 |
+| 守护进程离线 | 整页变灰，顶栏红色，显示最后一次成功数据的时间；保留旧数据只读；「重试连接」「如何启动」 |
+| 协议版本不一致 | 顶栏黄色提示；降级为只读列表，禁用批量操作 |
+| 批量操作部分失败 | 结果条列出失败项与原因，成功项已生效，不回滚 |
 
-## 3. 页面 2：事件与事故时间线
-**目的**：看一个会话里发生了什么、哪些规则命中、监督做了什么处置——也是回放结果的详情视图（只读）。
+## 3. 视图 2：事件与事故时间线（Events & Incidents）
+**目的**：看一个会话里发生了什么、哪些规则命中、监督做了什么；也是回放结果的详情视图（只读）。
 
 ```
-┌ 会话 codex-overtest · gpt-5-codex · profile gpt · shadow ─────────── [实时跟随 ●] [回到底部] ┐
-│ 过滤：级别 [L M H ▾]  规则 [全部 ▾]  处置 [全部 ▾]  类型 [调用|提示|Stop|中断 ▾]  搜索 [______] │
-├───────────────────────────────────┬──────────────────────────────────────────────────────┤
-│ 时间轴（左，等宽时间 + 图标）        │ 详情（右）                                              │
-│ +00:06  #2 shell  sed -n 1,40p …    │ #4 shell  pytest -q               post · ok · exit 0   │
-│ +00:10  #3 patch  src/parser.py     │ 命令（脱敏）  pytest -q                                 │
-│ +00:20  #4 shell  pytest -q   ✓     │ 类别  test_full   normCmd  pytest -q   mutating  否     │
-│ ▌+00:35 #5 shell  pytest -q   ✓     │ 工作区指纹  git · 2f3a…（与 #4 相同 → 未改动）            │
-│   ▸ T1 L 建议 "工作区自上次运行 …"    │ 输出头/尾（脱敏，可展开，复制）                          │
-│   ▸ T2 L 建议                       │ ─ 命中 ─                                               │
-│ ▌+00:50 #6 shell  pytest -q   ✓     │ T1  H  pre  → 拦截（shadow，未生效；指纹未核实）          │
-│   ▸ T1 H 拦截（shadow）[未核实]       │   证据：#4 #5 · 原因：连续第 3 次无改动重跑               │
-│ …                                  │   规则说明 · 阈值（gpt 档 T1: 2 advise / 3 H）[在配置中查看] │
-├───────────────────────────────────┴──────────────────────────────────────────────────────┤
-│ 事故（按 category 聚合）：over_testing ×4（T1,T2,TB）+00:35→+01:20  [展开]                  │
-└──────────────────────────────────────────────────────────────────────────────────────────┘
+┌ claude-7f3a… · ~/dev/agent-supervisor · claude-sonnet-5-5 · shadow ──── [实时跟随 ●] [回到底部] [导出 CSV] ┐
+│ 级别 [L M H]  规则 [全部▾]  处置 [全部▾]  类型 [调用|提示|Stop|中断▾]  只看有命中 ☐   搜索 [______]        │
+│ 合计：调用 132 · 命中 L5/M2/H0 · 处置 advise 2 · judge 2 次 · 抑制 cooldown 3                             │
+├────────────────────────────────────────┬─────────────────────────────────────────────────────────────────┤
+│ +00:06 #2 shell  sed -n 1,40p …        │ #4 shell  pytest -q                  post · ok · exit 0         │
+│ +00:10 #3 patch  src/parser.py         │ 命令（脱敏）pytest -q                                            │
+│ +00:20 #4 shell  pytest -q        ✓    │ 类别 test_full · normCmd pytest -q · mutating 否                 │
+│ ▌+00:35 #5 shell  pytest -q       ✓    │ 工作区指纹 git · 2f3a…（与 #4 相同 → 未改动，已核实）              │
+│   ▸ T1 L 建议 「工作区自上次运行…」     │ 输出头/尾（脱敏，可展开）                                          │
+│   ▸ T2 L 建议                          │ ─ 本调用上的命中 ─                                                │
+│ ▌+00:50 #6 shell  pytest -q       ✓    │ T1 · H · pre → 拦截（shadow，未生效）· 阈值 3 · 观测 attempt=3     │
+│   ▸ T1 H 拦截（shadow）[指纹未核实]      │   [标误报] [标有用] [打开命中详情]                                 │
+├────────────────────────────────────────┴─────────────────────────────────────────────────────────────────┤
+│ 事故（按 category 聚合）：over_testing ×4（T1,T2,TB）+00:35→+01:20 [展开]   loop ×2（L1,L3）+02:10→+02:40 │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
-- **左栏**是按「调用」（pre+post 合并）排列的时间线，命中和处置作为子行缩进挂在对应调用下；H 命中用不同的色块 + 图标（不能只靠颜色，见 §9）。
-- **右栏**是选中项的详情；对一次调用显示脱敏后的命令/文件列表/输出头尾、分类（`cls`）、`mutating`、工作区指纹、退出码来源（Claude 的 `Exit code N` / Codex 头部回填）。
-- **事故条**：同一会话内相邻同类命中聚合。点击展开成命中列表，点击某个命中滚动到对应调用。
-- 「实时跟随」：打开时新事件自动追加并滚动到底部；用户向上滚动即自动暂停跟随，并显示「有 N 条新事件 ↓」。
-- 时间轴下方可选一条**迷你时间条**（整场会话的命中分布：横轴调用序号，竖线颜色/高度表示 sev），点击跳转。是否做成自绘图形取决于 MyGo 的自绘能力（§10）；做不到则退化成文本行 `▁▂▅▇`。
-- 回放视图复用本页：来源标记「回放 · 文件名」，没有「实时跟随」，处置栏显示回放里的 `wouldBlockIfVerified` 等标注。
+- **左栏**：按「调用」（pre+post 合并）排列，命中和处置作为缩进子行挂在对应调用下；H 命中用图标 + 色块（不只靠颜色）。
+- **右栏**：选中项详情——脱敏命令/文件列表/输出头尾、分类、`mutating`、工作区指纹、退出码来源；命中块显示**规则、级别、阶段、阈值（命中时的取值与自适应倍数）、观测值、证据调用、处置与抑制原因**，并可就地「标误报/标有用」。
+- **事故条**：同会话内相邻、同类（category）的命中聚合；点击展开成命中列表，再点滚动到对应调用。
+- **迷你时间条**：整场会话的命中分布（横轴调用序号，竖线颜色/高度表示 sev），点击跳转；做不到自绘时退化为文本 `▁▂▅▇`（§11 第 2 项）。
+- **实时跟随**：新事件自动追加；向上滚动自动暂停并显示「有 N 条新事件 ↓」。
+- 回放视图复用本页：来源标记「回放 · run 3 · base · 文件名」，没有实时跟随，处置栏显示 `wouldBlockIfVerified`、`atNextPre` 等回放标注。
 
-**本页专有状态**
+**调用的 API**：`GET /v1/sessions/{id}`（头部）、`GET /v1/sessions/{id}/timeline?since_seq=&before_seq=&limit=`（调用 + 命中 + 处置合并视图）、`GET /v1/sessions/{id}/events?phase=&q=`（原始事件）、`GET /v1/sessions/{id}/incidents`、`GET /v1/sessions/{id}/timeline.csv`、`POST /v1/hits/{id}/mark`、`GET /v1/stream?sessions={id}`。
+
 | 状态 | 表现 |
 |---|---|
 | 会话刚创建、无事件 | 「会话已连接，还没有工具调用」 |
-| 过滤后为空 | 「没有符合条件的事件」+ 清除过滤 |
-| 事件很多（>2000） | 只保留最近 2000 条在内存里；顶部提示「更早的事件按需加载」，向上滚动分页拉取（`since_seq`/`before_seq`） |
+| 过滤后为空 | 「没有符合条件的事件」+ 清除筛选 |
+| 事件很多（>2000） | 内存里只留最近 2000 条，顶部提示「更早的事件按需加载」，向上滚动分页 |
 | 拉取失败 | 行内错误条「加载失败（HTTP 5xx / 超时）[重试]」，不清空已有内容 |
 | 输出被截断 | 详情里标「仅保留头 1000 + 尾 1000 字符」 |
+| 日志正文被关闭（`store_event_bodies=false`） | 详情里「正文未保存，仅有指纹与统计字段」 |
 | 会话已结束 | 顶部「会话已结束」，禁用实时跟随 |
 
-## 4. 页面 3：Judge 裁决
-**目的**：审计强模型的每一次判断——它看到了什么、判了什么、有没有解析失败、是否被我们的过滤改写、最终有没有生效。
+## 4. 视图 3：Judge 裁决（请求列表 + 请求详情页）
+**目的**：审计强模型的每一次判断——看到了什么、判了什么、花了多少、有没有失败/降级、消息有没有被我们过滤改写、最终有没有送达。**信息密度和交互参照 Magpie 的 Usage 页**。
 
+### 4.1 列表页
 ```
-┌ Judge 裁决 ─────────────────────────────────────────────────────────────────────┐
-│ 概览（今日）：调用 14 · ignore 率 43% · parse_fail 率 7%(1) · 超时 0 · 平均延迟 6.2s     │
-│ 按模型： supervisor-judge  调用 9  ignore 44%  parse_fail 0%                        │
-│          fast-judge        调用 5  ignore 40%  parse_fail 20% ⚠ 路由目标解析失败率偏高   │
-│ 过滤：会话 [全部▾] 规则 [全部▾] 裁决 [ignore advise block parse_fail timeout ▾] 模型 [▾] │
-├──────────────────────────────────────────────────────────────────────────────────┤
-│ 时间     会话          规则  裁决     置信度  模型            延迟   结果               │
-│ 10:21:08 codex-over…   T2    advise   0.82   supervisor-judge 5.1s   已投递 / 未生效(shadow)│
-│ 10:19:40 claude-fail…  L1    block→advise 0.72 fast-judge     2.0s   降级：置信度 < 0.8   │
-│ 10:15:02 claude-cheat… X1    advise   0.90   supervisor-judge 7.4s   消息被过滤改写        │
-│ 10:12:30 codex-back…   L3    parse_fail –   fast-judge        3.3s   当作 ignore         │
-├──────────────────────────────────────────────────────────────────────────────────┤
-│ 详情（选中一行）                                                                     │
-│  请求摘要（脱敏）：任务 · 规则与证据 · 最近 25 步（每步一行）· 已发消息 · harness/模型     │
-│  响应：verdict / confidence / category / evidence_steps / watch / done                │
-│  message_to_agent（原文）  ─过滤→  实际投递文本（标出被删掉的标签/URL/代码块）            │
-│  修复记录：strip-think, close-truncated …（§8.5 的哪些步骤起了作用）                    │
-│  重试：异步调用重试 1 次 · response_format 降级：json_schema → json_object（已缓存）     │
-└──────────────────────────────────────────────────────────────────────────────────┘
+┌ Judge 裁决 ─────────────────────────────────────────────────────────────────────── [导出 CSV] ┐
+│ harness [全部▾] 被监督模型 [全部▾] judge 模型 [全部▾] 规则 [全部▾] 裁决 [ignore advise block parse_fail ▾] │
+│ 状态 [ok parse_fail timeout error ▾]  同步/异步 [全部▾]  日期 [近 7 天 ▾]  搜索 [会话/规则/错误…____]     │
+│ 合计（含缓存 ▣ / 不含缓存 ☐）：调用 214 · ok 201 · ignore 43% · parse_fail 3.3% · 超时 0.5%              │
+│       prompt tokens 1.82M（含缓存 0.61M）· completion 96k · 平均延迟 5.8s · p95 14.2s · 成本 $3.41        │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 时间         会话        规则   同步 裁决         置信  judge 模型        状态      延迟   tokens in/out  成本   │
+│ 10-18 10:21  codex-b21…  T2     异步 advise       0.82  supervisor-judge ok        5.1s   8.1k / 0.4k   $0.012 │
+│ 10-18 10:19  claude-7f…  L1     同步 block→advise 0.72  fast-judge       ok        2.0s   7.6k / 0.2k   $0.003 │
+│ 10-18 10:15  claude-7f…  X1     异步 advise       0.90  supervisor-judge ok ✎      7.4s   9.0k / 0.5k   $0.015 │
+│ 10-18 10:12  claude-7f…  L3     异步 –            –     fast-judge       parse_fail 3.3s  7.9k / 0.1k   $0.002 │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────┘
+  ✎ = 消息被过滤改写；→ 表示被策略降级；点任意一行打开请求详情页
 ```
-- 「结果」列要把策略后的真实结局讲清楚：`已投递 / 未生效(shadow) / 降级 / 被冷却挡掉 / fail-open 放行 / 当作 ignore`。
-- 概览里**按 model** 展示 `judge_parse_fail` 率和 ignore 率（design §8.5 要求「如果某个路由目标长期解析失败，提示 Jack 调整路由组」），超过阈值（初值 15%，样本 ≥10）显示警告。
-- 请求摘要里的命令/输出都在 `<untrusted>` 语境下展示——UI 里用「不可信内容」样式（灰底、等宽）标出，并且不把其中任何文本当作可点击链接或命令。
-- **费用**：live judge 接入（M3）之前显示 n/a；有 usage 之后显示每会话 judge 次数与估算费用。
+- 顶部筛选与 Magpie 的 Usage 页对应：**agent → harness 与被监督模型**；**账号/key → judge 模型与路由**（只显示 `api_key_env` 变量名，不显示 key）；**日期区间选择器**；**搜索**；**CSV 导出**。
+- **合计条**带「**含/不含缓存**」切换：含缓存时 prompt tokens 计入 `cached_tokens`，不含则扣除；成本同步变化（有 `cost_usd` 时按记录求和，没有时显示 n/a，不估算）。
+- 列「结果」把策略后的真实结局讲清楚：`已送达 / 未生效(shadow) / 降级 / 被冷却挡掉 / fail-open 放行 / 当作 ignore`。
+- 概览按**被调用的 judge 模型**统计 ignore 率与 `judge_parse_fail` 率，超阈值（初值 15%，样本 ≥10）显示警告（design §8.5：长期解析失败要提示调整路由组）。
 
-**本页专有状态**
+### 4.2 请求详情页（点一行）
+```
+┌ judge 调用 #318 ─────────────────────────────────────────────── [← 上一条] [下一条 →] [复制为 JSON] ┐
+│ 状态  ● ok   裁决 advise · 置信 0.82 · category loop     错误类型  –（若失败：timeout / http_429 / parse_fail …）│
+│ 模型  supervisor-judge（路由命中：rule=T* → supervisor-judge）  同步/异步 异步  延迟 5.1s  重试 0  HTTP 请求 2 │
+│ response_format  json_schema → json_object（上游拒绝，已降级并缓存）                                       │
+│ tokens  prompt 8,120（缓存 3,000）· completion 410 · 成本 $0.0121                                         │
+│ 数据来源  live · run 12            关联会话文件  ~/…/sessions/7f3a….jsonl  [复制路径] [在回放中打开]          │
+│ 触发规则  T2 (#4218) L1 (#4219)    关联会话  claude-7f3a…  [打开事件与事故 @ #92]                           │
+├─ 上游返回 ─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ （judge 上游的原始响应，已脱敏；失败时这里是 HTTP 状态与错误体摘要，不含 key 与 Authorization 头）         │
+├─ 请求摘要（脱敏，不可信内容以灰底标出）──────────────────────────────────────────────────────────────────┤
+│ 任务 · 规则与证据 · 最近 25 步 · 改动摘要 · 已发消息 · harness/模型        [展开完整 prompt]               │
+├─ 解析与修复 ───────────────────────────────────────────────────────────────────────────────────────────┤
+│ 修复步骤：strip-think, close-truncated   语义校验：confidence 归一(85%→0.85)                              │
+├─ 消息 ─────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ message_to_agent（原文） ─过滤→ 实际投递文本（删掉的标签/URL/代码块高亮）                                   │
+│ 投递：通道 PostToolBatch · 送达 是 · 遵从 是（之后 3 次调用没有重复）                                        │
+├─ 可复制命令 ───────────────────────────────────────────────────────────────────────────────────────────┤
+│ 恢复会话  claude --resume 7f3a…      复盘本次命中  sv explain 4218      在回放里复现  sv replay <文件> --log … │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+- 详情页字段与 Magpie 的请求详情对应：**状态、错误类型、「上游返回」、数据来源、关联会话文件、可复制命令**。
+- **可复制命令**：`sv explain <hit-id>`、`sv replay <源文件> --log --label …` 由我们生成；**「恢复会话」命令（如 `claude --resume <id>`、`codex resume <id>`）是按 harness 的模板拼出的，模板需要在 Jack 的机器上核对后才启用**（§11 第 14 项）；复制的命令只含会话 id、路径，不含任何密钥。
+- 「在回放中打开」把关联会话文件送到视图 7 新建回放（预填路径与当时的阈值覆盖）。
+
+**调用的 API**：`GET /v1/judge-calls?harness=&model=&route_model=&rule=&verdict=&status=&sync=&session=&q=&since=&until=&cursor=`（列表 + `totals` 对象，含 `cache=include|exclude` 参数）、`GET /v1/judge-calls/{id}`（详情，含 request/response/repairs/关联命中与决策/投递）、`GET /v1/judge-calls/export.csv`（同筛选）、`GET /v1/judge-calls/stats?by=model`。
+
 | 状态 | 表现 |
 |---|---|
-| 没有任何裁决 | 区分三种原因：① judge 未配置/`--judge=off`（「judge 未启用」+ 去配置页）；② 配置了但还没有 M 级命中；③ 预算用完（本会话 12/12） |
-| judge 不可达 | 概览处红色「最近 N 次调用失败：<错误摘要，不含 key 和 Authorization 头>」；表格仍可看历史 |
+| 没有任何裁决 | 区分原因：① judge 未配置/`--judge=off`（「judge 未启用」+ 去规则配置页）；② 已配置但还没有 M 级命中；③ 本会话预算用完（12/12） |
+| judge 不可达 | 概览处红色「最近 N 次调用失败：<错误摘要，不含 key 和 Authorization 头>」，历史仍可看 |
 | 详情加载失败 | 详情区行内错误 + 重试 |
-| 请求摘要缺失 | 「该记录没有保存请求摘要（保留期已过或被清理）」 |
+| 请求/响应正文缺失 | 「该记录没有保存请求/响应正文（`store_judge_bodies=false` 或已过保留期）」，仍显示统计字段 |
+| 成本为 n/a | live 接入且上游返回 usage 之前显示 n/a，不估算 |
 
-## 5. 页面 4：规则与配置（只读 + 校验）
-**目的**：看每条规则现在用什么阈值、是否启用、最近命中情况；看生效配置；校验草稿而不应用。
+## 5. 视图 4：Judge 路由（Judge Routing）
+**目的**：参照 Magpie 的 Routing 页——每个「用途」当前走哪个模型、状态如何、**为什么改道**。我们的「用途」就是 `judge.routes` 里的路由条件（规则通配、同步/异步）以及默认路由。
 
 ```
-┌ 规则与配置 ──────────────── [规则] [生效配置] [校验草稿] ───────────────────────┐
-│ mode: shadow ▌（只记录；改 mode 请编辑 config.yaml）   档位选择：^(gpt-|o\d|codex)→gpt  │
-├────────────────────────────────────────────────────────────────────────────────┤
-│ ID    名称            级别  default 档        gpt 档            启用  7 天命中  误报反馈 │
-│ L1    同一调用连续失败  M→H   2 advise / 3 H    同左              ●     12       –      │
-│ T1    无改动重跑同命令   L→H   2 advise          2 advise / 3 H    ●     31       –      │
-│ X2    危险操作          H     本地拦截（deny/ask） 同左（不受上限）   ●     2        –      │
-│ S2    阶段停滞          –     仅回放观察          仅回放观察         ◌     –        –      │
-│ …                                                                                      │
-├────────────────────────────────────────────────────────────────────────────────┤
-│ 选中 T1：规则说明 · 出处 · 触发条件（工作区指纹三态 verified/inferred/changed）           │
-│          当前阈值来源：config.profiles.gpt（覆盖 config.rules.T1_rerun_unchanged.block_on） │
-│          最近命中：→ 打开事件与事故 / 回放结果                                          │
-└────────────────────────────────────────────────────────────────────────────────┘
+┌ Judge 路由 ───────────────────────────────────────────────────────────── 近 7 天 · 数据来自 judge_calls ┐
+│ 用途（匹配条件）              当前模型          状态        近期调用  parse_fail  p95    为什么这样走           │
+│ 同步（sync=true）             fast-judge        ● 正常        38       0%        2.4s   routes[0] 命中          │
+│ 规则 T*                       supervisor-judge  ● 正常        61       1.6%      9.1s   routes[1] 命中          │
+│ 默认                          supervisor-judge  ▲ 降级中      115      7.8%      14s    response_format 已降级…   │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 选中「默认」：                                                                                                │
+│  · response_format：json_schema → json_object（10-17 21:04 上游返回 400 "response_format … not supported"，已缓存）│
+│  · 解析失败率 7.8% 高于警告线 15%? 否（警告线 15%，样本 ≥10）                                                    │
+│  · 最近一次失败：10-18 10:12 parse_fail（响应不是合法 JSON，已重试 1 次）[打开该调用]                            │
+│  · 超时/出错：超时 1，出错 0；fail-open 放行次数 1                                                              │
+│  · key：环境变量 SUPERVISOR_API_KEY（已设置）                                                                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
-- **生效配置**页签：展示合并后的配置（全局 `~/.agent-supervisor/config.yaml` ← 项目级 `.supervisor/config.yaml`），每个值标注来源文件。`judge.api_key_env` 只显示**环境变量名**以及一个布尔「该变量当前是否已设置」，**永远不显示 key**；`judge.request.headers` 中疑似凭据的值显示为 `••••`。
-- **校验草稿**页签：粘贴或选择一个 YAML，调用 `POST /v1/config/validate`，返回错误/警告和与现行配置的 diff；**不应用**。
-- 规则表的「误报反馈」列留给第二期（需要 Jack 在事件页对命中标「误报/有用」，写回 eval 标注草稿）；第一版显示 `–`。
-- 只读的原因见 §0。页面顶部固定一行说明「修改请编辑 config.yaml；保存后守护进程热加载」，并给出文件路径（可复制）。
+- 「状态」：正常 / 降级中（response_format 已降级、或解析失败率超线）/ 不可用（最近连续失败）。「为什么这样走 / 为什么改道」列出**可追溯的原因**：命中了哪条 `routes` 规则、`response_format` 因哪次 4xx 降级并缓存、哪个目标近期解析失败率过高（提示 Jack 调整路由组，design §8.5）。
+- 所有原因都来自 `judge_calls` 记录（`route_model`、`model`、`format_level`、`format_downgraded`、`status`、`error`），不是 UI 猜的。
+- 只读；改路由仍然改 `config.yaml`。
 
-**本页专有状态**
+**调用的 API**：`GET /v1/judge/routes`（路由表 + 每条的状态、统计、原因列表）、`GET /v1/judge-calls?route_model=&status=`（跳到相关调用）、`GET /v1/config`（路由配置，仅 `api_key_env` 变量名与 `api_key_set` 布尔）。
+
+| 状态 | 表现 |
+|---|---|
+| 没有配置路由 | 只显示「默认」一行，说明「所有调用走 `judge.model`」 |
+| judge 未启用 | 「judge 未启用（`--judge=off` 或未配置）」 |
+| 近期没有调用 | 状态显示「未使用」，统计为 –，不显示 0% |
+
+## 6. 视图 5：规则配置（Rules & Config，只读 + 校验）
+**所有规则通用、只有一套阈值**，所以这里没有「按模型分档」的选择器。
+
+```
+┌ 规则配置 ─────────────────── [规则] [生效配置] [校验草稿] ──────────────────────────────────┐
+│ mode: shadow ▌（只记录；改 mode 请编辑 config.yaml）     被监督模型：只记录到日志，不参与判定   │
+├────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ID    名称             级别   阈值（一套）                  启用  7 天命中  误报率   遵从率       │
+│ L1    同一调用连续失败   M→H   2 advise / 第 3 次尝试 H        ●     12       8%     71%       │
+│ T1    无改动重跑同命令    L→H   2 advise / 3 H                ●     31       –      40%       │
+│ T2    无编辑的全量测试    L→M   3 advise / 5 M                ●     9        –      –         │
+│ X2    危险操作           H     本地拦截（deny/ask）           ●     2        0%     –         │
+│ S2    阶段停滞           –     仅回放观察                     ◌     –        –      –         │
+├────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 选中 T1：说明 · 出处 · 触发条件（工作区指纹三态 verified/inferred/changed）                     │
+│          阈值来源：config.thresholds.T1（别名 rules.T1_rerun_unchanged.block_on）               │
+│          [在规则统计中查看] [试算：复制 sv replay … --set thresholds.T1.H=4]                    │
+└────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+- **生效配置**页签：合并后的配置（全局 ← 项目级），每个值标注来源文件；`judge.api_key_env` 只显示变量名和「是否已设置」；`judge.request.headers` 中疑似凭据的值显示为 `••••`；`log` 段显示库路径、保留天数、JSONL 镜像目录。
+- **校验草稿**页签：粘贴/选择 YAML → `POST /v1/config/validate` → 错误、警告、与现行配置的 diff；**不应用**。把 `mode` 改成 `enforce` 会给黄色强调「这会开启拦截」。
+- 「试算」不改配置：生成可复制的 `sv replay <dir> --log --label … --set thresholds.…` 命令，结果在视图 7 对比。
+- 误报率/遵从率两列来自视图 6 的统计（有人工标注才有值）。
+
+**调用的 API**：`GET /v1/rules`、`GET /v1/rules/stats?since=`（7 天命中、误报率、遵从率）、`GET /v1/config`、`POST /v1/config/validate`。
+
 | 状态 | 表现 |
 |---|---|
 | 配置文件不存在 | 显示内置默认值，标注「使用默认配置（未找到 config.yaml）」 |
-| 配置文件有语法/语义错误 | 顶部红条：守护进程仍在用的是**上一份有效配置**（fail-open），列出错误行；UI 不可编辑 |
-| 草稿校验通过 | 绿色「通过」+ diff；有警告（如把 `mode` 改成 enforce）用黄色强调「这会开启拦截」 |
+| 配置有语法/语义错误 | 顶部红条：守护进程仍在用**上一份有效配置**（fail-open），列出错误行；不可编辑 |
+| 草稿校验通过 | 绿色「通过」+ diff；有警告用黄色 |
 | 未知规则/键 | 警告列表，不阻止显示 |
 
-## 6. 页面 5：回放结果
-**目的**：浏览 `sv replay` / `sv eval` 的产出——命中时间线、每条规则的 precision/recall、首次报警延迟、两个误报率门槛。
+## 7. 视图 6：规则统计与误报标注（Rule Stats & Review）
+**目的**：回答「哪条规则吵、哪条准、阈值该往哪调」——直接对应 `sv stats` 与 §18.3 的查询；并且是**标注误报的主要入口**。
 
 ```
-┌ 回放与评测 ─────────────── [回放结果] [评测报告] ───────────────────────────────┐
-│ 新建回放：路径 [______________] judge [off|mock ▾] 配置 [默认▾] [开始]  （live 暂不可用）  │
-│ 任务：fail-loop.jsonl  mock  ██████████ 完成 · 6 命中                                │
-├────────────────────────────────────────────────────────────────────────────────┤
-│ 会话                   harness 调用 命中  规则              judge  首个命中              │
-│ claude-fail-loop       claude  5   6    L1,L3,T1          mock   +00:20                │
-│ codex-overtest         codex   9   8    T1,T2,T3,TB       mock   +00:21     [打开时间线] │
-├────────────────────────────────────────────────────────────────────────────────┤
-│ 评测报告（labels: eval/labels.yaml，8 个会话 ⚠ 目标 30–50）                              │
-│ 规则  命中 TP FP precision recall  首次报警延迟(min/中位/max)   ▏precision 条形            │
-│ L1     8   2  0  100%     100%    0 / 0.5 / 1                 ████████████               │
-│ P3     3   3  0  100%     n/a     1 / 2 / 13                  ████████████               │
-│ 分类        报警  TP FP  FDR   门槛        状态                                           │
-│ 拦截类       8    8  0   0.0%  < 3%        通过                                           │
-│ 建议类       8    8  0   0.0%  < 25%       通过                                           │
-│ judge：调用 …  按 model ignore 率 / parse_fail 率 …                                     │
-└────────────────────────────────────────────────────────────────────────────────┘
+┌ 规则统计与标注 ─────────────────── [规则] [按模型] [待复盘命中] ──────────────────── [导出 CSV] ┐
+│ 数据 [live ▾ / run 3 base ▾]  日期 [近 14 天 ▾]  规则 [全部▾]  级别 [全部▾]  搜索 [____]         │
+│ 合计：调用 3,904 · 会话 41 · 命中 312 · 已标注 58（误报 21 / 有用 37）· 总体误报率 36%           │
+├───────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 规则  命中 会话 /100调用 会话占比  L/M/H     生效  标误报 标有用 误报率  遵从率  处置 · 被抑制       │
+│ L1     38   9   1.0      22%     0/26/12      7     4     9     31%    71%    advise×21 block×7 … │
+│ T1     96  14   2.5      34%     60/0/36      0    11     3     79%    40%    advise×60 skip×36 · cooldown×36 │
+│ X2      2   1   0.1       2%      0/0/2       0     0     1      0%     –     ask×1 block×1       │
+│ …                                                                                               │
+├───────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 选中 T1 → 命中列表（待复盘优先）：                                                                 │
+│ ☐ 时间        会话       调用#  级别 阶段  观测/阈值   处置                 标注                      │
+│ ☐ 10-18 10:21 claude-7f… #92   L   pre   2 / 2        advise（未生效）      [误报] [有用]  note…     │
+│ ☐ 10-18 10:19 claude-7f… #118  H   pre   3 / 3        block（未生效,指纹未核实） [误报] [有用]        │
+│ 已选 2： [标为误报] [标为有用] [清除标注] [手动放行所选决策] [驳回所选决策]                        │
+└───────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
-- 数据来自 `ReplayResult` / `EvalReport`（已在 `packages/replay`、`eval/` 中定义）；UI 不重新计算指标，只展示。
-- precision/recall/延迟用**表格 + 行内条形**呈现；图表需求很克制（见 §10 对自绘图形的验证项）。门槛的「通过/未通过/n/a」必须用文字 + 图标，n/a（没有报警）不能显示成通过。
-- 「新建回放」调用 `POST /v1/replays`，后台任务，状态用顶栏/底栏的任务指示 + 本页列表跟踪；**`live` 在 M3 之前不可选**。
-- 对比：两次回放（比如两份配置、或 A/B 提示写法）可以并排选择，显示每条规则 precision/命中数的差异；第一版可只做「选两行 → 显示差异表」。
+- **规则表**就是 `sv stats --by rule` 的可视化：命中数、触发会话数、**每 100 次调用命中数**、触发会话占比、L/M/H 分布、生效数、人工标注数、**误报率（只来自人工标注，没有标注显示 n/a）**、**遵从率**（被建议/拦截后 agent 没继续同样做法的比例，只对可判定规则有值）、处置分布与**被抑制原因分布**（冷却/预算/连续拦截上限/指纹未核实/用户静音…）。
+- **按模型**页签 = `sv stats --by model`：每个被监督模型的调用数与各规则每 100 调用命中数——**模型名在这里只用来事后观察**，页面上没有任何按模型改变阈值的入口。
+- **待复盘命中**页签：还没有标注的命中，按规则/级别排序；逐条标「误报 / 有用」（可附备注），支持多选批量。标注写入 `overrides`，立刻反映到误报率；被标注的命中**不会被保留期清理**。
+- **手动放行 / 驳回**：对某次决策记 `manual_allow` / `manual_reject`（只记录意图，供复盘；不会回溯改变已发生的拦截）。
+- 命中行点开 → **命中详情**（explain）：命中（阈值、观测值、指纹）→ 证据调用 → 决策（含抑制原因）→ judge 调用（链接到视图 3 详情）→ 投递与遵从 → 标注历史；同样有可复制的 `sv explain <id>`。
+- 每个规则行有「试算」入口：生成 `sv replay … --set …` 命令；回放后的两次运行在视图 7 并排对比。
 
-**本页专有状态**
+**调用的 API**：`GET /v1/rules/stats?by=rule|model&run=&label=&since=&until=`、`GET /v1/hits?rule=&sev=&label=unlabeled|false_positive|useful&run=&session=&since=&until=&cursor=`、`GET /v1/hits/{id}`（explain 链路）、`POST /v1/hits/{id}/mark`（`{label:"false_positive"|"useful"|"none", note}`）、`POST /v1/hits/mark`（批量）、`POST /v1/decisions/{id}/override`（`{kind:"allow"|"reject", note}`）、`GET /v1/rules/stats.csv`、`GET /v1/hits/export.csv`。
+
 | 状态 | 表现 |
 |---|---|
-| 没有回放/评测 | 「还没有回放结果」+ 说明如何运行（`sv replay <path>`）和新建入口 |
-| 没有 labels | 评测页签：「未找到 eval/labels.yaml（人工标注由 Jack 提供）」+ 指向 `eval/labels.example.yaml` 的 schema 说明 |
-| 标注 < 30 个会话 | 黄色警告「统计量不稳定」（`EvalReport.warnings`） |
+| 还没有日志数据 | 「还没有命中记录」+ 如何产生数据：`sv replay <dir> --log`，或等守护进程收到真实会话 |
+| 没有任何标注 | 误报率列显示 n/a，页首提示「去『待复盘命中』标几条，误报率才有意义」；不编造数字 |
+| 样本太少 | 某规则命中 <10 或已标注 <5 时，误报率旁加灰色「样本少」标记 |
+| 标注写入失败 | 该行显示失败原因并保持原标注，可重试 |
+| 数据来源选了回放 run | 页首标「回放 · run 3 · base · 阈值哈希 …」，遵从率列标「模拟」 |
+
+## 8. 视图 7：回放结果（Replay & Eval）
+**目的**：浏览 `sv replay` / `sv eval` 的产出——运行列表、对比两套阈值、命中时间线、每条规则的 precision/recall 和首次报警延迟、两个误报率门槛。
+
+```
+┌ 回放与评测 ──────────────── [运行] [评测报告] ──────────────────────────────────────────── [导出 CSV] ┐
+│ 新建回放：路径 [______________] judge [off|mock ▾] 标签 [____] 覆盖 [thresholds.T1.H=4] [+] [开始]（live 暂不可用）│
+│ 任务：fail-loop.jsonl  mock  ██████████ 完成 · 6 命中                                                       │
+├────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ☐ run  标签    来源            模式   judge  阈值哈希       覆盖项                  会话  命中  时间         │
+│ ☐ 12   t1h4    test/fixtures   shadow mock   ed937b28…     thresholds.T1.H=4        8     71   10-18 09:12 │
+│ ☐ 11   base    test/fixtures   shadow mock   dc4b0245…     –                        8     74   10-18 09:10 │
+│ 已选 2： [对比]  [在规则统计中打开]  [在事件与事故中打开会话]                                              │
+├────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 对比 run 11 → run 12：规则 命中A 命中B Δ 报警A 报警B Δ 拦截A 拦截B                                       │
+│                       T1     9     9   0   6     5    -1   0     0                                       │
+├────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 评测报告（labels: eval/labels.yaml，8 个会话 ⚠ 目标 30–50）                                              │
+│ 规则 命中 TP FP precision recall 首次报警延迟(min/中位/max) ▏precision                                    │
+│ 分类 报警 TP FP FDR 门槛 状态：拦截类 <3% 通过 · 建议类 <25% 通过   judge：调用 … ignore 率 … parse_fail 率 … │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+- 数据来自 `runs`（含当时阈值与 `--set` 覆盖）、`ReplayResult` 与 `EvalReport`；UI 不重新计算指标，只展示。
+- **对比**就是 `sv stats --compare A,B`：两次运行（阈值不同）每条规则的命中/报警/拦截变化。
+- 评测报告的「通过/未通过/**n/a**」必须用文字 + 图标，n/a（没有报警）不能显示成通过；步骤单位是工具调用序号（decisions #28）。
+- 「新建回放」调用 `POST /v1/replays`（后台任务）；`live` 在 M3 之前不可选。
+
+**调用的 API**：`GET /v1/runs`、`GET /v1/runs/{id}`、`GET /v1/runs/compare?a=&b=`、`POST /v1/replays`（`{path, judge, label, overrides[], planRef?}`）、`GET /v1/replays/{taskId}`（进度/结果）、`DELETE /v1/replays/{taskId}`（取消）、`GET /v1/eval/reports`、`POST /v1/eval/run`（`{labelsPath, judge, window, overrides[]}`）、`GET /v1/runs.csv`。
+
+| 状态 | 表现 |
+|---|---|
+| 没有回放/评测 | 「还没有回放结果」+ 说明（`sv replay <path> --log`）和新建入口 |
+| 没有 labels | 评测页签：「未找到 eval/labels.yaml（人工标注由 Jack 提供）」+ 指向 `eval/labels.example.yaml` 的 schema |
+| 标注 <30 个会话 | 黄色警告「统计量不稳定」（`EvalReport.warnings`） |
 | 回放任务失败 | 任务行红色 + 错误摘要（如「无法识别的 transcript 格式」）；其他文件不受影响 |
 | 回放任务进行中 | 进度（已处理文件数/总数），可取消 |
+| 覆盖项写错 | 提交前校验，行内报「配置里没有路径 …」 |
 
-## 7. 数据接口（守护进程要提供的 API）
+## 9. 守护进程 API 总表
 通用约定：
-- 传输：UDS（HTTP over UDS）或 `http://127.0.0.1:<port>`；后者必须带 `Authorization: Bearer <token>`，token 来自 `~/.agent-supervisor/token`（0600）。UI 启动时检查两个文件的权限，不是 0600 就在顶栏警告。
-- 协议版本：请求头 `X-SV-Protocol: 1`；所有响应带 `X-SV-Protocol` 与 `X-SV-Daemon-Version`。版本不兼容时守护进程返回 `426`，UI 进入只读降级。
-- 所有时间为 epoch 毫秒；`seq` 为会话内单调递增；`streamId` 为全局事件流 id。分页用 `cursor`（不透明字符串）。
-- 错误格式：`{"error":{"code":"...","message":"...","retryable":true|false}}`，`message` 不含 key、Authorization 头或原始命令输出。
-- 所有返回的文本已脱敏。
+- 传输：UDS（HTTP over UDS）或 `http://127.0.0.1:<port>` + `Authorization: Bearer <token>`；UI 启动时检查 socket 与 token 文件权限，不是 0600 就在顶栏警告。
+- 版本：请求头 `X-SV-Protocol: 1`；响应带 `X-SV-Protocol` 与 `X-SV-Daemon-Version`；不兼容返回 `426`，UI 降级为只读。
+- 时间为 epoch 毫秒；`seq` 会话内单调；`streamId` 全局事件流 id；分页用不透明 `cursor`。
+- 错误：`{"error":{"code":"…","message":"…","retryable":true|false}}`，`message` 不含 key、Authorization 头或原始命令输出。
+- 所有返回的文本已脱敏。列表接口统一支持 `since`、`until`、`q`、`limit`、`cursor`，并有对应的 `….csv` 导出（同筛选条件、服务端生成、已脱敏）。
 
-| 方法与路径 | 用途 | 说明 |
-|---|---|---|
-| `GET /v1/status` | 顶栏：连接、mode、适配器、judge 健康 | `{protocol, version, mode, startedAt, adapters:[{harness, lastSeenAt, connectFailures15m}], judge:{configured, lastOkAt, lastError, callsToday, parseFailRateByModel}, silencedSessions}` |
-| `GET /v1/sessions` | 页面 1 | 查询：`state=live\|idle\|ended`、`harness`、`q`、`limit`、`cursor`；返回 `SessionSummary[]`（含 L/M/H 计数、最近处置、预算用量、silenced） |
-| `GET /v1/sessions/{id}` | 页面 1 详情 / 页面 2 头部 | 计划（来源、当前步骤、explicitAllow）、profile、预算、冷却中的规则 |
-| `GET /v1/sessions/{id}/events` | 页面 2 | `since_seq`、`before_seq`、`limit`、`phase`、`q`；返回 `Event[]`（pre/post 可由客户端合并，也可 `merge=calls` 由服务端合并） |
-| `GET /v1/sessions/{id}/timeline` | 页面 2 | 命中 + 处置 + 调用索引的合并视图（等价于 `ReplayResult.timeline`），`since_seq` 可增量 |
-| `GET /v1/sessions/{id}/incidents` | 页面 2 事故条 | 聚合后的事故列表 |
-| `POST /v1/sessions/{id}/mute` | 页面 1 | body `{mode:"none"\|"quiet"\|"off"}`；返回新的 silenced 状态。**这是 v1 唯一的写接口** |
-| `GET /v1/verdicts` | 页面 3 | 查询：`session`、`rule`、`verdict`、`model`、`since`、`limit`、`cursor` |
-| `GET /v1/verdicts/stats` | 页面 3 概览 | 按 model 聚合：调用、ignore 率、parse_fail 率、超时、出错、平均延迟 |
-| `GET /v1/verdicts/{id}` | 页面 3 详情 | 请求摘要（脱敏）、响应、repairs、重试/降级信息、投递前后的 message、最终结局 |
-| `GET /v1/rules` | 页面 4 | 规则目录：id、名称、级别、出处、各档位有效阈值及来源、启用状态、近 7 天命中数 |
-| `GET /v1/config` | 页面 4 | 合并后的生效配置 + 每个值的来源；`api_key_env` 只返回变量名和 `api_key_set:boolean` |
-| `POST /v1/config/validate` | 页面 4 | body `{yaml:"..."}`；返回 `{ok, errors[], warnings[], diff[]}`，**不应用** |
-| `GET /v1/replays` / `POST /v1/replays` | 页面 5 | 创建：`{path, judge:"off"\|"mock", configRef?, planRef?}`（`live` 在 M3 前返回 400）；列出任务及结果摘要 |
-| `GET /v1/replays/{id}` | 页面 5 | `ReplayResult[]`；`DELETE` 取消/删除 |
-| `GET /v1/eval/reports` / `POST /v1/eval/run` | 页面 5 | 运行 `sv eval` 逻辑，返回 `EvalReport`；缺 labels 时返回 `404 labels_not_found` |
-| `GET /v1/stream` | 实时推送 | 见 §8 |
-| `GET /v1/schema/{name}` | 开发/校验 | 返回 JSON Schema（Event、Hit、Decision、TimelineEntry、ReplayResult、EvalReport、Verdict、SessionSummary、Status、StreamMessage、Config） |
+| 方法与路径 | 用途（视图） |
+|---|---|
+| `GET /v1/status` | 顶栏：连接、mode、适配器（`adapter_health` 失败数）、judge 健康、日志库大小与保留期（全部视图） |
+| `GET /v1/sessions` · `GET /v1/sessions/{id}` · `GET /v1/sessions/{id}/children` · `POST /v1/sessions/batch` · `GET /v1/sessions/export.csv` | 视图 1 |
+| `GET /v1/sessions/{id}/timeline` · `…/events` · `…/incidents` · `…/timeline.csv` | 视图 2 |
+| `GET /v1/hits` · `GET /v1/hits/{id}` · `POST /v1/hits/{id}/mark` · `POST /v1/hits/mark` · `GET /v1/hits/export.csv` | 视图 2、6 |
+| `POST /v1/decisions/{id}/override` | 视图 6（手动放行/驳回） |
+| `GET /v1/judge-calls` · `GET /v1/judge-calls/{id}` · `GET /v1/judge-calls/stats` · `GET /v1/judge-calls/export.csv` | 视图 3 |
+| `GET /v1/judge/routes` | 视图 4 |
+| `GET /v1/rules` · `GET /v1/config` · `POST /v1/config/validate` | 视图 5 |
+| `GET /v1/rules/stats` · `GET /v1/rules/stats.csv` | 视图 5、6 |
+| `GET /v1/overrides` | 视图 1（静音/已复盘状态）、视图 6（标注历史） |
+| `GET /v1/runs` · `GET /v1/runs/{id}` · `GET /v1/runs/compare` · `GET /v1/replays` · `POST /v1/replays` · `GET /v1/replays/{id}` · `DELETE /v1/replays/{id}` · `GET /v1/eval/reports` · `POST /v1/eval/run` | 视图 7 |
+| `GET /v1/stream` | 实时推送（§10） |
+| `GET /v1/schema/{name}` | JSON Schema（开发/校验） |
 
-### 7.1 类型复用：JSON Schema 是唯一来源
-Go 侧无法直接复用 TS 类型。做法：
-1. 在 TS 侧为上面的类型维护 **带版本号的 JSON Schema**（`schema/v1/*.schema.json`，M3 随守护进程一起建立），守护进程的响应在测试里按 schema 校验。
-2. Go 结构体由这些 Schema **生成**（生成器选型待定，MyGo 项目自己的构建系统决定），生成物不手改。
+### 9.1 类型复用：JSON Schema 是唯一来源
+Go 侧无法直接复用 TS 类型：
+1. 在 TS 侧为这些类型维护 **带版本号的 JSON Schema**（`schema/v1/*.schema.json`，M3 随守护进程建立）：`Event`、`Hit`、`Decision`、`JudgeCall`、`Delivery`、`Override`、`Run`、`SessionSummary`、`TimelineEntry`、`RuleStat`、`ReplayResult`、`EvalReport`、`Status`、`StreamMessage`、`Config`。守护进程的响应在测试里按 schema 校验。
+2. Go 结构体由这些 Schema **生成**（生成器选型由 MyGo 项目构建系统决定），生成物不手改。
 3. 共享**黄金样例**：`test/fixtures/api/*.json`，TS 与 Go 各写一个测试解析同一批样例并校验字段，防止两端漂移。
-4. 协议加字段只增不删；删除/改义要升协议版本号，UI 在 `GET /v1/status` 里读到版本不匹配就降级。
+4. 协议加字段只增不删；删除/改义要升协议版本号。
 
-## 8. 状态管理与实时推送
-### 8.1 推送协议
-- **HTTP+token**：`GET /v1/stream` 返回 **SSE**；**UDS**：同一路径返回 **NDJSON 流**（每行一个 `StreamMessage`）。两者语义相同。
-- 每条消息：`{streamId, type, ...}`，`type ∈ session | event | hit | decision | verdict | status | replay_progress | heartbeat | reset`。
-- **断线续传**：客户端记住最后收到的 `streamId`，重连时带 `?since=<streamId>`（SSE 同时支持 `Last-Event-ID`）。守护进程保留一个有上限的环形缓冲；如果 `since` 已被挤出缓冲，先发一条 `reset`，UI 收到后丢弃本地增量状态并重新拉取各列表。
-- 心跳：每 15 秒一条 `heartbeat`；UI 超过 45 秒没收到任何消息视为断开。
-- 订阅过滤：`?sessions=<id,...>&types=event,hit,decision`，页面 2 只订阅当前会话，页面 1 订阅全部会话但只要 `session|hit|decision|status`。
+## 10. 状态管理与实时推送
+### 10.1 推送协议
+- **HTTP+token**：`GET /v1/stream` 返回 **SSE**；**UDS**：同一路径返回 **NDJSON 流**（每行一个 `StreamMessage`）。语义相同。
+- 每条消息：`{streamId, type, …}`，`type ∈ session | event | hit | decision | judge_call | delivery | override | status | replay_progress | heartbeat | reset`。
+- **断线续传**：客户端记住最后收到的 `streamId`，重连带 `?since=<streamId>`（SSE 同时支持 `Last-Event-ID`）。守护进程保留有上限的环形缓冲；`since` 已被挤出时先发 `reset`，UI 丢弃增量状态并重新拉取各列表。
+- 心跳每 15 秒一条；超过 45 秒没收到任何消息视为断开。
+- 订阅过滤：`?sessions=<id,…>&types=event,hit,decision`；视图 2 只订阅当前会话，视图 1 订阅全部会话但只要 `session|hit|decision|override|status`。
 
-### 8.2 UI 状态机
+### 10.2 UI 状态机
 ```
  connecting ──ok──▶ live ──(心跳超时/连接断)──▶ reconnecting ──(≤3 次失败)──▶ degraded(轮询 /v1/status 与当前页数据)
      ▲                 ▲                              │                              │
      └─────────────────┴───────────(成功)─────────────┴──────────────(成功)──────────┘
  degraded 连续 60 秒失败 ──▶ offline（页面变灰，只读保留旧数据，显示最后成功时间）
 ```
-- 重连退避：1s、2s、4s、8s、…、上限 30s，加 ±20% 抖动。
-- `degraded` 下页面仍可用，但每页顶部显示「实时推送已断开，数据每 5 秒轮询刷新」。
-- 顶栏始终显示当前状态与最后一次成功时间。
+- 重连退避 1s、2s、4s、8s … 上限 30s，±20% 抖动。`degraded` 下每页顶部提示「实时推送已断开，数据每 5 秒轮询刷新」。
 
-### 8.3 本地存储模型（Go 侧）
-- 单一数据源 `Store`（会话表、每个活跃会话的事件环形缓冲、命中/处置列表、裁决列表、状态）；所有页面从 `Store` 读，网络层只往里写。
-- 每个会话在内存里最多保留最近 **2000** 条事件，更早的按需分页；命中/处置不裁剪（量小）。
-- **UI 刷新合并**：推送事件先入队，按最多 10 Hz 合并后一次性更新界面，避免高频事件（并行工具调用）造成闪烁和掉帧。
-- 选中状态、过滤条件、滚动位置按页面保存，切页不丢。
+### 10.3 本地存储模型（Go 侧）
+- 单一数据源 `Store`（会话表、每个活跃会话的事件环形缓冲、命中/处置/裁决列表、标注、状态）；所有页面从 `Store` 读，网络层只往里写。
+- 每个会话内存里最多保留最近 **2000** 条事件，更早的按需分页；命中/处置/裁决不裁剪（量小）。
+- 推送先入队，按最多 **10 Hz** 合并后一次性更新界面，避免高频事件造成闪烁和掉帧。
+- 筛选条件、选中项、滚动位置、日期区间按页面保存，切页不丢。
+- 乐观更新：标注/静音先在本地标记「提交中」，服务端确认后落定，失败回滚并提示。
 
-### 8.4 一致性规则
-- 事件按 `(sessionId, seq)` 去重；命中/处置按 `(sessionId, seq, ruleId, key)` 去重——重连后服务端可能重发。
-- `applied` 以服务端的最终值为准：UI 不自行推断某个处置是否生效。
-- 守护进程重启导致 `streamId` 倒退时（`status.startedAt` 变化），UI 清空增量状态并重新拉取。
+### 10.4 一致性规则
+- 事件按 `(runId, sessionId, seq)` 去重；命中按 `hit.id` 去重；重连后服务端可能重发。
+- `applied` 以服务端最终值为准，UI 不自行推断某个处置是否生效。
+- 守护进程重启导致 `streamId` 倒退（`status.startedAt` 变化）时，清空增量状态并重新拉取。
 
-## 9. 空状态、错误状态与可访问性
-### 9.1 全局错误状态
-| 情形 | 表现 |
-|---|---|
-| 守护进程不可达（socket 不存在/连接被拒） | 全屏提示「守护进程未运行」+ 启动指引（`sv start` / launchd 提示，**UI 不自动启动它**，也不执行任何命令）；UI 每 5 秒自动重试 |
-| 鉴权失败（401/403） | 「token 无效或权限不对」+ 检查 `~/.agent-supervisor/token` 权限（0600）的提示 |
-| 协议版本不兼容 | 只读降级 + 提示升级哪一端 |
-| 单个请求超时/5xx | 就地行内错误 + 重试按钮，不影响其他区域；底栏记录最近错误（最多 20 条，可复制，已脱敏） |
-| 数据损坏/解析失败（schema 不符） | 该条记录显示「无法解析（schema 不符）」，其余照常；底栏计数 |
-| 磁盘/SQLite 错误（守护进程报） | 顶栏红色「守护进程存储异常」，展示守护进程给出的错误码 |
-- **监督静默失效是最坏情况**：任何时候 `adapters[].connectFailures15m > 0`、judge 连续失败、或配置文件有错（守护进程在用旧配置）都要在顶栏用警告色提示，而不是只写在日志里。
-
-### 9.2 可访问性
-> **风险项（需先验证）**：GPU 自绘界面不一定向系统暴露无障碍树（VoiceOver 读不到控件）。这是选择 native UI 的已知代价，必须在 UI0 阶段就验证（§10），验证不通过要有备选方案（例如提供「复制为文本报告」「在终端查看」的等价入口，`sv status|tail|explain` 已能覆盖大部分只读场景）。
-
-不依赖 MyGo 能力也必须满足的要求：
-- **键盘可达**：所有功能都能只用键盘完成。侧栏 ↑/↓ 切页并 Enter 进入；表格/时间线 ↑/↓ 移动选中行、Enter 展开详情、←/→ 在列表与详情之间切换焦点、`/` 聚焦搜索、`Esc` 返回/关闭详情、`Cmd+C` 复制选中项（脱敏文本）；顶栏状态区可通过快捷键聚焦并朗读/显示详情。
-- **焦点顺序**：顶栏 → 侧栏 → 过滤栏 → 主列表 → 详情 → 底栏；焦点环始终可见；对话框打开时焦点被限制在对话框内，关闭后回到触发它的控件。
-- **不只靠颜色**：L/M/H、通过/未通过/n/a、live/idle/ended、shadow 未生效，都用「文字或图形标记 + 颜色」双重编码（例如 H 用 `▲H`、M 用 `●M`、L 用 `·L`）。
-- **对比度**：正文与背景 ≥ 4.5:1，大号文字/图标 ≥ 3:1；提供浅色/深色两套，随系统外观切换；状态色在两套里都要过对比度检查。
-- **字号缩放**：支持至少 100%–200% 的界面缩放（含表格行高、时间线、线框里的固定宽度列都要随之调整，长文本换行或省略并可展开），最小字号不低于系统默认正文字号。
-- **动效**：实时更新不得产生闪烁；尊重系统「减少动态效果」设置；自动滚动可关闭。
-- **文字可选可复制**：详情里的命令、输出、消息都可以选择和复制（受 MyGo 能力限制，见 §10；做不到时提供「复制」按钮）。
-- **输入法**：搜索框和 YAML 草稿输入需要正确支持中文输入法（组合输入、候选窗口定位）——待验证。
-- **屏幕阅读器**（VoiceOver 等）：**待验证**；若无障碍树不可用，则以「文本报告」入口兜底，并在文档里如实标注为已知限制。
-- 所有状态变化（新告警、连接断开/恢复）除了视觉提示，还应提供可被辅助技术读到的文字通知（若无障碍树可用）。
-
-### 9.3 隐私与安全展示规则
-- 命令、输出、prompt、计划、消息均为脱敏后文本；UI 不提供「显示原文」开关。
-- 不可信内容（agent/工具/仓库产生的文本）在 UI 中不渲染为链接、不可点击执行、不解析为富文本。
-- 配置页只显示 `api_key_env` 变量名，不显示、不请求 key；错误信息与日志里不出现 key 和 Authorization 头。
-- 复制出的文本与屏幕显示一致（同样脱敏）。
-
-## 10. 需在 MyGo 上验证的清单（UI0 的第一件事）
-这一阶段没有联网、没有实测过 MyGo，下面每一项都是**未验证的假设**，不是已知能力。验证结论要写回本文并更新相应页面的设计。
+## 11. 需在 MyGo 上验证的清单（UI0 的第一件事）
+本阶段没有联网、没有实测过 MyGo；下面每一项都是**未验证的假设**，不是已知能力。验证结论要写回本文并更新对应视图的设计。
 
 | # | 验证项 | 为什么需要 | 不通过时的备选 |
 |---|---|---|---|
-| 1 | **表格/长列表虚拟化**（10⁴ 行不卡、选中/键盘导航/列宽调整） | 页面 1、2、3 都是长列表 | 自己做窗口化渲染（只绘制可见行）；或分页 |
-| 2 | **自绘图形能力**（线、矩形、文字、裁剪；用于迷你时间条与条形图） | 页面 2 迷你时间条、页面 5 条形图 | 文本条形（`▁▂▅▇`）、表格内百分比；这一版图表需求本来就很克制 |
-| 3 | **文本选择与复制**（多行、跨行选择、`Cmd+C`） | 命令/输出/消息要能复制 | 每个文本块提供「复制」按钮；整页「复制为文本报告」 |
-| 4 | **输入法（IME）**：组合输入、候选窗口位置、中文 | 搜索框、YAML 草稿 | 搜索只接受已提交文本；草稿用外部编辑器 |
-| 5 | **系统无障碍**：是否暴露无障碍树、VoiceOver 能否读到控件/焦点变化 | §9.2 风险项 | 键盘全可达 + 文本报告/终端等价入口，并如实标注限制 |
-| 6 | **键盘焦点管理**：焦点环、Tab 顺序、对话框焦点限制 | §9.2 | 自行实现焦点管理层 |
-| 7 | **高 DPI 与界面缩放、深浅色跟随系统** | §9.2 | 手动读取系统设置并重绘 |
-| 8 | **UDS 客户端**（Go `net` 即可，应不依赖 MyGo）与 SSE/NDJSON 解析 | §8 | 退回 HTTP+token |
-| 9 | **后台 goroutine 更新 UI 的线程模型**（从网络协程安全地提交界面更新） | §8.3 的 10 Hz 合并 | 通过单一 UI 事件队列 |
-| 10 | **窗口/菜单/托盘/通知**：是否支持菜单栏常驻或系统通知 | 可选：H 级告警弹系统通知 | 只在窗口内提示 |
-| 11 | **包体积与内存占用**（空窗口、加载 2000 事件后） | 无法在没有实测时给出数字，本文不编造 | 若超预算，缩小事件缓冲或减少自绘内容 |
+| 1 | **表格/长列表虚拟化**（10⁴ 行不卡；选中、键盘导航、列宽调整、复选框多选、Shift 连选） | 视图 1、2、3、6、7 都是长表 | 自己做窗口化渲染（只绘制可见行）；或分页 |
+| 2 | **自绘图形**（线、矩形、文字、裁剪） | 视图 2 迷你时间条、视图 6/7 的行内条形 | 文本条形（`▁▂▅▇`）、表格内百分比 |
+| 3 | **文本选择与复制**（多行、跨行、`Cmd+C`） | 命令/输出/消息/上游返回都要能复制 | 每个文本块提供「复制」按钮；整页「复制为文本报告」 |
+| 4 | **输入法（IME）**：组合输入、候选窗口位置、中文 | 搜索框、YAML 草稿、备注 | 搜索只接受已提交文本；草稿用外部编辑器 |
+| 5 | **系统无障碍**：是否暴露无障碍树、VoiceOver 能否读到控件与焦点变化 | §12 风险项 | 键盘全可达 + 文本报告/终端等价入口（`sv stats|explain`），并如实标注限制 |
+| 6 | **键盘焦点管理**：焦点环、Tab 顺序、对话框焦点限制 | §12 | 自行实现焦点管理层 |
+| 7 | **高 DPI 与界面缩放、深浅色跟随系统** | §12 | 手动读取系统设置并重绘 |
+| 8 | **UDS 客户端**（Go `net` 应不依赖 MyGo）与 SSE/NDJSON 解析 | §10 | 退回 HTTP+token |
+| 9 | **后台 goroutine 更新界面的线程模型** | §10.3 的 10 Hz 合并 | 通过单一 UI 事件队列 |
+| 10 | **窗口/菜单/托盘/系统通知** | 可选：H 级告警系统通知 | 只在窗口内提示 |
+| 11 | **包体积与内存占用**（空窗口、加载 2000 事件后） | 没有实测不给数字 | 超预算则缩小事件缓冲 |
 | 12 | **打包与分发**（macOS 签名/公证、与 Bun 守护进程的安装方式） | 交付形式 | 先以开发者构建运行 |
+| 13 | **多窗口/抽屉/整页详情**：详情用右侧抽屉还是整页导航，哪个更自然 | §1.2 的「点一行 → 详情」 | 整页导航 + 返回键 |
+| 14 | **恢复会话命令的模板**（`claude --resume <id>`、`codex resume <id>`）在 Jack 机器上的实际形式 | §4.2 可复制命令 | 暂不显示「恢复会话」，只给 `sv explain` / `sv replay` |
+| 15 | **日期区间选择器**（自绘日历或输入框）与**下拉多选**控件 | 所有列表页的顶部筛选 | 文本输入 + 预设按钮；多选用复选框列表 |
+| 16 | **CSV/文件保存对话框**或直接写到下载目录 | 导出 CSV | 写到固定目录并在界面里显示路径 |
 
-## 11. 开发里程碑（UI，晚于后端 M3）
+## 12. 空状态、错误状态与可访问性
+### 12.1 全局错误状态
+| 情形 | 表现 |
+|---|---|
+| 守护进程不可达（socket 不存在/连接被拒） | 全屏提示「守护进程未运行」+ 启动指引（`sv start` / launchd 提示，**UI 不自动启动它**，也不执行任何命令）；每 5 秒自动重试 |
+| 鉴权失败（401/403） | 「token 无效或权限不对」+ 检查 `~/.agent-supervisor/token` 权限（0600）的提示 |
+| 协议版本不兼容 | 只读降级 + 提示升级哪一端 |
+| 单个请求超时/5xx | 就地行内错误 + 重试，不影响其他区域；底栏记录最近错误（最多 20 条，可复制，已脱敏） |
+| 数据不符合 schema | 该条显示「无法解析（schema 不符）」，其余照常；底栏计数 |
+| 日志库错误（守护进程报） | 顶栏红色「日志存储异常」，展示守护进程给出的错误码；监督本身不受影响（日志写入 fail-open） |
+- **监督静默失效是最坏情况**：`adapter_health` 失败数 >0、judge 连续失败、配置文件有错（守护进程在用旧配置）、日志写入失败，都要在顶栏用警告色提示，而不是只写在日志里。
+
+### 12.2 可访问性
+> **风险项（需先验证）**：GPU 自绘界面不一定向系统暴露无障碍树（VoiceOver 读不到控件）。这是 native UI 的已知代价，必须在 UI0 验证（§11 第 5 项）；验证不通过要有备选——提供「复制为文本报告」和等价的命令行入口（`sv stats | explain | replay`，已能覆盖大部分只读场景），并在文档里如实标注为已知限制。**VoiceOver 支持标为待验证，不在此前承诺。**
+
+不依赖 MyGo 能力也必须满足：
+- **键盘可达**：所有功能只用键盘即可完成。侧栏 ↑/↓ 切页、Enter 进入；表格/时间线 ↑/↓ 移动选中行、Space 勾选、Shift+↑/↓ 连选、Enter 打开详情、←/→ 在列表与详情间切换焦点、`/` 聚焦搜索、`Esc` 返回/关闭、`Cmd+C` 复制选中项（脱敏文本）；标注快捷键（`F` 标误报、`U` 标有用）；顶栏状态区可用快捷键聚焦并展开详情。
+- **焦点顺序**：顶栏 → 侧栏 → 筛选条 → 合计条 → 主列表 → 详情 → 底栏；焦点环始终可见；对话框打开时焦点被限制在内，关闭后回到触发它的控件。
+- **不只靠颜色**：L/M/H、通过/未通过/n/a、live/idle/ended、shadow 未生效、状态正常/降级/不可用，都用「文字或图形标记 + 颜色」双重编码（H 用 `▲H`、M 用 `●M`、L 用 `·L`）。
+- **对比度**：正文 ≥ 4.5:1，大号文字/图标 ≥ 3:1；浅色/深色两套随系统外观切换，状态色在两套里都过对比度检查。
+- **字号缩放**：支持至少 100%–200% 的界面缩放（表格行高、固定宽度列、迷你时间条随之调整，长文本换行或省略并可展开），最小字号不低于系统默认正文字号。
+- **动效**：实时更新不得闪烁；尊重系统「减少动态效果」；自动滚动可关闭。
+- **文字可选可复制**：命令、输出、消息、上游返回都可选择复制（受 MyGo 能力限制，做不到时提供「复制」按钮）。
+- **输入法**：搜索框、YAML 草稿、备注需正确支持中文输入法（组合输入、候选窗口定位）——待验证。
+- 状态变化（新告警、连接断开/恢复、批量操作结果）除视觉提示外，若无障碍树可用，应提供可被辅助技术读到的文字通知。
+
+### 12.3 隐私与安全展示规则
+- 命令、输出、prompt、计划、消息、judge 请求/响应均为脱敏后文本；UI 不提供「显示原文」。
+- 不可信内容（agent/工具/仓库产生的文本）不渲染为链接、不可点击执行、不解析为富文本；可复制命令里不含任何密钥。
+- 配置页和 Judge 路由页只显示 `api_key_env` 变量名与「是否已设置」，不显示、不请求 key；错误信息与日志里不出现 key 和 Authorization 头。
+- CSV/JSON 导出与屏幕显示一致（同样脱敏）；导出文件写到用户选择的位置，UI 不上传任何内容。
+
+## 13. 开发里程碑（UI，晚于后端 M3）
 | 阶段 | 内容 | 前置 |
 |---|---|---|
-| UI0 | 空窗口 + §10 全部验证项的结论 + `GET /v1/status` 顶栏 + UDS/HTTP 连接状态机 | 守护进程的 `/v1/status`、`/v1/stream` |
-| UI1 | 页面 1（实时会话）+ 静音 | `/v1/sessions`、`mute` |
-| UI2 | 页面 2（事件与事故时间线，含实时跟随） | `/v1/sessions/{id}/events\|timeline` |
-| UI3 | 页面 5（回放结果，先只读已有 JSON 文件，再接 `/v1/replays`） | 回放 JSON（已有）；`/v1/replays` |
-| UI4 | 页面 3（Judge 裁决） | M3 的 judge 与 verdict 存储 |
-| UI5 | 页面 4（规则与配置，只读 + 校验） | `/v1/rules`、`/v1/config`、`/v1/config/validate` |
-| UI6（可选） | 配置写入（二次确认）、误报反馈写回标注草稿、系统通知 | 以上全部 |
+| UI0 | 空窗口 + §11 全部验证项的结论 + 顶栏 `GET /v1/status` + UDS/HTTP 连接状态机 | 守护进程的 `/v1/status`、`/v1/stream` |
+| UI1 | 视图 7 的只读文件版（直接读 `sv replay --format=json` / `sv eval --format=json` 的输出文件）+ 视图 2 回放视图 | 无需守护进程，可最先做 |
+| UI2 | 视图 1（实时会话：分组、子 agent、批量） | `/v1/sessions*`、`/v1/sessions/batch` |
+| UI3 | 视图 2 实时跟随 | `/v1/sessions/{id}/timeline`、`/v1/stream` |
+| UI4 | 视图 6（规则统计与标注） | `/v1/rules/stats`、`/v1/hits*`、`mark` |
+| UI5 | 视图 3 + 4（Judge 裁决与路由） | M3 的 judge 与 `judge_calls` 日志 |
+| UI6 | 视图 5（规则配置，只读 + 校验）、视图 7 联网版（新建回放、对比） | `/v1/rules`、`/v1/config*`、`/v1/replays`、`/v1/runs/compare` |
+| UI7（可选） | 配置写入（二次确认）、系统通知 | 以上全部 |
 
-> 实现顺序上，**UI3 可以先于守护进程完成**：回放结果就是 `sv replay --format=json` / `sv eval --format=json` 的输出文件，UI 可以直接读本地文件做第一个可用版本，不依赖守护进程。
-
-## 12. 待 Jack 确认 / 开放问题
-1. 第一版 UI 是否接受「只读 + 静音」？（配置写入放第二期）
-2. 误报率口径（per-alarm FDR）是否合适——页面 5 的门槛展示依赖它（`docs/decisions.md` #31）。
-3. X2 是否跟随 mode——影响页面 1/2 里「拦截未生效（shadow）」的展示（`docs/decisions.md` #20）。
-4. 是否需要系统通知 / 菜单栏常驻（取决于 §10 第 10 项的验证结果）。
-5. 若 §10 第 5 项（系统无障碍）验证不通过，是否接受「键盘全可达 + 文本报告」作为无障碍兜底？
-6. 守护进程 API 里 `streamId` 环形缓冲的上限（暂定每连接 10 000 条 / 5 分钟）。
+## 14. 已定的设计取舍（不再开放）
+1. 第一版配置**只读**，标注类写操作（标误报/有用、放行/驳回、静音、已复盘）可用。
+2. 误报率只来自人工标注；没有标注显示 n/a，不用 judge 的 ignore 率冒充。
+3. 模型名在 UI 上只作展示和事后统计维度，没有任何按模型改变阈值的入口。
+4. 守护进程 `streamId` 环形缓冲上限暂定每连接 10 000 条 / 5 分钟，实现时可调。
+5. 实现顺序：先做不依赖守护进程的回放结果只读版（UI1），再接实时数据。

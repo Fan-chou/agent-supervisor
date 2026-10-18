@@ -341,4 +341,4 @@ export class LogStore {
   }
 }
 
-export type OverrideKind = "sv_off" | "sv_quiet" | "manual_allow" | "manual_reject" | "mark_false_positive" | "mark_useful";
+export type OverrideKind = "sv_off" | "sv_quiet" | "sv_unmute" | "manual_allow" | "manual_reject" | "mark_false_positive" | "mark_useful" | "mark_reviewed";
