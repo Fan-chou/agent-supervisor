@@ -9,6 +9,7 @@ export interface SimOpts {
   judge?: JudgeFn;
   trustInferred?: boolean;
   planMd?: string;
+  sink?: import("../src/index.ts").LogSink;
   /** 每步前进的毫秒数。 */
   dt?: number;
 }
@@ -37,7 +38,7 @@ export class Sim {
     this.harness = opts.harness ?? "claude";
     this.model = opts.model;
     this.dt = opts.dt ?? 5000;
-    this.engine = new Engine({ cfg: opts.cfg ?? defaultConfig(), judge: opts.judge, policy: { trustInferredUnchanged: opts.trustInferred }, planMd: opts.planMd });
+    this.engine = new Engine({ cfg: opts.cfg ?? defaultConfig(), judge: opts.judge, policy: { trustInferredUnchanged: opts.trustInferred }, planMd: opts.planMd, sink: opts.sink });
     this.engine.tracker.cwd = opts.cwd ?? "/work/proj";
   }
 

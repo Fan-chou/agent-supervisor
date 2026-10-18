@@ -21,3 +21,7 @@ export * from "./judge/mock.ts";
 export * from "./judge/parse.ts";
 export * from "./judge/prompt.ts";
 export * from "./judge/client.ts";
+export * from "./store/schema.ts";
+export * from "./store/store.ts";
+export * from "./store/sink.ts";
+export * from "./store/queries.ts";

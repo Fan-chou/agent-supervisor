@@ -9,7 +9,7 @@ import { redact } from "../redact.ts";
 import { parseJudgeResponse } from "./parse.ts";
 import { buildJudgeMessages, type PromptStyle } from "./prompt.ts";
 import { JUDGE_SCHEMA } from "./parse.ts";
-import type { JudgeFn, JudgeRequest, JudgeResult } from "./types.ts";
+import type { JudgeFn, JudgeMeta, JudgeRequest, JudgeResult } from "./types.ts";
 
 export type ResponseFormatLevel = "json_schema" | "json_object" | "none";
 
@@ -56,7 +56,12 @@ function scrubError(s: string): string {
     .slice(0, 200);
 }
 
-const globToRe =(g: string) => new RegExp("^" + g.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$");
+/** 响应正文落盘前：脱敏、去 Authorization 痕迹、限长。 */
+function scrubBody(s: string): string {
+  return redact(s).replace(/authorization\s*[:=]\s*(bearer\s+)?\S+/gi, "[header removed]").slice(0, 20_000);
+}
+
+const globToRe = (g: string) => new RegExp("^" + g.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$");
 
 export class JudgeClient {
   readonly stats = new Map<string, ModelStats>();
@@ -129,6 +134,14 @@ export class JudgeClient {
   }
 
   async call(req: JudgeRequest): Promise<JudgeResult> {
+    const t0 = Date.now();
+    const meta: JudgeMeta = { httpRequests: 0, retries: 0 };
+    const r = await this.callInner(req, meta);
+    meta.latencyMs = Date.now() - t0;
+    return { ...r, meta };
+  }
+
+  private async callInner(req: JudgeRequest, meta: JudgeMeta): Promise<JudgeResult> {
     const model = this.routeModel(req);
     const st = this.stat(model);
     st.calls++;
@@ -139,6 +152,8 @@ export class JudgeClient {
       { role: "system", content: built.system },
       { role: "user", content: built.user },
     ];
+    meta.routeModel = model;
+    meta.requestBody = JSON.stringify({ model, messages, truncated: built.truncated });
     let level = this.startLevel(model);
     let downgraded = false;
     let parseRetried = false;
@@ -152,6 +167,8 @@ export class JudgeClient {
       }
       const res = await this.http(model, messages, level, remaining);
       st.httpRequests++;
+      meta.httpRequests = (meta.httpRequests ?? 0) + 1;
+      meta.formatLevel = level;
       if (res.kind === "timeout") {
         st.timeouts++;
         return { kind: "timeout", model };
@@ -165,6 +182,7 @@ export class JudgeClient {
           level = NEXT_LEVEL[level]!;
           this.formatCache.set(model, level);
           downgraded = true;
+          meta.formatDowngraded = true;
           continue;
         }
         st.errors++;
@@ -177,6 +195,14 @@ export class JudgeClient {
         json = null;
       }
       const parsed = json === null ? ({ ok: false, reason: "response-not-json", repairs: [] } as const) : parseJudgeResponse(json);
+      meta.repairs = [...parsed.repairs];
+      meta.responseBody = scrubBody(res.text);
+      const usage = (json as { usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } } | null)?.usage;
+      if (usage) {
+        meta.promptTokens = usage.prompt_tokens;
+        meta.completionTokens = usage.completion_tokens;
+        meta.cachedTokens = usage.prompt_tokens_details?.cached_tokens;
+      }
       if (parsed.ok) {
         st.ok++;
         if (parsed.out.verdict === "ignore") st.ignores++;
@@ -186,6 +212,7 @@ export class JudgeClient {
       // 只有异步调用才重试解析（同步调用在等 agent，等不起）
       if (!req.sync && !parseRetried) {
         parseRetried = true;
+        meta.retries = 1;
         messages.push({ role: "assistant", content: redact(res.text).slice(0, 2000) });
         messages.push({ role: "user", content: "The previous output was not valid JSON for the required schema. Reply with ONLY one JSON object matching the schema." });
         continue;

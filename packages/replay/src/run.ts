@@ -1,7 +1,7 @@
 // 回放：Event 流 → Engine → 命中时间线（JSON + 可读文本）。
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import { defaultConfig, Engine, mockJudge, redact, redactDeep, type Config, type Decision, type Event, type Hit, type JudgeFn, type MockOptions } from "@sv/core";
+import { defaultConfig, Engine, mockJudge, redact, redactDeep, StoreSink, type LogStore, type Config, type Decision, type Event, type Hit, type JudgeFn, type MockOptions } from "@sv/core";
 import { readClaudeTranscript } from "./claude.ts";
 import { readCodexRollout } from "./codex.ts";
 
@@ -16,6 +16,8 @@ export interface ReplayOptions {
   trustInferredUnchanged?: boolean;
   /** 只读取、不跑检测（测试读取器用）。 */
   format?: "claude" | "codex";
+  /** 写结构化日志：调用方先 beginRun 得到 runId（多个文件可以共用一个 run）。 */
+  log?: { store: LogStore; runId: number };
 }
 
 export interface TimelineEntry {
@@ -101,7 +103,8 @@ export async function replayEvents(events: Event[], opts: ReplayOptions = {}, fi
     judge = mockJudge(opts.mock);
     judgeMode = "mock";
   }
-  const engine = new Engine({ cfg, judge, planMd: opts.planMd, policy: { trustInferredUnchanged: opts.trustInferredUnchanged ?? true } });
+  const sink = opts.log ? new StoreSink(opts.log.store, { runId: opts.log.runId, channelPrefix: "replay", sourceFile: file }) : undefined;
+  const engine = new Engine({ cfg, judge, planMd: opts.planMd, sink, policy: { trustInferredUnchanged: opts.trustInferredUnchanged ?? true } });
   const t0 = events[0]?.ts ?? 0;
   const timeline: TimelineEntry[] = [];
   for (const e of events) {
@@ -156,6 +159,7 @@ export async function replayEvents(events: Event[], opts: ReplayOptions = {}, fi
     else if (j.result === "error") m.errors++;
     else if (j.verdict === "ignore") m.ignores++;
   }
+  engine.close();
   // 输出边界统一脱敏（P0-7、design §10）：命令、消息、detail 里可能带密钥
   return redactDeep({
     file,

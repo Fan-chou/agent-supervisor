@@ -6,6 +6,7 @@ import type { JudgeFn } from "./judge/types.ts";
 import { parsePlanMd, type Plan } from "./plan.ts";
 import { Policy, type Decision, type PolicyOptions } from "./policy.ts";
 import { SessionTracker } from "./session.ts";
+import type { JudgeCallRecord, LogSink } from "./store/sink.ts";
 
 export interface EngineOptions {
   cfg?: Config;
@@ -14,6 +15,8 @@ export interface EngineOptions {
   detectors?: Detector[];
   /** .supervisor/plan.md 的内容（优先于自动提取）。 */
   planMd?: string;
+  /** 结构化日志（design §18）：每处理一条事件调用一次。 */
+  sink?: LogSink;
 }
 
 export interface StepRecord {
@@ -31,12 +34,22 @@ export class Engine {
   private lastR4StepCount = 0;
   private readonly judge?: JudgeFn;
   private readonly detectors: Detector[];
+  private readonly sink?: LogSink;
+  private judgeCalls: JudgeCallRecord[] = [];
 
   constructor(opts: EngineOptions = {}) {
     this.cfg = opts.cfg ?? defaultConfig();
     this.tracker = new SessionTracker({ testFull: this.cfg.test.full, testFast: this.cfg.test.fast, extraPatterns: this.cfg.test.extra_patterns });
     this.policy = new Policy(this.cfg, this.tracker, opts.policy);
-    this.judge = opts.judge;
+    this.sink = opts.sink;
+    // 包一层记录每次 judge 调用（请求/结果/时间），供日志使用
+    this.judge = opts.judge
+      ? async (req) => {
+          const result = await opts.judge!(req);
+          this.judgeCalls.push({ req, result, ts: this.tracker.lastEventTs });
+          return result;
+        }
+      : undefined;
     this.detectors = opts.detectors ?? ALL_DETECTORS;
     if (opts.planMd) this.tracker.setFilePlan(parsePlanMd(opts.planMd));
   }
@@ -66,7 +79,23 @@ export class Engine {
     }
     const rec = { event: e, hits, decisions };
     this.records.push(rec);
+    const calls = this.judgeCalls;
+    this.judgeCalls = [];
+    try {
+      this.sink?.onFeed({ event: e, hits, decisions, judgeCalls: calls, tracker: this.tracker, cfg: this.cfg });
+    } catch (err) {
+      // 日志写入失败不能影响监督（fail-open）：只在 stderr 提示一次
+      if (!this.sinkWarned) console.error("[sv] 日志写入失败（已忽略，监督继续）：", String(err));
+      this.sinkWarned = true;
+    }
     return rec;
+  }
+
+  private sinkWarned = false;
+
+  /** 关闭日志（结算未走完的遵从观察窗口、结束 run）。 */
+  close(): void {
+    this.sink?.close();
   }
 
   async run(events: Iterable<Event>): Promise<StepRecord[]> {

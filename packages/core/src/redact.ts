@@ -27,7 +27,8 @@ const RULES: Rule[] = [
   // FOO_KEY=xxx、API_TOKEN: xxx、"secret": "xxx"
   {
     kind: "secret-assignment",
-    re: /(\b[A-Za-z0-9_.-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)S?["']?\s*[=:]\s*["']?)[^\s"'&,;}]{3,}/gi,
+    // 纯数字的值不是密钥（prompt_tokens: 1200、max_tokens=800），否则会把 token 用量之类的统计字段抹掉
+    re: /(\b[A-Za-z0-9_.-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)S?["']?\s*[=:]\s*["']?)(?!\d+(?:\.\d+)?(?:[\s"',;}\]]|$))[^\s"'&,;}]{3,}/gi,
     keepPrefix: true,
   },
   { kind: "password", re: /(\b(?:password|passwd|pwd)["']?\s*[=:]\s*["']?)[^\s"'&,;}]{1,}/gi, keepPrefix: true },

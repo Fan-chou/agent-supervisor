@@ -31,6 +31,47 @@ export interface Decision {
   atNextPre?: boolean;
   /** 受连续拦截上限约束的拦截（同一次调用上多个规则同时拦，只计 1 次）。 */
   counted?: boolean;
+  /** 结构化的抑制/降级原因（日志统计用；没有被抑制或降级时为空）。 */
+  suppressedBy?: SuppressCode;
+}
+
+export type SuppressCode =
+  | "user_off"
+  | "user_quiet"
+  | "observe_only"
+  | "cooldown" //            同规则同指纹冷却
+  | "category_dedupe" //     同 category 10 步内不重复
+  | "l_once" //              L 级本地建议每规则每会话 1 次
+  | "consecutive_cap" //     连续拦截上限，block 降级为 advise
+  | "unverified_ws" //       工作区指纹未核实，不拦只 advise
+  | "judge_merged" //        5 秒内同类命中合并
+  | "judge_budget" //        本会话 judge 次数用完
+  | "judge_cooldown" //      两次 judge 之间冷却
+  | "paused" //              judge done=true 暂停 R4/P4
+  | "fail_open" //          judge 超时/出错，放行
+  | "stop_budget" //         Stop 续跑次数用完
+  | "block_downgraded"; //   judge 判 block 但置信度不足/受限，降级为 advise
+
+const SUPPRESS_PATTERNS: [RegExp, SuppressCode][] = [
+  [/#sv off/, "user_off"],
+  [/#sv quiet/, "user_quiet"],
+  [/observe-only/, "observe_only"],
+  [/同规则同指纹冷却/, "cooldown"],
+  [/同 category 10 步内不重复/, "category_dedupe"],
+  [/每条规则每会话最多 1 次/, "l_once"],
+  [/连续拦截已达上限/, "consecutive_cap"],
+  [/工作区指纹未核实/, "unverified_ws"],
+  [/5 秒内同类命中合并|与同类命中合并为一次/, "judge_merged"],
+  [/judge 调用次数已用完/, "judge_budget"],
+  [/两次 judge 之间冷却/, "judge_cooldown"],
+  [/暂停 R4\/P4/, "paused"],
+  [/fail-open/, "fail_open"],
+  [/Stop 续跑次数已用完/, "stop_budget"],
+  [/judge 判 block，但置信度不足/, "block_downgraded"],
+];
+
+export function suppressCodeOf(reason: string): SuppressCode | undefined {
+  return SUPPRESS_PATTERNS.find(([re]) => re.test(reason))?.[1];
 }
 
 export interface PolicyOptions {
@@ -115,7 +156,7 @@ export class Policy {
   }
 
   private async one(e: Event, h: Hit, judge: JudgeFn | undefined, mHits: Hit[]): Promise<Decision | null> {
-    const base = (action: Action, reason: string, extra: Partial<Decision> = {}): Decision => ({ hit: h, action, reason, applied: false, ...extra });
+    const base = (action: Action, reason: string, extra: Partial<Decision> = {}): Decision => ({ hit: h, action, reason, applied: false, suppressedBy: suppressCodeOf(reason), ...extra });
 
     // 用户覆盖：#sv off 关掉一切（X2 是适配器本地规则，不受影响）；#sv quiet 关掉建议
     if (this.s.silenced === "off" && h.ruleId !== "X2") return base("skip", "user #sv off");
@@ -237,7 +278,7 @@ export class Policy {
   }
 
   private async judgeBatch(e: Event, hits: Hit[], judge: JudgeFn | undefined): Promise<Decision[]> {
-    const mk = (h: Hit, action: Action, reason: string, extra: Partial<Decision> = {}): Decision => ({ hit: h, action, reason, applied: false, ...extra });
+    const mk = (h: Hit, action: Action, reason: string, extra: Partial<Decision> = {}): Decision => ({ hit: h, action, reason, applied: false, suppressedBy: suppressCodeOf(reason), ...extra });
     if (!judge) return hits.map((h) => mk(h, "judge_off", "M 级：judge 关闭，记录为待判断"));
     const out: Decision[] = [];
     // 按 category 合并

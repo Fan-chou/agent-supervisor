@@ -208,6 +208,36 @@ export function applyOverride(cfg: Config, assignment: string): Config {
   return clone as unknown as Config;
 }
 
+/** 某条规则当前生效的阈值（写进日志的 hits.threshold_json，用于事后按阈值复盘调参）。 */
+export function thresholdsForRule(ruleId: string, cfg: Config): Record<string, unknown> {
+  const t = cfg.thresholds;
+  const d = cfg.detect;
+  switch (ruleId) {
+    case "L1": return { advise_after_failures: t.L1_advise, block_attempt: 3 };
+    case "L2": return { repeat: t.L2_repeat, window_steps: 12 };
+    case "L2a": return { repeat: 8, window_steps: 12 };
+    case "L3": return { repeat: 3, window_steps: 10 };
+    case "L4": return { returns: 2 };
+    case "L5": return { segments_L: d.l5_segments_L, segments_M: d.l5_segments_M };
+    case "L6": return { reads: 3 };
+    case "S1": return { readonly_steps: t.S1_readonly };
+    case "S2": return { stall_steps: 7 };
+    case "S3": return { minutes: d.s3_minutes, calls: d.s3_calls };
+    case "S4": return { subagents: 15, empty_run: 3 };
+    case "P4": return { every_edits: d.p4_every_edits };
+    case "P6": return { deleted_lines: d.p6_deleted_lines };
+    case "R1": return { calls: d.r1_calls };
+    case "R2": return { budget_usd: d.session_budget_usd ?? null, L: 0.8, M: 1 };
+    case "R3": return { context_window: d.context_window, ratio: 0.85 };
+    case "R4": return { every_steps: d.r4_interval_steps };
+    case "TB": return { full_tests_per_turn: t.full_tests_per_turn, verify_calls_per_turn: t.verify_calls_per_turn };
+    case "T1": case "T2": case "T3": case "T4": case "T5": case "T6": case "T7": case "T8":
+      return { ladder: (t as unknown as Record<string, unknown>)[ruleId] };
+    default:
+      return {};
+  }
+}
+
 /** 阶梯取值：返回满足的最高级别。 */
 export function ladderLevel(l: Ladder, n: number, scale = 1): Level | null {
   const order: Level[] = ["H", "M", "advise", "L"];

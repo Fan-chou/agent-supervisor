@@ -36,6 +36,10 @@ describe("redact", () => {
     expect(redact("password=hunter2 user=bob")).toBe("password=[REDACTED:password] user=bob");
     expect(redact('{"api_key": "abc12345"}')).not.toContain("abc12345");
   });
+  test("纯数字的值不当作密钥（token 用量等统计字段保持原样）", () => {
+    expect(redact(JSON.stringify({ usage: { prompt_tokens: 1200, completion_tokens: 80 } }))).toBe(JSON.stringify({ usage: { prompt_tokens: 1200, completion_tokens: 80 } }));
+    expect(redact("max_tokens=800 API_KEY=abc12345")).toBe("max_tokens=800 API_KEY=[REDACTED:secret-assignment]");
+  });
   test("URL 里的口令", () => {
     const out = redact("postgres://admin:s3cretpw@db.local:5432/app");
     expect(out).not.toContain("s3cretpw");
