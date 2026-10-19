@@ -1,0 +1,5 @@
+/build/
+/.mygo/
+/out/
+*.png
+!testdata/**/*.png

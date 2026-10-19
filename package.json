@@ -5,7 +5,9 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build:hook": "bun build --compile packages/hook/src/main.ts --outfile bin/sv-hook"
+    "build:hook": "bun build --compile packages/hook/src/main.ts --outfile bin/sv-hook",
+    "gen:ui": "bun ui/gen/gen-go.ts && gofmt -w ui/api/types_gen.go",
+    "test:ui": "go -C ui test ./..."
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",

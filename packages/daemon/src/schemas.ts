@@ -91,11 +91,11 @@ const DangerStats = obj({
   bySession: arr(obj({ runId: int, sessionId: str, dangerous: int, wouldHaveBlocked: int, enforced: int })),
 });
 const RuleStat = obj({ rule: str, hits: int, sessions: int, hitsPer100Calls: nul(num), sessionRate: nul(num), bySev: rec(int), actions: rec(int), outcomes: rec(int), suppressed: rec(int), applied: int, labeledFp: int, labeledUseful: int, fpRate: nul(num), delivered: int, complied: int, notComplied: int, complianceRate: nul(num) });
-const Run = obj({ id: int, kind: en("live", "replay", "eval"), label: nul(str), source: nul(str), mode: nul(str), judge_mode: nul(str), started_ts: int, ended_ts: nul(int), sessions: int, hits: int }, ["id", "kind", "started_ts", "sessions", "hits"]);
-const Status = obj({ protocol: int, version: str, mode: en("shadow", "advise", "enforce"), startedAt: int, runId: int, sessions: int, adapterFailures15m: rec(int) }, ["protocol", "version", "mode", "startedAt", "runId", "sessions", "adapterFailures15m"]);
+const Run = obj({ id: int, kind: en("live", "replay", "eval"), label: nul(str), source: nul(str), mode: nul(str), judge_mode: nul(str), thresholds_hash: nul(str), overrides_json: nul(str), started_ts: int, ended_ts: nul(int), sessions: int, hits: int }, ["id", "kind", "started_ts", "sessions", "hits"]);
+const Status = obj({ protocol: int, version: str, mode: en("shadow", "advise", "enforce"), startedAt: int, runId: int, db: str, sessions: int, outbox: rec(int), adapterFailures15m: rec(int), judge: obj({ enabled: bool }) }, ["protocol", "version", "mode", "startedAt", "runId", "sessions", "adapterFailures15m"]);
 const Delivery = obj({ kind: en("block", "ask", "advise", "stop_continue"), text: str, deliveryId: str, ruleId: str, createdAtSeq: int }, ["kind", "text"]);
 const StreamMessage = obj(
-  { streamId: str, type: en("session", "event", "hit", "decision", "delivery", "status", "heartbeat", "reset"), ts: int, sessionId: str },
+  { streamId: str, type: en("session", "event", "hit", "decision", "delivery", "status", "heartbeat", "reset"), ts: int, sessionId: str, harness: str, runId: int, seq: int, phase: str, tool: str, status: str, model: str, ruleId: str, sev: str, category: str, dangerous: bool, action: str, applied: bool, outcome: nul(str), deliveryId: str, kind: str, hookPoint: str, mode: str, sessions: int, reason: str },
   ["streamId", "type", "ts"],
 );
 const Timeline = obj({ runId: int, entries: arr({ $ref: "#/$defs/TimelineEntry" }), hasMore: bool });
@@ -129,12 +129,12 @@ const JudgeCallList = obj({
   totals: obj({ calls: int, ok: int, failed: int, parseFail: int, promptTokens: num, completionTokens: num, cachedTokens: num, costUsd: nul(num), latencyP50: nul(num), latencyP95: nul(num) }),
 });
 const JudgeCallDetail = obj(
-  { id: int, reason: nul(str), messageRaw: nul(str), httpRequests: nul(num), formatLevel: nul(str), repairs: arr(str), bodiesStored: bool, hits: arr({ type: "object" }), decisions: arr({ type: "object" }), deliveries: arr({ type: "object" }) },
+  { ...(JudgeCall.properties as Record<string, S>), reason: nul(str), messageRaw: nul(str), httpRequests: nul(num), formatLevel: nul(str), repairs: arr(str), request: { type: ["object", "null"] }, response: { type: ["object", "null"] }, bodiesStored: bool, hits: arr({ type: "object" }), decisions: arr({ type: "object" }), deliveries: arr({ type: "object" }) },
   ["id", "repairs", "bodiesStored", "hits", "decisions", "deliveries"],
 );
 
 const Rule = obj(
-  { id: str, title: str, category: str, level: en("L", "M", "H", "M→H", "L→M", "observe"), thresholds: { type: "object" }, override: nul({ type: "object" }), disabled: bool, edited: bool, protected: bool },
+  { id: str, title: str, category: str, level: en("L", "M", "H", "M→H", "L→M", "observe"), source: str, observeOnly: bool, thresholds: { type: "object" }, override: nul({ type: "object" }), disabled: bool, edited: bool, protected: bool },
   ["id", "title", "category", "level", "thresholds", "override", "disabled", "edited", "protected"],
 );
 const RuleList = obj({ rules: arr({ $ref: "#/$defs/Rule" }), mode: en("shadow", "advise", "enforce") });
