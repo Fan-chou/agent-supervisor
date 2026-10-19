@@ -77,18 +77,6 @@ func NewHTTP(base, token string) *Client {
 	return &Client{hc: &http.Client{Transport: tr, Timeout: 10 * time.Second}, sc: &http.Client{Transport: tr}, base: strings.TrimRight(base, "/"), token: token, Actor: "ui"}
 }
 
-// CheckPerm 检查 socket / token 文件权限是否是 0600（§9：不是就在顶栏警告）。文件不存在时返回 ("", nil)。
-func CheckPerm(path string) (warn string) {
-	st, err := os.Stat(path)
-	if err != nil {
-		return ""
-	}
-	if st.Mode().Perm()&0o077 != 0 {
-		return fmt.Sprintf("%s 的权限是 %04o，应为 0600", path, st.Mode().Perm())
-	}
-	return ""
-}
-
 func (c *Client) do(ctx context.Context, hc *http.Client, method, path string, q url.Values, body []byte) (*http.Response, error) {
 	u := c.base + path
 	if len(q) > 0 {
