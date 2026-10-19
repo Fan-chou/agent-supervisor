@@ -277,3 +277,9 @@
 - 搜索框占位符是 MyGo 内置英文「Search」，未本地化。
 - 回放页对比只支持两个运行；评测报告只列规则行，没有图表；危险页没有按类别/会话的点击筛选；会话页时间线不支持「加载更早的记录」按钮（只显示最近 500 条并提示）。
 - 数字没有计数动画（为保证截图稳定先不做）。
+
+## 前端 Linear 式改版（Jack 反馈第一版「花哨」；见 docs/ui-design.md §9）
+**做了什么**：信息架构与数据层不变，只重做视觉：灰阶底与文字层级、1px 细线描边、小圆角（8）、无阴影/渐变/大块彩色；导航轨与页头改成细线分隔；环形图删除（类别分布改灰色横条）；规则命中柱仅灰阶；胶囊标签改为细线描边灰字；级别 H/M/L 只用灰度+符号。颜色只留给三态：危险=朱红三角（无底色）、会拦=赭金虚线空心斜体、已拦截=实心墨块反白；灰度截图里三者仍可分。同时修了此前的草稿被后台刷新覆盖、回放默认 A/B 反复补回、窄窗口（960）收起次要信息。
+**截图**（`.supervisor-run/shots/`，前缀 `ln-`，浅/深各一，关键页另有 `-gray`）：`ln-overview`、`ln-overview-tall`、`ln-overview-min`、`ln-sessions`、`ln-sessions-min`、`ln-sessions-inspector`、`ln-sessions-enforced`、`ln-danger`、`ln-rules`、`ln-rules-x2`、`ln-judge`、`ln-judge-routes`、`ln-replay`、`ln-titlebar-light`。
+**测试**：`go -C ui vet/test ./...` 通过，`bun test` 通过。旧的 `wd-` 截图是上一版风格，已作废。
+**未验证**：真实窗口（TitleBarHidden、拖动区）仍未实机看过。
