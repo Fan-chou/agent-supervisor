@@ -37,6 +37,8 @@ for t in $TARGETS; do
 PL
   else
     CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go -C ui build -tags embedbackend -trimpath -ldflags "-s -w -H windowsgui" -o "$d/Agent Supervisor.exe" ./cmd/sv-ui
+    # GUI 子系统的 exe 在终端里没有输出；sv.exe 是很小的控制台转发器（不内嵌后端），命令行统一用它
+    CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go -C ui build -trimpath -ldflags "-s -w" -o "$d/sv.exe" ./cmd/sv
   fi
   (cd "$d" && zip -qry "$OUT/$name.zip" .)
   rm -rf "$d"

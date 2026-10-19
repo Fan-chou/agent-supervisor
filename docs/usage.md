@@ -6,6 +6,9 @@
 从 GitHub Actions / Release 下载 zip：macOS 是 `Agent Supervisor.app`，Windows 是 `Agent Supervisor.exe`，后端（sv / sv-hook / OpenCode 插件 / 配置样例）都内嵌在里面。
 - 首次运行自动解压到固定目录（内容变了才重写）：macOS `~/Library/Application Support/agent-supervisor/bin`，Windows `%LOCALAPPDATA%\agent-supervisor\bin`（`SV_BIN_DIR` 可覆盖）。打开界面时守护进程没在跑会自动后台启动（日志 `../daemon.log`）。
 - 命令行透传：`<程序> sv <参数>` 等同下文的 `sv`，`<程序> hook <参数>` 等同 sv-hook。macOS 的程序路径是 `"Agent Supervisor.app/Contents/MacOS/sv-ui"`。
+- **Windows 命令行**：`Agent Supervisor.exe` 是 GUI 程序（双击不弹黑窗），在终端里没有输出、cmd 也不会等它。命令行请用 zip 里同目录的 `sv.exe`（小型控制台转发器）：`sv.exe status`、`sv.exe install claude`；它会先让 `Agent Supervisor.exe` 把后端解压/更新到固定目录，再转交给解压出的 sv，输出和退出码照常。钩子不经过它，直接指向解压出的 `sv-hook.exe`。
+- **Windows 钩子路径**：`sv install claude|codex` 在 Windows 上打印的命令一律是带引号的正斜杠路径（如 `"C:/Users/<你>/AppData/Local/agent-supervisor/bin/sv-hook.exe" claude`）。Claude Code 官方文档：命令串在 Windows 上交给 Git Bash 执行，没装 Git Bash 才用 PowerShell；反斜杠会被 bash 吃掉。若你没装 Git Bash、命令被 PowerShell 执行，带引号的路径需要在前面加 `& `（或在该钩子上用 `args` 的直接执行形式）。Codex 与 OpenCode 在 Windows 上的钩子执行方式我没有查到官方说明（OpenCode 是插件，不经命令串）。
+- **Windows 权限**：Windows 没有 POSIX 权限位，界面不再检查 socket/token 是否为 0600，也就不会有假告警；文件靠用户目录本身的 ACL 保护。
 - `<程序> sv install claude|codex|opencode` 打印的 hook 命令直接指向解压出的 sv-hook 固定路径（含空格时已加引号），升级不改路径；hook 出错照旧 fail-open。
 - 未签名：macOS 首次打开右键「打开」，或 `xattr -dr com.apple.quarantine "Agent Supervisor.app"`。
 

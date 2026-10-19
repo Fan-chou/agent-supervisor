@@ -8,12 +8,12 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"github.com/Fan-chou/agent-supervisor/ui/internal/bepath"
 	"io/fs"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"time"
 )
 
@@ -27,29 +27,12 @@ var backendFiles = []struct {
 	{"embedded/config.example.yaml", "config.example.yaml", false},
 }
 
-// backendDir：SV_BIN_DIR 覆盖；macOS ~/Library/Application Support/agent-supervisor/bin；Windows %LOCALAPPDATA%\agent-supervisor\bin。
-func backendDir() (string, error) {
-	if d := os.Getenv("SV_BIN_DIR"); d != "" {
-		return d, nil
-	}
-	if runtime.GOOS == "windows" {
-		if d := os.Getenv("LOCALAPPDATA"); d != "" {
-			return filepath.Join(d, "agent-supervisor", "bin"), nil
-		}
-	}
-	d, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(d, "agent-supervisor", "bin"), nil
-}
+// 目录/文件名/环境的约定在 internal/bepath（与 Windows 控制台转发器 sv.exe 共用）。
+func backendDir() (string, error) { return bepath.Dir() }
 
-func exeName(n string) string {
-	if runtime.GOOS == "windows" && (n == "sv" || n == "sv-hook") {
-		return n + ".exe"
-	}
-	return n
-}
+func exeName(n string) string { return bepath.ExeName(n) }
+
+func backendEnv(dir string) []string { return bepath.Env(dir) }
 
 // extractBackend 把内嵌文件写到 backendDir；已存在且 sha256 相同则跳过。
 func extractBackend() (string, error) {
@@ -99,17 +82,17 @@ func extractBackend() (string, error) {
 	return dir, nil
 }
 
-func backendEnv(dir string) []string {
-	return append(os.Environ(),
-		"SV_HOOK_PATH="+filepath.Join(dir, exeName("sv-hook")),
-		"SV_OPENCODE_PLUGIN="+filepath.Join(dir, "opencode-plugin", "agent-supervisor.ts"),
-	)
-}
-
 // passthrough 处理 `sv-ui sv ...` / `sv-ui hook ...`；返回 false 表示不是透传调用。
 func passthrough(args []string) bool {
-	if len(args) == 0 || (args[0] != "sv" && args[0] != "hook") {
+	if len(args) == 0 || (args[0] != "sv" && args[0] != "hook" && args[0] != "extract") {
 		return false
+	}
+	if args[0] == "extract" { // 只解压不运行：Windows 控制台转发器 sv.exe 用它保证后端与本程序同版本
+		if _, err := extractBackend(); err != nil {
+			fmt.Fprintln(os.Stderr, "sv-ui:", err)
+			os.Exit(2)
+		}
+		os.Exit(0)
 	}
 	dir, err := extractBackend()
 	if err != nil {
