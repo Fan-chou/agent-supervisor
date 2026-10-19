@@ -189,6 +189,7 @@ func TestShotJudge(t *testing.T) {
 	a, _ := newDemoApp(t)
 	a.Goto(PageJudge)
 	a.selectJudge(5)
+	a.jd.open = true
 	shoot(t, a, "judge", true, "裁决记录", "judge 调用 #5")
 	a.jd.tab = 1
 	shoot(t, a, "judge-routes", false, "路由与健康", "supervisor-judge")

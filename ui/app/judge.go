@@ -16,6 +16,7 @@ type judgePage struct {
 	stats    []api.JudgeStat
 	routes   api.JudgeRoutes
 	hasRoute bool
+	open     bool // 右侧详情面板
 	sel      int64
 	detail   *api.JudgeCallDetail
 	list     ui.ListState
@@ -33,6 +34,11 @@ func (a *App) loadJudge() {
 		rt, rerr := a.Client.JudgeRoutes(ctx, url.Values{"since": {a.sinceDay(7)}})
 		return func() {
 			a.jd.calls, a.jd.stats = cl, st
+			keys := make([]string, len(cl.Calls))
+			for i, jc := range cl.Calls {
+				keys[i] = fmt.Sprint(jc.ID)
+			}
+			a.noteList("judge", keys)
 			if rerr == nil {
 				a.jd.routes, a.jd.hasRoute = rt, true
 			}
@@ -59,6 +65,9 @@ func (a *App) selectJudge(id int64) {
 }
 
 func (a *App) judgeView(c *ui.Context) {
+	if a.jd.tab == 0 {
+		a.judgeKeys(c)
+	}
 	ui.Column(c).Fill().Padding(0, 24, 16, 24).Gap(12).MinHeight(0).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 			ui.Segmented(c, &a.jd.tab, "裁决记录", "路由与健康")
@@ -141,14 +150,36 @@ func (a *App) judgeRecords(c *ui.Context) {
 			})
 			return
 		}
-		ui.Column(c).Width(470).MinHeight(0).Children(func() {
+		ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
 			a.jd.list.Key = func(i int) any { return calls[i].ID }
 			ui.List(c, &a.jd.list, len(calls), func(i int) { a.judgeRow(c, calls[i]) }).Grow(1).MinHeight(0)
 		})
-		ui.Scroll(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
-			ui.Column(c).FillWidth().Gap(12).Children(func() { a.judgeDetail(c) })
-		})
+		if a.jd.open && a.jd.detail != nil {
+			a.sidePanel(c, 0, 0, func() {
+				a.panelHeader(c, fmt.Sprintf("裁决 #%d", a.jd.sel), func() { a.jd.open = false })
+				a.judgeDetail(c)
+			})
+		}
 	})
+}
+
+// judgeKeys：J/K 移动选中的调用（面板已开时右侧跟着切），Enter 打开详情。
+func (a *App) judgeKeys(c *ui.Context) {
+	calls := a.jd.calls.Calls
+	cur := -1
+	for i, jc := range calls {
+		if jc.ID == a.jd.sel {
+			cur = i
+		}
+	}
+	if dir := a.moveDir(c); dir != 0 {
+		if i := stepIndex(cur, dir, len(calls)); i >= 0 {
+			a.selectJudge(calls[i].ID)
+			a.jd.list.ScrollIntoView(i)
+		}
+	} else if a.enterPressed(c) && cur >= 0 {
+		a.jd.open = true
+	}
 }
 
 func (a *App) statCardJ(c *ui.Context, title, value, note string) {
@@ -165,7 +196,21 @@ func (a *App) statCardJ(c *ui.Context, title, value, note string) {
 func (a *App) judgeRow(c *ui.Context, jc api.JudgeCall) {
 	p := a.pl
 	row := ui.Column(c).Key(jc.ID).FillWidth().Margin(0, 0, 6, 0).Gap(6).Padding(11, 12).Radius(8).Border(1, p.Line)
+	row = a.markFresh(row, "judge", fmt.Sprint(jc.ID))
 	row = a.hoverable(row, a.jd.sel == jc.ID)
+	row = row.ContextMenu(func(m *ui.Menu) {
+		if m.Item("查看详情").Shortcut(0, ui.KeyEnter).Chosen() {
+			a.selectJudge(jc.ID)
+			a.jd.open = true
+		}
+		m.Separator()
+		if m.Item("复制调用 ID").Chosen() {
+			c.WriteClipboard(fmt.Sprint(jc.ID))
+		}
+		if m.Item("复制会话 ID").Chosen() {
+			c.WriteClipboard(jc.SessionID)
+		}
+	})
 	row.Children(func() {
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, fmt.Sprintf("#%d", jc.ID)).Font("monospace").FontSize(13).FontWeight(700)
@@ -192,6 +237,7 @@ func (a *App) judgeRow(c *ui.Context, jc api.JudgeCall) {
 	})
 	if row.Clicked() {
 		a.selectJudge(jc.ID)
+		a.jd.open = true
 	}
 }
 

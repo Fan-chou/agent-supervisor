@@ -42,6 +42,9 @@ func (a *App) View(c *ui.Context) {
 			a.openPalette()
 		}
 	})
+	if !a.pal.open && a.panelOpen() && c.Shortcut(0, ui.KeyEscape) {
+		a.closePanel()
+	}
 	a.tickFresh(c)
 	defer a.palette(c)
 	if a.toast != "" {
@@ -113,6 +116,16 @@ func (a *App) rail(c *ui.Context) {
 	})
 }
 
+// navShortcut 返回页面的快捷键提示，如「⌘2」。
+func navShortcut(id string) string {
+	for i, d := range pageDefs {
+		if d.id == id {
+			return fmt.Sprintf("⌘%d", i+1)
+		}
+	}
+	return ""
+}
+
 func (a *App) navItem(c *ui.Context, d pageDef) {
 	p := a.pl
 	sel := a.page == d.id
@@ -142,7 +155,7 @@ func (a *App) navItem(c *ui.Context, d pageDef) {
 			w = 650
 		}
 		ui.Text(c, d.title).FontSize(11).FontWeight(w).TextColor(fg)
-	}).Label(d.title)
+	}).Label(d.title).Tooltip(d.title + " · " + navShortcut(d.id))
 	if it.Clicked() {
 		a.Goto(d.id)
 	}

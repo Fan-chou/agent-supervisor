@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,7 +28,8 @@ func TestRunnerReconnects(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	a := New(ctx, api.NewHTTP(srv.URL, ""), func(fn func()) { fn() })
+	var mu sync.Mutex // 真实环境里 post 都在主线程执行；这里用互斥模拟这个串行性
+	a := New(ctx, api.NewHTTP(srv.URL, ""), func(fn func()) { mu.Lock(); defer mu.Unlock(); fn() })
 	a.Start()
 	waitState(t, a, Live, 5*time.Second)
 

@@ -30,8 +30,12 @@ type sessionsPage struct {
 	filter   int // 0 全部 · 1 仅命中 · 2 仅危险
 	tl       ui.ListState
 	rows     []TLRow
-	hitSel   int64
+	hitSel   int64 // 右侧面板里打开的命中
+	hitCur   int64 // 键盘游标所在的命中
 	showInsp bool
+
+	order    []string // 左侧列表当前可见的会话顺序（J/K 用），由 sessionList 每帧更新
+	orderRow []int    // 对应的列表行号
 
 	// 派生数据缓存：entries 变了（ver 变）或筛选变了才重算，平时每帧零开销。
 	ver   int
@@ -116,7 +120,7 @@ func (a *App) selectSession(id string) {
 	}
 	a.ss.sel, a.ss.entries, a.ss.tlLoaded, a.ss.hasMore = id, nil, false, false
 	a.ss.ver++
-	a.ss.hitSel, a.ss.showInsp = 0, false
+	a.ss.hitSel, a.ss.hitCur, a.ss.showInsp = 0, 0, false
 	a.ss.tl = ui.ListState{FollowEnd: true}
 	a.loadTimeline()
 }
@@ -177,25 +181,94 @@ func (a *App) loadTimeline() {
 				a.ss.hasMore = true
 			}
 			a.ss.tlLoaded = true
-				a.ss.ver++
-				keys := make([]string, 0, len(tl.Entries))
-				for _, e := range tl.Entries {
-					if e.Hit != nil {
-						keys = append(keys, entryKey(e))
-					}
+			a.ss.ver++
+			keys := make([]string, 0, len(tl.Entries))
+			for _, e := range tl.Entries {
+				if e.Hit != nil {
+					keys = append(keys, entryKey(e))
 				}
-				a.noteList("tl:"+id, keys)
+			}
+			a.noteList("tl:"+id, keys)
 		}, nil
 	})
 }
 
+// sessionsKeys：J/K 在左侧会话列表里换会话；Shift+J/K 在时间线的命中之间移动游标（面板已开时右侧跟着切）；
+// Enter 打开游标命中的检视面板。
+func (a *App) sessionsKeys(c *ui.Context) {
+	if a.pal.open {
+		return
+	}
+	t := &a.ss
+	switch {
+	case c.Shortcut(ui.Shift, ui.KeyJ):
+		a.moveHit(1)
+	case c.Shortcut(ui.Shift, ui.KeyK):
+		a.moveHit(-1)
+	default:
+		if dir := a.moveDir(c); dir != 0 {
+			cur := -1
+			for i, id := range t.order {
+				if id == t.sel {
+					cur = i
+				}
+			}
+			if i := stepIndex(cur, dir, len(t.order)); i >= 0 {
+				a.selectSession(t.order[i])
+				if t.left.Key != nil {
+					t.left.ScrollIntoView(t.orderRow[i])
+				}
+			}
+		} else if a.enterPressed(c) {
+			if t.hitCur == 0 {
+				a.moveHit(1)
+			}
+			a.openHit(t.hitCur)
+		}
+	}
+}
+
+func (a *App) moveHit(dir int) {
+	t := &a.ss
+	rows := a.derived().rows
+	var idx []int
+	cur := -1
+	for i, r := range rows {
+		if r.Hit {
+			if r.Entry.Hit.HitID == t.hitCur {
+				cur = len(idx)
+			}
+			idx = append(idx, i)
+		}
+	}
+	if k := stepIndex(cur, dir, len(idx)); k >= 0 {
+		t.hitCur = rows[idx[k]].Entry.Hit.HitID
+		t.tl.ScrollIntoView(idx[k])
+		if t.hitSel != 0 {
+			a.openHit(t.hitCur)
+		}
+	}
+}
+
+func (a *App) openHit(id int64) {
+	if id == 0 {
+		return
+	}
+	a.ss.hitCur, a.ss.hitSel = id, id
+	a.loadExplain(id)
+}
+
 func (a *App) sessionsView(c *ui.Context) {
+	a.sessionsKeys(c)
 	ui.Row(c).Fill().Padding(0, 24, 16, 24).AlignItems(ui.Stretch).Children(func() {
 		ui.Split(c, &a.ss.splitW, func() {
 			ui.Column(c).Fill().MinHeight(0).Padding(0, 14, 0, 0).Gap(10).Children(func() { a.sessionList(c) })
 		}, func() {
 			ui.Column(c).Fill().MinHeight(0).MinWidth(0).Padding(0, 0, 0, 14).Gap(12).Children(func() { a.sessionDetail(c) })
 		}).Grow(1).MinHeight(0)
+		if a.ss.hitSel != 0 && a.ex.id == a.ss.hitSel {
+			a.sidePanel(c, panelRightM, panelBottom, func() { a.inspector(c, func() { a.ss.hitSel = 0 }) })
+		}
 	})
 }
 
@@ -209,6 +282,12 @@ func (a *App) sessionList(c *ui.Context) {
 	}
 	groups := GroupSessions(a.sessions, filt)
 	rows := FlattenGroups(groups, a.ss.collapsed)
+	a.ss.order, a.ss.orderRow = a.ss.order[:0], a.ss.orderRow[:0]
+	for i, r := range rows {
+		if r.Session != nil {
+			a.ss.order, a.ss.orderRow = append(a.ss.order, r.Session.SessionID), append(a.ss.orderRow, i)
+		}
+	}
 	ended := 0
 	for _, s := range a.sessions {
 		if s.State == "ended" {
@@ -276,7 +355,18 @@ func (a *App) sessionCard(c *ui.Context, s api.SessionSummary) {
 	} else if card.Hovered() {
 		card = card.Background(p.Card2)
 	}
-	card.Cursor(ui.CursorPointer).Transition(ui.ElementTransition{Colors: true, Duration: 120e6}).Children(func() {
+	card.Cursor(ui.CursorPointer).Transition(colorsOnly).ContextMenu(func(m *ui.Menu) {
+		if m.Item("查看时间线").Chosen() {
+			a.selectSession(s.SessionID)
+		}
+		m.Separator()
+		if m.Item("复制会话 ID").Chosen() {
+			c.WriteClipboard(s.SessionID)
+		}
+		if pj := Str(s.Project); pj != "" && m.Item("复制项目路径").Chosen() {
+			c.WriteClipboard(pj)
+		}
+	}).Children(func() {
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Box(c).Size(9, 9).Children(func() { a.stateDot(c, s.State) })
 			ui.Text(c, sid(s.SessionID)).Font("monospace").FontSize(13).FontWeight(600).SingleLine()
@@ -350,13 +440,6 @@ func (a *App) sessionDetail(c *ui.Context) {
 	}
 	ui.Row(c).Grow(1).MinHeight(0).Gap(12).AlignItems(ui.Stretch).Children(func() {
 		a.timelineList(c)
-		if a.ss.hitSel != 0 && a.ex.id == a.ss.hitSel {
-			a.card(c).Width(330).MinHeight(0).Gap(8).Transition(ui.ElementTransition{Enter: &ui.Motion{X: 24}, Duration: 200e6}).Children(func() {
-				ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
-					ui.Column(c).FillWidth().Gap(8).Children(func() { a.inspector(c, func() { a.ss.hitSel = 0 }) })
-				})
-			})
-		}
 	})
 }
 
@@ -467,6 +550,9 @@ func (a *App) hitCard(c *ui.Context, h *api.TimelineHit) {
 	k := stateOf(Str(h.Outcome))
 	sel := a.ss.hitSel == h.HitID
 	card := ui.Column(c).Key(h.HitID).FillWidth().Gap(5).Padding(10, 12).Radius(6)
+	if a.ss.hitCur == h.HitID {
+		card = card.Background(p.Card2) // 键盘游标：只加浅底，边线仍编码三态
+	}
 	switch {
 	case sel:
 		card = card.Border(1.5, p.Text)
@@ -477,7 +563,7 @@ func (a *App) hitCard(c *ui.Context, h *api.TimelineHit) {
 	default:
 		card = card.Border(1, p.Line)
 	}
-	card.Cursor(ui.CursorPointer).Children(func() {
+	card.Cursor(ui.CursorPointer).ContextMenu(func(m *ui.Menu) { a.hitMenu(c, m, h) }).Children(func() {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			a.sevMark(c, h.Sev)
 			ui.Text(c, h.RuleID).Font("monospace").FontSize(13).FontWeight(700)
@@ -500,8 +586,27 @@ func (a *App) hitCard(c *ui.Context, h *api.TimelineHit) {
 		}
 	})
 	if card.Clicked() {
-		a.ss.hitSel = h.HitID
-		a.loadExplain(h.HitID)
+		a.openHit(h.HitID)
+	}
+}
+
+// hitMenu：只读右键菜单。
+func (a *App) hitMenu(c *ui.Context, m *ui.Menu, h *api.TimelineHit) {
+	if m.Item("查看检视").Shortcut(0, ui.KeyEnter).Chosen() {
+		a.openHit(h.HitID)
+	}
+	m.Separator()
+	if s := Str(h.DangerSubject); s != "" && m.Item("复制命令 / 对象").Chosen() {
+		c.WriteClipboard(s)
+	}
+	if msg := Str(h.Message); msg != "" && m.Item("复制命中说明").Chosen() {
+		c.WriteClipboard(msg)
+	}
+	if m.Item("复制命中 ID").Chosen() {
+		c.WriteClipboard(fmt.Sprint(h.HitID))
+	}
+	if m.Item("复制会话 ID").Chosen() {
+		c.WriteClipboard(a.ss.sel)
 	}
 }
 

@@ -18,6 +18,14 @@ type dangerPage struct {
 	sel    int64
 	list   ui.ListState
 	selRow int
+	cur    int64 // 键盘游标（命中 ID）；sel 是已在右侧面板打开的那条
+
+	// 过滤结果缓存：事件、筛选、搜索词都没变时每帧零开销
+	ver           int
+	cVer, cFilter int
+	cQuery        string
+	cOK           bool
+	cached        []api.DangerEvent
 }
 
 func (d *dangerPage) init() { d.selRow = -1; d.list.Selected = nil }
@@ -32,6 +40,12 @@ func (a *App) loadDanger() {
 		st, serr := a.Client.DangerStats(ctx, url.Values{"since": {a.sinceDay(7)}})
 		return func() {
 			a.dg.events = ev
+			a.dg.ver++
+			keys := make([]string, len(ev))
+			for i, e := range ev {
+				keys[i] = fmt.Sprint(e.HitID)
+			}
+			a.noteList("danger", keys)
 			if serr == nil {
 				a.week = st
 			}
@@ -40,6 +54,15 @@ func (a *App) loadDanger() {
 }
 
 func (a *App) dangerFiltered() []api.DangerEvent {
+	d := &a.dg
+	if d.cOK && d.cVer == d.ver && d.cFilter == d.filter && d.cQuery == d.query {
+		return d.cached
+	}
+	d.cached, d.cVer, d.cFilter, d.cQuery, d.cOK = a.computeDangerFiltered(), d.ver, d.filter, d.query, true
+	return d.cached
+}
+
+func (a *App) computeDangerFiltered() []api.DangerEvent {
 	q := strings.ToLower(a.dg.query)
 	var out []api.DangerEvent
 	for _, e := range a.dg.events {
@@ -69,6 +92,7 @@ func (a *App) dangerFiltered() []api.DangerEvent {
 func (a *App) dangerView(c *ui.Context) {
 	p := a.pl
 	evs := a.dangerFiltered()
+	a.dangerKeys(c, evs)
 	ui.Row(c).Fill().Padding(0, 24, 16, 24).Gap(16).AlignItems(ui.Stretch).Children(func() {
 		// 左：筛选 + 逐条列表
 		ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Gap(12).Children(func() {
@@ -98,29 +122,61 @@ func (a *App) dangerView(c *ui.Context) {
 		// 右：分布 + 检视器
 		ui.Scroll(c).Width(340).MinHeight(0).Children(func() {
 			ui.Column(c).FillWidth().Gap(12).Children(func() {
-				if a.dg.sel != 0 && a.ex.id == a.dg.sel {
-					a.card(c).FillWidth().Gap(8).Children(func() {
-						a.inspector(c, func() { a.dg.sel = 0 })
-					})
-				}
 				a.card(c).FillWidth().Gap(10).Children(func() { a.dangerDistribution(c) })
 				_ = p
 			})
 		})
+		if a.dg.sel != 0 && a.ex.id == a.dg.sel {
+			a.sidePanel(c, panelRightM, panelBottom, func() { a.inspector(c, func() { a.dg.sel = 0 }) })
+		}
 	})
+}
+
+// dangerKeys：J/K 移动游标（面板已开时右侧跟着切换），Enter 打开游标所在的事件。
+func (a *App) dangerKeys(c *ui.Context, evs []api.DangerEvent) {
+	d := &a.dg
+	idx := -1
+	for i, e := range evs {
+		if e.HitID == d.cur {
+			idx = i
+			break
+		}
+	}
+	if dir := a.moveDir(c); dir != 0 {
+		if i := stepIndex(idx, dir, len(evs)); i >= 0 {
+			d.cur = evs[i].HitID
+			d.list.ScrollIntoView(i)
+			if d.sel != 0 {
+				a.openDanger(d.cur)
+			}
+		}
+	} else if a.enterPressed(c) && idx >= 0 {
+		a.openDanger(d.cur)
+	}
+}
+
+func (a *App) openDanger(id int64) {
+	a.dg.cur, a.dg.sel = id, id
+	a.loadExplain(id)
 }
 
 func (a *App) dangerCard(c *ui.Context, e api.DangerEvent) {
 	p := a.pl
 	sel := a.dg.sel == e.HitID
 	k := stateOf(Str(e.Outcome))
-	card := ui.Row(c).Key(e.HitID).FillWidth().Margin(0, 0, 8, 0).Gap(14).Padding(14, 16).Radius(8).Border(1, p.Line).AlignItems(ui.Start)
+	line := p.Line
+	if a.dg.cur == e.HitID {
+		line = p.Muted // 键盘游标：边线加深（不依赖颜色，只是更深的灰线）
+	}
+	card := ui.Row(c).Key(e.HitID).FillWidth().Margin(0, 0, 8, 0).Gap(14).Padding(14, 16).Radius(8).Border(1, line).AlignItems(ui.Start)
+	card = a.markFresh(card, "danger", fmt.Sprint(e.HitID))
 	if sel {
 		card = card.Background(p.Shade)
 	} else if card.Hovered() {
 		card = card.Background(p.Card2)
 	}
-	card.Cursor(ui.CursorPointer).Transition(ui.ElementTransition{Colors: true, Duration: 120e6}).Children(func() {
+	card = card.Cursor(ui.CursorPointer).ContextMenu(func(m *ui.Menu) { a.dangerMenu(c, m, e) })
+	card.Children(func() {
 		// 左侧状态柱：形状随三态
 		ui.Box(c).Width(4).FillHeight().MinHeight(46).Radius(2).Draw(func(pt *ui.Painter, r ui.Rect) {
 			switch k {
@@ -156,8 +212,29 @@ func (a *App) dangerCard(c *ui.Context, e api.DangerEvent) {
 		})
 	})
 	if card.Clicked() {
-		a.dg.sel = e.HitID
-		a.loadExplain(e.HitID)
+		a.openDanger(e.HitID)
+	}
+}
+
+// dangerMenu：右键菜单只放只读动作（打开、复制、跳转），没有任何写操作。
+func (a *App) dangerMenu(c *ui.Context, m *ui.Menu, e api.DangerEvent) {
+	if m.Item("查看详情").Shortcut(0, ui.KeyEnter).Chosen() {
+		a.openDanger(e.HitID)
+	}
+	m.Separator()
+	if s := Str(e.Subject); s != "" && m.Item("复制命令 / 对象").Chosen() {
+		c.WriteClipboard(s)
+	}
+	if m.Item("复制会话 ID").Chosen() {
+		c.WriteClipboard(e.SessionID)
+	}
+	if m.Item("复制命中 ID").Chosen() {
+		c.WriteClipboard(fmt.Sprint(e.HitID))
+	}
+	m.Separator()
+	if m.Item("跳到该会话").Chosen() {
+		a.selectSession(e.SessionID)
+		a.Goto(PageSessions)
 	}
 }
 

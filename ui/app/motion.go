@@ -13,7 +13,7 @@ const (
 	freshWindow = 1600 * time.Millisecond
 )
 
-var enterFromTop = ui.ElementTransition{Enter: &ui.Motion{Y: -10}, Duration: motionDur, Ease: ui.EaseOut}
+var enterFromTop = ui.ElementTransition{Enter: &ui.Motion{Y: -10}, Colors: true, Duration: motionDur, Ease: ui.EaseOut}
 
 // slideFromRight 是右侧详情面板的进出：从右滑入并淡入，退出时反向（减弱动态效果时只淡入淡出）。
 var slideFromRight = ui.ElementTransition{
@@ -91,11 +91,14 @@ func (a *App) freshness(kind, key string) float32 {
 func (a *App) markFresh(e ui.Element, kind, key string) ui.Element {
 	f := a.freshness(kind, key)
 	if f == 0 {
-		return e
+		return e.Transition(colorsOnly)
 	}
 	e = e.Background(a.pl.Text.Alpha(0.07 * f))
-	if !a.reduce {
-		e = e.Transition(enterFromTop)
+	if a.reduce {
+		return e
 	}
-	return e
+	return e.Transition(enterFromTop)
 }
+
+// colorsOnly：悬停/选中的底色变化平滑 120ms；不动位置。
+var colorsOnly = ui.ElementTransition{Colors: true, Duration: 120 * time.Millisecond}

@@ -110,7 +110,25 @@ func (a *App) putRule(id string, edit api.RuleEdit, okMsg string) {
 	})
 }
 
+// rulesKeys：J/K 在规则列表里切换选中（右侧详情随之更新；规则页的详情常驻，因为要编辑阈值）。
+func (a *App) rulesKeys(c *ui.Context) {
+	r := &a.rl
+	if dir := a.moveDir(c); dir != 0 {
+		cur := -1
+		for i := range r.rules {
+			if r.rules[i].ID == r.sel {
+				cur = i
+			}
+		}
+		if i := stepIndex(cur, dir, len(r.rules)); i >= 0 {
+			r.sel, r.draftID = r.rules[i].ID, ""
+			r.list.ScrollIntoView(i)
+		}
+	}
+}
+
 func (a *App) rulesView(c *ui.Context) {
+	a.rulesKeys(c)
 	ui.Row(c).Fill().Padding(0, 24, 16, 24).Gap(16).AlignItems(ui.Stretch).Children(func() {
 		a.card(c).Width(400).MinHeight(0).Padding(12).Gap(8).Children(func() { a.ruleList(c) })
 		ui.Scroll(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
@@ -144,6 +162,18 @@ func (a *App) ruleList(c *ui.Context) {
 		st := r.stats[ru.ID]
 		row := ui.Row(c).Key(ru.ID).FillWidth().Margin(0, 0, 4, 0).Gap(10).Padding(10, 10).Radius(6).AlignItems(ui.Center).Border(1, ui.Transparent)
 		a.hoverable(row, sel)
+		row = row.ContextMenu(func(m *ui.Menu) {
+			if m.Item("查看规则").Chosen() {
+				r.sel, r.draftID = ru.ID, ""
+			}
+			m.Separator()
+			if m.Item("复制规则编号").Chosen() {
+				c.WriteClipboard(ru.ID)
+			}
+			if m.Item("复制规则名称").Chosen() {
+				c.WriteClipboard(ru.Title)
+			}
+		})
 		if ru.Disabled {
 			row = row.Opacity(0.55)
 		}
