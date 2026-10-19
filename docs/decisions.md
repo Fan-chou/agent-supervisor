@@ -175,3 +175,4 @@
 
 ## 2026-10-19 08:49：Jack 的决定
 123. **前端 UI（MyGo）延后（08:49）**：Jack 2026-10-19 08:49: frontend UI (MyGo) deferred to later; this phase only wraps up backend + CLI。
+124. **`mutating_calls_have_evaluate` 也按调用 id 对账（run2，Jack 08:50）**：并行批次里一次调用的 B/E/A 会被别的调用穿插，按先后分组会把 shell 误判成"没有 evaluate"。evaluate 带 `source.id` 时：已结束（有 after）的写类调用必须有同 id 的 evaluate；没有 id 的老样本仍用顺序分组。run2 真机确认：write 调用的 evaluate 动作报的是 `edit`（不影响按 id 绑定）。

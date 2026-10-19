@@ -225,3 +225,14 @@
 2. 日常使用时顺带按一次 Esc 看 `reason=user`。
 3. 按 `docs/usage.md` §6 开始收集数据（Claude/Codex dump、shadow 记录、标注）。
 4. 是否要把 `opencode-sv-probe` 里的插件更新成新版（重新 `sv install opencode` 覆盖 `.opencode/plugins/agent-supervisor.ts`）。
+
+## run15：run2 复测后收尾（decisions #124；后端 + 命令行阶段结束）
+**run2 结果**（f7d7e2d 的插件）：放行检查 7 项过 6 项（`before_precedes_evaluate` 已过、探针 deny 成功、X2 记录正常、路径警告消失）；唯一不过的 `mutating_calls_have_evaluate` 是报告按先后分组造成的误判（并行批次 `before(shell) → 3×read → evaluate(shell) → after(shell)`，同 id 齐全）。
+**改了什么**：该项改为按调用 id 对账；加 1 个最小测试（run2 形状通过 + 写类调用缺 evaluate 仍被抓）。write 的 evaluate 动作报 `edit` 已记（#124）。拦截的三道闸没动，`opencodeEnforce` 仍关。
+**测试**：`bun test` 1086 通过 / 0 失败；`tsc` 干净。
+**后端 + 命令行状态**：Claude/Codex/OpenCode 适配器、守护进程、只读查询 API、`sv` 命令行齐全；使用说明 `docs/usage.md`（已核对完整，README 已链接）。未完成项见 usage.md §7。
+**给前端阶段的入口**（#123：前端延后到此之后）
+- 设计：`docs/frontend-design.md`（§9 是 API 总表，§11 是要在 MyGo 上先验证的清单，§13 里程碑，§14 已定取舍）；冲突时以 `docs/design.md` §17/§19 为准。
+- 可用 API：守护进程只读查询接口（sessions、events、hits、judge-calls[/csv]、rules、config[/validate]、danger/events、runs[/{id}]、replays[/{id}]、eval/reports、实时流 stream）；唯一可写 `PUT /v1/rules/{id}`。契约在 `packages/daemon/src/schemas.ts`。
+- 黄金样例：`test/fixtures/api/`（由 `test/fixtures/gen.ts` 生成，`packages/daemon/test/golden.test.ts` 校验）；Go 侧结构体生成与对应黄金测试要在 MyGo 仓库做。
+- 前端先用 `sv start` + 回放（`sv replay test/fixtures/claude --judge=mock --log`）灌数据即可开发，不需要真实 agent。

@@ -126,6 +126,7 @@ export function analyze(recs: DumpRecord[], now: number = Date.now()): Report {
   const firstB = new Map<string, number>();
   const toolOf = new Map<string, string>();
   const evals: { id: string; n: number }[] = [];
+  const doneIds = new Set<string>();
   for (const r of recs) {
     if (r.phase !== "enter") continue;
     const sm = r.sample;
@@ -133,6 +134,7 @@ export function analyze(recs: DumpRecord[], now: number = Date.now()): Report {
     if ((r.hook === "execute.before" || r.hook === "execute.after") && typeof sm?.id === "string") {
       if (r.hook === "execute.before" && !firstB.has(sm.id)) firstB.set(sm.id, r.n);
       if (typeof sm.tool === "string") toolOf.set(sm.id, sm.tool);
+      if (r.hook === "execute.after") doneIds.add(sm.id);
     }
   }
   const orphanE = evals.filter((x) => !((firstB.get(x.id) ?? Infinity) < x.n));
@@ -188,7 +190,12 @@ export function analyze(recs: DumpRecord[], now: number = Date.now()): Report {
       bad.length ? `${bad.length} 次写类/未知工具的 evaluate 找不到先于它的同 id execute.before（本地 X2 绑不上）` : `${evals.length} 次 evaluate 按调用 id 对账：写类工具全部有 execute.before 在前${harmless ? `；另有 ${harmless} 次只读工具的 evaluate 没有先行的 before（无害）` : ""}`,
     );
   } else check("before_precedes_evaluate", evaluates >= 1 && eFirst === 0, evaluates === 0 ? "没有观察到任何 permission.evaluate" : eFirst ? `${eFirst} 次 evaluate 先于 execute.before` : `${evaluates} 次 evaluate，全部在 execute.before 之后`);
-  const mutNoE = noEvaluateTools.filter((t) => MUTATING_TOOLS.has(t.toLowerCase()));
+  // evaluate 带调用 id 时同样按 id 对账（并行批次里一次调用的 B/E/A 会被别的调用穿插，按先后分组会误判）：已结束(有 after)的写类调用必须有同 id 的 evaluate
+  let mutNoE = noEvaluateTools.filter((t) => MUTATING_TOOLS.has(t.toLowerCase()));
+  if (evals.length > 0) {
+    const evalIds = new Set(evals.map((x) => x.id));
+    mutNoE = [...doneIds].filter((id) => !evalIds.has(id)).map((id) => toolOf.get(id) ?? "?").filter((t) => MUTATING_TOOLS.has(t.toLowerCase()));
+  }
   check("mutating_calls_have_evaluate", mutNoE.length === 0, mutNoE.length ? `写类工具的调用没有触发 evaluate（deny 覆盖不到）：${[...new Set(mutNoE)].join("、")}` : "写类工具的调用都触发了 evaluate");
   const probe = rep.denyObserved.filter((d) => d.effect === "deny" && typeof d.message === "string" && d.message.includes("探针"));
   check("probe_deny_worked", probe.length >= 1, probe.length ? `探针 deny 生效 ${probe.length} 次（exit 时事件上看到 effect=deny 和 message）` : "没有看到探针 deny 生效的记录（先按清单步骤 4 做一次）");

@@ -76,6 +76,27 @@ describe("opencode-report", () => {
     expect(v).toContain("没有触发 permission.evaluate");
     expect(v).toContain("evaluate 注册失败");
   });
+  test("并行批次（run2 形状）：shell 的 before → 三个 read 完成 → shell 的 evaluate → after，按调用 id 对账，两项写类检查都通过；写类调用缺 evaluate 仍会被抓", async () => {
+    const d = await drive([]);
+    const h = (n: string) => d.hooks.get(n)!;
+    const ev = (id: string) => h("permission.evaluate")({ sessionID: "s1", action: "edit", resources: [], source: { type: "tool", messageID: "m", id } });
+    await h("tool.execute.before")({ sessionID: "s1", id: "sh", tool: "shell", input: { command: "ls -la" } });
+    for (const id of ["r1", "r2", "r3"]) {
+      await h("tool.execute.before")({ sessionID: "s1", id, tool: "read", input: { path: "a" } });
+      await ev(id);
+      await h("tool.execute.after")({ sessionID: "s1", id, tool: "read", status: "completed", result: "x" });
+    }
+    await ev("sh");
+    await h("tool.execute.after")({ sessionID: "s1", id: "sh", tool: "shell", status: "completed", result: "x" });
+    let rep = analyze(parseDump(dumpText()));
+    const ok = (id: string) => rep.gate.checks.find((c) => c.id === id)!.ok;
+    expect(ok("before_precedes_evaluate")).toBe(true);
+    expect(ok("mutating_calls_have_evaluate")).toBe(true);
+    await h("tool.execute.before")({ sessionID: "s1", id: "w", tool: "write", input: { path: "n" } });
+    await h("tool.execute.after")({ sessionID: "s1", id: "w", tool: "write", status: "completed", result: "x" });
+    rep = analyze(parseDump(dumpText()));
+    expect(ok("mutating_calls_have_evaluate")).toBe(false);
+  });
   test("探针 deny 生效时能在 exit 记录里看到 effect/message；闸门关时记 wouldDeny", async () => {
     const d = await drive(["B", "E", "A"]);
     process.env.SV_OPENCODE_PROBE = "ls";
