@@ -195,3 +195,11 @@
 137. **补 `GET /v1/judge/routes` 与 Status 的 judge 健康 / 日志库大小**（取代 #128 的「推断」）。`/v1/judge/routes`：judge.routes 每条 + 默认各一行，字段含 `use/when/model/status(ok|degraded|unavailable|unused)/calls/parse_fail_rate/latency_p95/format_level/format_downgrades/last_failure_*/reasons[]`；默认看近 7 天（`since` 可覆盖）。每次调用按它当时的 `sync` 与命中规则，用与 `JudgeClient.routeModel` 同一个 `matchRoute` 重新归到路由（不按模型名分支）。状态规则（通用常量）：最近连续 ≥3 次失败 = 不可用；parse_fail 率 >15%（样本 ≥10）或 response_format 降级过 = 降级中；窗口内无调用 = 未使用。`Status.dbBytes`（主库 + WAL）；`Status.judge` 增加 `health/recent_calls/recent_failures/last_error`（最近 15 分钟，同一套规则）。可空内联对象不进 schema，`last_failure_*` 拍平。黄金样例 `JudgeRoutes.json`、`Status.json` 已更新；Go 类型重新生成；假守护进程同步（顺带修了 fake 里 `match/rules` 误写，真实配置是 `when/rule`）。
 138. **暂不做**：CSV 导出入口、子 agent 展开、日期选择器（时间范围用预设下拉）、打包/签名/公证。Jack 已在本机用 `-demo` 跑过真窗口，效果认可。
 139. **`ui/cmd/uismoke` 已删除**（UI0 冒烟已完成，结论在 frontend-design §11.1，无引用）。
+
+## 2026-10-19：前端重设计「值班台」（见 docs/ui-design.md）
+140. **整套视图推倒重写**：删除旧 `ui/app` 的所有视图/样式文件，只保留 `ui/api`、`ui/fake`、`ui/cmd/sv-ui`、`conn*.go`、`logic.go`（纯逻辑）。新视图：`core/kit/shell/overview/sessions/danger/rules/judge/replay/inspector.go`。
+141. **信息架构**：6 页（总览 / 会话 / 危险 / 规则 / Judge / 回放）。**会话页合并了原来的「会话」与「时间线」**（左列表 + 右时间线 + 命中检视器）；**Judge 页合并了裁决与路由**（页签）；**规则页合并了规则统计与规则配置**（唯一写入口仍是规则开关与阈值）。
+142. **三态靠形状**：危险=三角+浅底；会拦（未生效）=空心虚线盾、斜体；已拦截=实心墨块、反白粗体。三者只按 `outcome` 归类（沿用 #ClassifyOutcome），不看 `applied`。灰度截图（`*-gray.png`，由亮度转换）用来验证。Judge 的 `verdict=block` 只是建议，用中性描边标签「判定 · 建议拦截」，绝不用盾牌/实心；规则统计里的 `Actions` 只是动作计数，不用三态样式；回放对比里 shadow 运行的 blocks 一律用「会拦（未生效）」幽灵样式。
+143. **图标**：Lucide（ISC，含 Feather 的 MIT 部分）线性图标，内联在 `ui/app/icons.go`，许可全文在 `ui/app/icons/LICENSE`；解析失败退化为空白，不 panic。
+144. **窗口**：`TitleBarHidden`，导航轨/页头可拖动窗口，内容避开 `c.TitleBar()`；字体用系统字体（中文走系统回退），命令/路径等宽。主题用 `SetTheme` 每帧套一份自定义主题（暖纸/石墨），跟随系统深浅色。
+145. **截图文件名**：`.supervisor-run/shots/wd-<页>-light|dark|gray.png`，生成方式 `go -C ui test ./app -shots=<目录>`。截图目录不进 git。

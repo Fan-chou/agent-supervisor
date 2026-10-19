@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/Fan-chou/agent-supervisor/ui/api"
 	"github.com/egoist/mygo/ui"
@@ -17,76 +16,19 @@ type rulesPage struct {
 	mode   string
 	stats  map[string]api.RuleStat
 	loaded bool
+	query  string
+	sel    string
 	list   ui.ListState
-	sel    int
-	selID  string
 
-	// 编辑草稿：键是展平后的路径（普通规则 "repeat"，T 系列 "ladder.advise"）
-	draft   map[string]float64
+	// 阈值草稿：键是展平后的路径（普通规则 "repeat"，T 系列 "ladder.advise"）
+	draft   map[string]*float64
 	orig    map[string]float64
 	draftID string
-	errs    []string // 服务端校验错误，原样显示
-	okMsg   string
+	err     string
 	busy    bool
-
-	confirmDisable bool
 }
 
-// ThField 是阈值展平后的一项。
-type ThField struct {
-	Path  string
-	Value float64
-	Ok    bool // false：不是数字（只读展示）
-	Raw   any
-}
-
-// FlattenThresholds 把 GET /v1/rules 的 thresholds 展平成可编辑的叶子，路径用点号（ladder.advise）。
-func FlattenThresholds(m map[string]any) []ThField {
-	var out []ThField
-	var walk func(prefix string, v map[string]any)
-	walk = func(prefix string, v map[string]any) {
-		keys := make([]string, 0, len(v))
-		for k := range v {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			path := k
-			if prefix != "" {
-				path = prefix + "." + k
-			}
-			switch x := v[k].(type) {
-			case map[string]any:
-				walk(path, x)
-			case float64:
-				out = append(out, ThField{Path: path, Value: x, Ok: true, Raw: x})
-			default:
-				out = append(out, ThField{Path: path, Raw: x})
-			}
-		}
-	}
-	walk("", m)
-	return out
-}
-
-// BuildThresholdBody 把改动过的叶子还原成 PUT 的 thresholds：{"repeat":6} 或 {"ladder":{"advise":4}}。只含改过的键。
-func BuildThresholdBody(changed map[string]float64) map[string]any {
-	body := map[string]any{}
-	for path, v := range changed {
-		parts := strings.Split(path, ".")
-		cur := body
-		for _, p := range parts[:len(parts)-1] {
-			next, _ := cur[p].(map[string]any)
-			if next == nil {
-				next = map[string]any{}
-				cur[p] = next
-			}
-			cur = next
-		}
-		cur[parts[len(parts)-1]] = v
-	}
-	return body
-}
+func (r *rulesPage) init() {}
 
 func (a *App) loadRules() {
 	a.async("rules", func(ctx context.Context) (func(), error) {
@@ -94,10 +36,9 @@ func (a *App) loadRules() {
 		if err != nil {
 			return nil, err
 		}
-		q := url.Values{"kind": {"live"}, "since": {fmt.Sprint(a.now().Add(-7 * 24 * time.Hour).UnixMilli())}}
-		rs, serr := a.Client.RuleStats(ctx, q)
+		rs, serr := a.Client.RuleStats(ctx, url.Values{"kind": {"live"}, "since": {a.sinceDay(7)}})
 		return func() {
-			r := &a.r
+			r := &a.rl
 			r.rules, r.mode, r.loaded = rl.Rules, rl.Mode, true
 			if serr == nil {
 				r.stats = map[string]api.RuleStat{}
@@ -105,274 +46,300 @@ func (a *App) loadRules() {
 					r.stats[s.Rule] = s
 				}
 			}
+			if r.sel == "" && len(r.rules) > 0 {
+				r.sel = r.rules[0].ID
+			}
+			// 保存后以服务端为准：草稿与服务端值一致时重置草稿
+			r.draftID = ""
 		}, nil
 	})
 }
 
 func (a *App) selectedRule() *api.Rule {
-	r := &a.r
-	if r.sel < 0 || r.sel >= len(r.rules) {
-		return nil
-	}
-	return &r.rules[r.sel]
-}
-
-// syncDraft 在选中规则变化时重置编辑草稿。
-func (a *App) syncDraft(rule *api.Rule) {
-	r := &a.r
-	if r.draftID == rule.ID && r.draft != nil {
-		return
-	}
-	r.draftID = rule.ID
-	r.draft, r.orig = map[string]float64{}, map[string]float64{}
-	for _, f := range FlattenThresholds(rule.Thresholds) {
-		if f.Ok {
-			r.draft[f.Path], r.orig[f.Path] = f.Value, f.Value
+	for i := range a.rl.rules {
+		if a.rl.rules[i].ID == a.rl.sel {
+			return &a.rl.rules[i]
 		}
 	}
+	return nil
+}
+
+// isLocked：X2 与服务端标 protected 的规则不可停用、不可改阈值。
+func isLocked(r *api.Rule) bool { return r.Protected || r.ID == "X2" }
+
+func (a *App) ensureDraft(r *api.Rule) {
+	if a.rl.draftID == r.ID && a.rl.draft != nil {
+		return
+	}
+	a.rl.draftID, a.rl.err = r.ID, ""
+	a.rl.draft, a.rl.orig = map[string]*float64{}, map[string]float64{}
+	for _, f := range FlattenThresholds(r.Thresholds) {
+		if !f.Ok {
+			continue
+		}
+		v := f.Value
+		a.rl.draft[f.Path], a.rl.orig[f.Path] = &v, f.Value
+	}
+}
+
+func (a *App) putRule(id string, edit api.RuleEdit, okMsg string) {
+	if a.rl.busy {
+		return
+	}
+	a.rl.busy, a.rl.err = true, ""
+	a.async("rule-put", func(ctx context.Context) (func(), error) {
+		res, err := a.Client.PutRule(ctx, id, edit)
+		if err == nil && !res.Ok {
+			err = fmt.Errorf("守护进程拒绝了这次修改")
+		}
+		return func() {
+			a.rl.busy = false
+			if err != nil {
+				a.rl.err = err.Error()
+				a.rl.draftID = ""
+				a.loadRules()
+				return
+			}
+			a.toast = okMsg
+			a.loadRules()
+		}, nil
+	})
 }
 
 func (a *App) rulesView(c *ui.Context) {
-	p := palOf(c)
-	r := &a.r
-	if e := a.errOf("rules"); e != "" {
-		a.errBar(c, "加载失败："+e, a.loadRules)
-	}
-	if !r.loaded {
-		a.emptyNote(c, "正在加载规则…")
-		return
-	}
-	ui.Row(c).FillWidth().Padding(10, 14).Gap(12).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, "mode："+r.mode).Bold()
-		ui.Text(c, "改 mode、judge、预算、日志请编辑 config.yaml 并重启；被监督模型只记录到日志，不参与判定。").FontSize(12).TextColor(p.Muted)
+	ui.Row(c).Fill().Padding(0, 24, 16, 24).Gap(16).AlignItems(ui.Stretch).Children(func() {
+		a.card(c).Width(400).MinHeight(0).Padding(12).Gap(8).Children(func() { a.ruleList(c) })
+		ui.Scroll(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
+			ui.Column(c).FillWidth().Gap(14).Children(func() { a.ruleDetail(c) })
+		})
+	})
+}
+
+func (a *App) ruleList(c *ui.Context) {
+	p := a.pl
+	r := &a.rl
+	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+		a.label(c, "规则")
 		ui.Spacer(c)
-		ui.Text(c, "整个界面唯一能写的地方：规则的启用/停用与它自己的阈值").FontSize(12).TextColor(p.Warn)
+		a.muted(c, fmt.Sprintf("%d 条 · 近 7 天命中", len(r.rules)))
 	})
-	if len(r.rules) == 0 {
-		a.emptyNote(c, "没有规则")
-		return
+	if msg := a.errOf("rules"); msg != "" {
+		a.errLine(c, msg)
 	}
-	ui.Row(c).Grow(1).MinHeight(0).Padding(0, 14, 10, 14).Gap(12).AlignItems(ui.Stretch).Children(func() {
-		a.rulesTable(c)
-		if rule := a.selectedRule(); rule != nil {
-			a.ruleEditor(c, rule)
-		}
-	})
-}
-
-func levelText(r api.Rule) string {
-	if r.ObserveOnly || r.Level == "observe" {
-		return "仅回放观察"
-	}
-	return r.Level
-}
-
-func thresholdSummary(r api.Rule) string {
-	if r.Protected {
-		return "本地拦截（deny/ask）"
-	}
-	var parts []string
-	for _, f := range FlattenThresholds(r.Thresholds) {
-		if f.Ok {
-			parts = append(parts, fmt.Sprintf("%s=%g", strings.TrimPrefix(f.Path, "ladder."), f.Value))
+	var maxHits int64 = 1
+	for _, s := range r.stats {
+		if s.Hits > maxHits {
+			maxHits = s.Hits
 		}
 	}
-	return Or(strings.Join(parts, " · "), "–")
-}
-
-func (a *App) rulesTable(c *ui.Context) {
-	p := palOf(c)
-	r := &a.r
-	cols := []ui.TableColumn{
-		{Title: "ID", Width: 68}, {Title: "名称", MinWidth: 220}, {Title: "级别", Width: 84}, {Title: "阈值（一套）", MinWidth: 190},
-		{Title: "启用", Width: 70}, {Title: "7 天命中", Width: 70, Align: ui.End}, {Title: "误报率", Width: 70}, {Title: "遵从率", Width: 64},
-	}
-	r.list.Selected = &r.sel
-	r.list.Key = func(i int) any { return r.rules[i].ID }
-	r.list.Label = func(i int) string { return r.rules[i].ID + " " + r.rules[i].Title }
-	tbl := ui.Table(c, &r.list, cols, len(r.rules), func(i, col int) {
-		ru := r.rules[i]
-		st, hasSt := r.stats[ru.ID]
-		t := func(s string) ui.Element { return ui.Text(c, s).FontSize(13).SingleLine() }
-		switch col {
-		case 0:
-			ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
-				t(ru.ID).Bold()
-				if ru.Protected {
-					ui.Text(c, "⚠").TextColor(p.Danger)
-				}
+	rules := r.rules
+	r.list.Key = func(i int) any { return rules[i].ID }
+	ui.List(c, &r.list, len(rules), func(i int) {
+		ru := rules[i]
+		sel := r.sel == ru.ID
+		st := r.stats[ru.ID]
+		row := ui.Row(c).Key(ru.ID).FillWidth().Margin(0, 0, 4, 0).Gap(10).Padding(10, 10).Radius(10).AlignItems(ui.Center).Border(1, ui.Transparent)
+		a.hoverable(row, sel)
+		if ru.Disabled {
+			row = row.Opacity(0.55)
+		}
+		row.Children(func() {
+			ui.Text(c, ru.ID).Font("monospace").FontSize(14).FontWeight(700).Width(32)
+			ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
+				ui.Text(c, ru.Title).FontSize(13).SingleLine()
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					a.bar(c, float64(st.Hits)/float64(maxHits), p.Accent.Alpha(0.7), 6).Grow(1)
+					a.txt(c, fmt.Sprintf("%d", st.Hits), 11, p.Muted).FontFeatures("tnum").Width(26)
+				})
 			})
-		case 1:
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				t(ru.Title)
-				if ru.Edited {
-					chip(c, "已改", p.Warn, p.WarnBg)
-				}
-			})
-		case 2:
-			t(levelText(ru)).TextColor(p.dim(i == r.sel))
-		case 3:
-			t(thresholdSummary(ru)).TextColor(p.dim(i == r.sel)).Font("monospace").FontSize(12)
-		case 4:
 			switch {
-			case ru.Protected:
-				ui.Text(c, "● 锁定").FontSize(13).TextColor(p.Danger).Bold()
+			case isLocked(&ru):
+				icon(c, "lock", 15, p.Muted).Tooltip("安全底线规则，不能停用")
 			case ru.Disabled:
-				ui.Text(c, "◌ 停用").FontSize(13).TextColor(p.Muted)
+				a.pill(c, "已停用", p.Muted, p.Shade)
 			default:
-				ui.Text(c, "● 启用").FontSize(13).TextColor(p.Ok)
+				a.dot(c, p.Ok, 8).Tooltip("已启用")
 			}
-		case 5:
-			if hasSt {
-				t(fmt.Sprint(st.Hits))
-			} else {
-				t("–")
-			}
-		case 6:
-			if hasSt {
-				t(Pct(st.FpRate))
-			} else {
-				t("n/a")
-			}
-		case 7:
-			if hasSt {
-				t(Pct(st.ComplianceRate))
-			} else {
-				t("–")
-			}
-		}
-	}).Grow(1).MinWidth(0).Label("规则列表")
-	if tbl.Changed() && r.sel >= 0 {
-		r.errs, r.okMsg = nil, ""
-	}
-}
-
-func (a *App) ruleEditor(c *ui.Context, rule *api.Rule) {
-	p := palOf(c)
-	r := &a.r
-	a.syncDraft(rule)
-	ui.Scroll(c).Width(400).Shrink(0).Children(func() {
-		ui.Column(c).FillWidth().Gap(10).Children(func() {
-			section(c, fmt.Sprintf("%s · %s", rule.ID, rule.Title), func() {
-				kv(c, "类别 / 级别", rule.Category+" · "+levelText(*rule))
-				kv(c, "出处", rule.Source)
-				if st, ok := r.stats[rule.ID]; ok {
-					kv(c, "7 天", fmt.Sprintf("命中 %d · 会话 %d · 标注 %d/%d", st.Hits, st.Sessions, st.LabeledFp, st.LabeledUseful))
-				}
-				if rule.Edited {
-					ui.Text(c, "已被界面/命令行改过（rules.local.json）").FontSize(12).TextColor(p.Warn)
-				}
-			})
-			if rule.Protected {
-				section(c, "受保护", func() {
-					ui.Text(c, rule.ID+" 是受保护的安全规则：不可停用，没有可编辑阈值。shadow 下只记录，危险操作标 ◌ 本应拦截；enforce 下才真的拦。").FontSize(13)
-				})
-				return
-			}
-			section(c, "启用", func() {
-				on := !rule.Disabled
-				before := on
-				ui.Toggle(c, &on, map[bool]string{true: "● 启用中", false: "◌ 已停用"}[on]).Label("启用或停用 " + rule.ID).Disabled(r.busy)
-				if on != before {
-					if !on {
-						r.confirmDisable = true // 停用要二次确认
-					} else {
-						a.putRule(rule.ID, api.RuleEdit{Disabled: ptrBool(false)})
-					}
-				}
-			})
-			fields := FlattenThresholds(rule.Thresholds)
-			section(c, "阈值（只改它自己的）", func() {
-				if len(fields) == 0 {
-					ui.Text(c, "没有可编辑的阈值").FontSize(12).TextColor(p.Muted)
-				}
-				for _, f := range fields {
-					f := f
-					ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, f.Path).Font("monospace").FontSize(12).Width(150).SingleLine()
-						if !f.Ok {
-							ui.Text(c, fmt.Sprint(Or(fmt.Sprint(f.Raw), "–"))+"（只读）").FontSize(12).TextColor(p.Muted)
-							return
-						}
-						v := r.draft[f.Path]
-						lo, hi, step := 1.0, 1000000.0, 1.0
-						if f.Value > 0 && f.Value <= 1 {
-							lo, hi, step = 0.01, 1, 0.05 // 比例类阈值
-						}
-						if ui.NumberInput(c, &v, lo, hi, step).Width(130).Disabled(r.busy).Label(f.Path).Changed() {
-							r.draft[f.Path] = v
-							r.errs, r.okMsg = nil, ""
-						}
-					})
-				}
-			})
-			changed := map[string]float64{}
-			for k, v := range r.draft {
-				if v != r.orig[k] {
-					changed[k] = v
-				}
-			}
-			ui.Row(c).FillWidth().Gap(8).Children(func() {
-				if ui.PrimaryButton(c, "保存阈值").Disabled(len(changed) == 0 || r.busy).Clicked() {
-					a.putRule(rule.ID, api.RuleEdit{Thresholds: BuildThresholdBody(changed)})
-				}
-				if ui.Button(c, "撤销草稿").Disabled(len(changed) == 0).Clicked() {
-					r.draftID = ""
-				}
-				if ui.Button(c, "恢复默认").Disabled(!rule.Edited || r.busy).Clicked() {
-					a.putRule(rule.ID, api.RuleEdit{Reset: true})
-				}
-			})
-			ui.Text(c, "保存后立即作用于所有在跑的会话；会话中途阈值会跳变，命中记录里会写当时实际用的值。以服务端响应为准，不做乐观更新。").FontSize(11).TextColor(p.Muted)
-			if len(r.errs) > 0 {
-				ui.Column(c).FillWidth().Gap(2).Padding(8).Radius(6).Background(p.DangerBg).Children(func() {
-					ui.Text(c, "服务端拒绝了这次修改：").Bold().FontSize(12).TextColor(p.Danger)
-					for _, e := range r.errs {
-						ui.Text(c, "· "+e).FontSize(12).TextColor(p.Danger).Selectable()
-					}
-				})
-			}
-			if r.okMsg != "" {
-				ui.Text(c, r.okMsg).FontSize(12).TextColor(p.Ok)
-			}
-			ui.Text(c, "试算（不改配置）：").FontSize(12).TextColor(p.Muted)
-			mono(c, fmt.Sprintf("sv replay <dir> --log --label try --set thresholds.%s=…", rule.ID))
-		})
-	})
-	if ui.AlertDialog(c, &r.confirmDisable, "停用 "+rule.ID+"？", "停用后这条规则立即对所有在跑的会话失效（不再命中、不再提醒），可以随时重新启用。", "取消", "停用") == 1 {
-		a.putRule(rule.ID, api.RuleEdit{Disabled: ptrBool(true)})
-	}
-}
-
-func ptrBool(b bool) *bool { return &b }
-
-// putRule 是界面唯一的写：成功后以服务端返回为准重新拉规则；失败原样显示服务端给的错误。
-func (a *App) putRule(id string, edit api.RuleEdit) {
-	r := &a.r
-	r.busy, r.errs, r.okMsg = true, nil, ""
-	run := func() {
-		_, err := a.Client.PutRule(a.ctx, id, edit)
-		a.post(func() {
-			r.busy = false
-			if err != nil {
-				a.fail("put-rule", err)
-				if ae, ok := err.(*api.Error); ok && ae.Message != "" {
-					r.errs = strings.Split(ae.Message, "；")
-				} else {
-					r.errs = []string{err.Error()}
-				}
-				a.loadRules() // 草稿保留，方便改了再提交
-				return
-			}
-			delete(a.errByKey, "put-rule")
-			r.okMsg = "已保存，立即对所有在跑的会话生效。"
+		}).Label(ru.ID + " " + ru.Title)
+		if row.Clicked() {
+			r.sel = ru.ID
 			r.draftID = ""
-			a.loadRules()
+		}
+	}).Grow(1).MinHeight(0)
+}
+
+func (a *App) ruleDetail(c *ui.Context) {
+	p := a.pl
+	r := a.selectedRule()
+	if r == nil {
+		a.card(c).FillWidth().Children(func() {
+			a.emptyState(c, "sliders-horizontal", "选一条规则", "左边选择规则，这里显示统计和阈值")
 		})
-	}
-	if a.sync {
-		run()
 		return
 	}
-	go run()
+	a.ensureDraft(r)
+	st := a.rl.stats[r.ID]
+	locked := isLocked(r)
+
+	a.card(c).FillWidth().Gap(12).Children(func() {
+		ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, r.ID).Font("monospace").FontSize(26).FontWeight(700)
+			ui.Column(c).Gap(3).Grow(1).MinWidth(0).Children(func() {
+				ui.Text(c, r.Title).FontSize(15).FontWeight(600)
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					a.pill(c, "类别 "+r.Category, p.Muted, p.Shade)
+					a.pill(c, "级别 "+r.Level, p.Muted, p.Shade)
+					if r.ObserveOnly {
+						a.pill(c, "仅观察", p.Accent, p.AccentSoft)
+					}
+					if r.Edited {
+						a.pill(c, "已修改", p.Warn, p.WarnSoft)
+					}
+				})
+			})
+			if locked {
+				ui.Row(c).Gap(6).Padding(5, 10).Radius(999).Background(p.Shade).AlignItems(ui.Center).Children(func() {
+					icon(c, "lock", 14, p.Muted)
+					a.txt(c, "不可停用", 12, p.Muted)
+				})
+			} else {
+				on := !r.Disabled
+				sw := ui.Switch(c, &on).Label("启用 " + r.ID)
+				if sw.Changed() && !a.rl.busy {
+					off := !on
+					a.putRule(r.ID, api.RuleEdit{Disabled: &off}, map[bool]string{true: r.ID + " 已停用", false: r.ID + " 已启用"}[off])
+				}
+				a.txt(c, map[bool]string{true: "已启用", false: "已停用"}[!r.Disabled], 12, p.Muted)
+			}
+		})
+		if locked {
+			ui.Row(c).FillWidth().Gap(8).Padding(10, 12).Radius(10).Background(p.Shade).AlignItems(ui.Center).Children(func() {
+				icon(c, "shield-check", 16, p.Text)
+				ui.Text(c, "X2 是安全底线规则：为了不让界面成为关掉危险检测的入口，它不能被停用，也没有可调阈值。").FontSize(12)
+			})
+		}
+		if a.rl.err != "" {
+			a.errLine(c, "保存失败："+a.rl.err)
+		}
+	})
+
+	a.card(c).FillWidth().Gap(12).Children(func() {
+		a.label(c, "命中统计 · 近 7 天")
+		ui.Row(c).FillWidth().Gap(10).Children(func() {
+			a.statCell(c, "命中", fmt.Sprint(st.Hits), fmt.Sprintf("涉及 %d 个会话", st.Sessions))
+			a.statCell(c, "每百次调用", Num(st.HitsPer100Calls, 1), "命中率")
+			fp := Pct(st.FpRate)
+			note := fmt.Sprintf("已标注 %d", st.LabeledFp+st.LabeledUseful)
+			if SmallSample(st) {
+				note += " · 样本少"
+			}
+			a.statCell(c, "误报率", fp, note)
+			a.statCell(c, "遵从率", Pct(st.ComplianceRate), fmt.Sprintf("已投递 %d · 遵从 %d", st.Delivered, st.Complied))
+		})
+		a.outcomeBreakdown(c, st)
+	})
+
+	if !locked {
+		a.card(c).FillWidth().Gap(12).Children(func() { a.thresholdEditor(c, r) })
+	}
+}
+
+func (a *App) statCell(c *ui.Context, title, value, note string) {
+	p := a.pl
+	ui.Column(c).Grow(1).Basis(0).Gap(2).Padding(12, 14).Radius(12).Background(p.Card2).Children(func() {
+		a.muted(c, title)
+		ui.Text(c, value).FontSize(24).FontWeight(700).FontFeatures("tnum")
+		a.txt(c, note, 11, p.Muted)
+	})
+}
+
+// outcomeBreakdown 按 outcome 逐项列出：会拦=幽灵、已拦截=实心、建议类=弱灰。action 计数单独一行，不用三态样式。
+func (a *App) outcomeBreakdown(c *ui.Context, st api.RuleStat) {
+	p := a.pl
+	if len(st.Outcomes) == 0 {
+		a.muted(c, "这段时间没有产生结局")
+		return
+	}
+	keys := make([]string, 0, len(st.Outcomes))
+	for k := range st.Outcomes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	a.muted(c, "结局构成（按 outcome 统计；「会拦」没有生效）")
+	var total int64
+	for _, n := range st.Outcomes {
+		total += n
+	}
+	for _, k := range keys {
+		n := st.Outcomes[k]
+		ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).Width(150).Children(func() {
+				switch ClassifyOutcome(k) {
+				case OutcomeWould, OutcomeEnforced:
+					a.outcomeChip(c, k, "")
+				default:
+					a.weakTag(c, Or(OutcomeText(k, ""), k))
+				}
+			})
+			a.bar(c, float64(n)/float64(total), p.Muted.Alpha(0.55), 8).Grow(1)
+			ui.Text(c, fmt.Sprint(n)).FontSize(12).FontFeatures("tnum").Width(34).TextAlign(ui.End)
+		})
+	}
+	if len(st.Actions) > 0 {
+		var parts []string
+		for k, n := range st.Actions {
+			parts = append(parts, fmt.Sprintf("%s %d", k, n))
+		}
+		sort.Strings(parts)
+		a.txt(c, "规则给出的动作（只是计数，不代表已拦截）："+strings.Join(parts, " · "), 11, p.Muted)
+	}
+}
+
+func (a *App) thresholdEditor(c *ui.Context, r *api.Rule) {
+	p := a.pl
+	ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+		a.label(c, "阈值")
+		ui.Spacer(c)
+		a.muted(c, "改动对所有会话生效，下次评估时起作用")
+	})
+	fields := FlattenThresholds(r.Thresholds)
+	if len(fields) == 0 {
+		a.muted(c, "这条规则没有可调阈值")
+		return
+	}
+	changed := map[string]float64{}
+	ui.Grid(c).Columns(2).GapX(14).GapY(10).FillWidth().Children(func() {
+		for _, f := range fields {
+			v := a.rl.draft[f.Path]
+			ui.Column(c).Gap(4).Padding(10, 12).Radius(10).Background(p.Card2).Children(func() {
+				a.txt(c, f.Path, 12, p.Muted).Font("monospace")
+				if v == nil {
+					ui.Text(c, fmt.Sprint(f.Raw)).FontSize(13)
+					return
+				}
+				lo, hi, step := 1.0, 1e6, 1.0
+				if f.Value != float64(int64(f.Value)) {
+					lo, hi, step = 0, 1, 0.05
+				}
+				ui.NumberInput(c, v, lo, hi, step).Label("阈值 " + f.Path).FillWidth()
+				if *v != a.rl.orig[f.Path] {
+					changed[f.Path] = *v
+					a.txt(c, fmt.Sprintf("原值 %g", a.rl.orig[f.Path]), 11, p.Warn)
+				}
+			})
+		}
+	})
+	ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
+		save := ui.PrimaryButton(c, "保存阈值").Disabled(len(changed) == 0 || a.rl.busy)
+		if save.Clicked() {
+			a.putRule(r.ID, api.RuleEdit{Thresholds: BuildThresholdBody(changed)}, r.ID+" 阈值已保存")
+		}
+		reset := ui.Button(c, "恢复默认").Disabled(!r.Edited || a.rl.busy)
+		if reset.Clicked() {
+			a.putRule(r.ID, api.RuleEdit{Reset: true}, r.ID+" 已恢复默认")
+		}
+		if len(changed) > 0 {
+			a.txt(c, fmt.Sprintf("%d 项未保存", len(changed)), 12, p.Warn)
+		}
+	})
 }

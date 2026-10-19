@@ -512,6 +512,64 @@ func StatsOfTimeline(es []api.TimelineEntry) TimelineStats {
 // SmallSample 为真时规则统计里在误报率旁加「样本少」（命中 <10 或已标注 <5）。
 func SmallSample(s api.RuleStat) bool { return s.Hits < 10 || s.LabeledFp+s.LabeledUseful < 5 }
 
+// ---- 阈值编辑 ----
+
+// ThField 是阈值展平后的一项。
+type ThField struct {
+	Path  string
+	Value float64
+	Ok    bool // false：不是数字（只读展示）
+	Raw   any
+}
+
+// FlattenThresholds 把 GET /v1/rules 的 thresholds 展平成可编辑的叶子，路径用点号（ladder.advise）。
+func FlattenThresholds(m map[string]any) []ThField {
+	var out []ThField
+	var walk func(prefix string, v map[string]any)
+	walk = func(prefix string, v map[string]any) {
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			path := k
+			if prefix != "" {
+				path = prefix + "." + k
+			}
+			switch x := v[k].(type) {
+			case map[string]any:
+				walk(path, x)
+			case float64:
+				out = append(out, ThField{Path: path, Value: x, Ok: true, Raw: x})
+			default:
+				out = append(out, ThField{Path: path, Raw: x})
+			}
+		}
+	}
+	walk("", m)
+	return out
+}
+
+// BuildThresholdBody 把改动过的叶子还原成 PUT 的 thresholds：{"repeat":6} 或 {"ladder":{"advise":4}}。只含改过的键。
+func BuildThresholdBody(changed map[string]float64) map[string]any {
+	body := map[string]any{}
+	for path, v := range changed {
+		parts := strings.Split(path, ".")
+		cur := body
+		for _, p := range parts[:len(parts)-1] {
+			next, _ := cur[p].(map[string]any)
+			if next == nil {
+				next = map[string]any{}
+				cur[p] = next
+			}
+			cur = next
+		}
+		cur[parts[len(parts)-1]] = v
+	}
+	return body
+}
+
 // TodayStartMs 是本地今天 0 点（epoch 毫秒），顶栏「今日危险」用。
 func TodayStartMs(now time.Time) int64 {
 	y, m, d := now.Local().Date()

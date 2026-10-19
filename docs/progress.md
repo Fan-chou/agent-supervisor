@@ -263,3 +263,17 @@
 **偏离 design**：状态阈值（连续 3 次失败、15%/≥10 样本、15 分钟窗口、近 7 天）是实现选的通用常量，frontend-design §5 只给了 15%。路由页没有时间范围控件（固定近 7 天）。
 **没做 / 注意**：判断归属依赖调用当时的 `rule_ids`/`sync`；配置改过路由后，历史调用会按**当前**路由重新归类。没有在真窗口里看新的路由页与顶栏（截图只是离屏渲染）。
 **等 Jack**：HEAD 在 904728a 之上有未提交改动（见 git status），需要监督者代提交；不 push。
+
+## 前端重设计「值班台」（decisions #140–145，设计见 docs/ui-design.md）
+**做了什么**
+- 按 Jack 要求从零重新设计并实现桌面前端，不沿用旧布局/视觉：左侧导航轨 + 页头常驻三态计数；6 页——总览（模式结论、三态大磁贴、进行中会话、最近危险事件、规则命中堆叠柱、危险类别环、Judge/系统健康）、会话（项目分组列表 + 心跳条 + 时间线轨道 + 命中检视器，每次命中单独成卡）、危险（逐条事件账本 + 三态筛选 + 分布）、规则（统计、结局构成、开关、阈值编辑，X2 上锁不可停用）、Judge（裁决记录 + 路由链与健康）、回放（运行列表 A/B 对比、运行详情、评测报告）。
+- 三态按形状区分（危险=三角浅底、会拦=虚线空心斜体、已拦截=实心墨块），灰度下仍可分；浅色「暖纸」/深色「石墨」两套主题；动效：页面进入、导航软底滑动（Match）、活跃会话与连接灯呼吸、悬停颜色过渡。
+- 保留：`ui/api`、`ui/fake`、`ui/cmd/sv-ui`（加了 `TitleBarHidden`）、连接状态机（`conn*.go`）、`logic.go`（把阈值展平/还原函数从旧 rules.go 挪进来）。删除旧视图/样式文件。
+**测试**：`go -C ui vet ./...`、`go -C ui test ./...` 通过（logic/契约/runner + 各页截图断言，含 X2 的 PUT 被服务端拒绝时原样显示错误、规则停用只发 `disabled`）；`bun test` 1088 通过 / 0 失败。
+**截图**（`.supervisor-run/shots/`，未入库）：`wd-overview-{light,dark,gray}.png`、`wd-sessions-{light,dark,gray}.png`、`wd-sessions-inspector-{light,dark}.png`、`wd-sessions-enforced-{light,dark,gray}.png`、`wd-danger-{light,dark,gray}.png`、`wd-rules-{light,dark}.png`、`wd-rules-x2-{light,dark,gray}.png`、`wd-judge-{light,dark,gray}.png`、`wd-judge-routes-{light,dark}.png`、`wd-replay-{light,dark}.png`、`wd-titlebar-light.png`（模拟 macOS 红绿灯占位）。
+**偏离 / 注意**：旧的「事件时间线」「规则统计」「Judge 路由」不再是独立页（合并，decisions #141）；没有保留旧页面的会话过滤器里的「按 harness / 仅危险」下拉（会话页只有搜索 + 进行中/全部；危险请去危险页）。
+**未完成 / 未验证**
+- 没有开过真实窗口：`TitleBarHidden` 下的拖动区域与红绿灯避让、vibrancy（未用）、系统深浅色切换、VoiceOver、IME 均未实机验证；请 Jack 运行 `go -C ui build -o bin/sv-ui ./cmd/sv-ui && ui/bin/sv-ui -demo` 看一眼。
+- 搜索框占位符是 MyGo 内置英文「Search」，未本地化。
+- 回放页对比只支持两个运行；评测报告只列规则行，没有图表；危险页没有按类别/会话的点击筛选；会话页时间线不支持「加载更早的记录」按钮（只显示最近 500 条并提示）。
+- 数字没有计数动画（为保证截图稳定先不做）。

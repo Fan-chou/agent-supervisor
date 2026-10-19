@@ -3,6 +3,9 @@ package app
 import (
 	"context"
 	"flag"
+	"fmt"
+	"image"
+	"image/color"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -14,8 +17,9 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// 截图测试：把真实客户端指向进程内假守护进程（合成数据），加载后用 Tester 离屏渲染。
-// 加 -shots=<目录> 时把每页的 PNG 写出来（浅色 + 深色）；不设则只做断言。不发任何网络请求（只连本机 httptest）。
+// 截图测试：把真实客户端指向进程内假守护进程（合成数据），用 Tester 离屏渲染。
+// 加 -shots=<目录> 时写出 PNG：wd-<页>-light / -dark，关键页再加 -gray（由亮度转换，用来验证三态在灰度下仍可分）。
+// 不设则只做断言。不发任何网络请求（只连本机 httptest）。
 
 var shotsDir = flag.String("shots", "", "写出截图 PNG 的目录")
 
@@ -35,95 +39,130 @@ func newDemoApp(t *testing.T) (*App, *fake.Server) {
 	return a, srv
 }
 
-func shoot(t *testing.T, a *App, name string, dark bool, w, h int) *ui.Tester {
+func writePNG(name string, img image.Image) {
+	dir := *shotsDir
+	if dir == "" {
+		return
+	}
+	_ = os.MkdirAll(dir, 0o755)
+	if f, err := os.Create(filepath.Join(dir, name+".png")); err == nil {
+		_ = png.Encode(f, img)
+		f.Close()
+	}
+}
+
+func gray(src image.Image) image.Image {
+	b := src.Bounds()
+	g := image.NewGray(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			g.Set(x, y, color.GrayModel.Convert(src.At(x, y)))
+		}
+	}
+	return g
+}
+
+// shoot 渲染 浅色 + 深色（withGray 时再加一张灰度），返回深色 Tester 供断言。
+func shoot(t *testing.T, a *App, name string, withGray bool, must ...string) {
 	t.Helper()
-	tt := ui.NewTester(a.View, w, h)
-	tt.SetDark(dark)
-	tt.Frame()
-	if dir := *shotsDir; dir != "" {
-		_ = os.MkdirAll(dir, 0o755)
-		suffix := ""
+	for _, dark := range []bool{false, true} {
+		tt := ui.NewTester(a.View, 1440, 900)
+		tt.SetDark(dark)
+		tt.Frame()
+		tt.Advance(800 * time.Millisecond) // 让进入动画走完再截图
+		tt.Frame()
+		suffix := "-light"
 		if dark {
 			suffix = "-dark"
 		}
-		f, err := os.Create(filepath.Join(dir, name+suffix+".png"))
-		if err == nil {
-			_ = png.Encode(f, tt.Image())
-			f.Close()
+		writePNG("wd-"+name+suffix, tt.Image())
+		if withGray && !dark {
+			writePNG("wd-"+name+"-gray", gray(tt.Image()))
 		}
-	}
-	return tt
-}
-
-func both(t *testing.T, a *App, name string, must ...string) {
-	t.Helper()
-	for _, dark := range []bool{false, true} {
-		tt := shoot(t, a, name, dark, 1360, 860)
 		for _, m := range must {
 			if !tt.HasText(m) {
-				t.Fatalf("%s 缺少文字 %q；现有：%q", name, m, tt.Texts())
+				t.Fatalf("%s%s 缺少文字 %q；现有：%q", name, suffix, m, tt.Texts())
 			}
 		}
 	}
 }
 
-func TestScreenshotSessions(t *testing.T) {
+func TestShotOverview(t *testing.T) {
 	a, _ := newDemoApp(t)
-	a.refresh()
-	// 选中一个有危险的会话，右侧出现摘要
-	a.s.sel, a.s.selID = 3, fake.SessA
-	a.loadSessionDetail()
-	both(t, a, "sessions", "实时会话", fake.SessA, "会话摘要")
+	a.Goto(PageOverview)
+	shoot(t, a, "overview", true, "总览", "危险操作", "已拦截", "进行中的会话")
 }
 
-func TestScreenshotTimeline(t *testing.T) {
+func TestShotSessions(t *testing.T) {
 	a, _ := newDemoApp(t)
-	a.openSession(fake.SessA, 0, "")
-	both(t, a, "timeline", "git reset --hard HEAD~1", "⚠ 危险·git", "◌ 本应拦截（shadow，未生效）")
-	// 已拦截（enforce）的会话：■ 已拦截
-	a.openSession(fake.SessD, 0, "")
-	both(t, a, "timeline-enforced", "■ 已拦截")
+	a.Goto(PageSessions)
+	a.selectSession(fake.SessA)
+	a.ss.hitSel = 0
+	shoot(t, a, "sessions", true, "会话", fake.SessA)
+	var hid int64
+	for _, e := range a.ss.entries {
+		if e.Hit != nil && e.Hit.Dangerous {
+			hid = e.Hit.HitID
+		}
+	}
+	a.ss.hitSel = hid
+	a.loadExplain(hid)
+	shoot(t, a, "sessions-inspector", false, fmt.Sprintf("命中检视 #%d", hid), "决策（每条单独列出）")
 }
 
-func TestScreenshotStats(t *testing.T) {
+// 模拟 macOS 隐藏标题栏（红绿灯占左上角）：导航轨内容要在红绿灯下面。
+func TestShotTitleBar(t *testing.T) {
 	a, _ := newDemoApp(t)
-	a.Goto(PageStats)
-	a.k.sel, a.k.selRule = 1, "T1"
-	a.loadStats()
-	both(t, a, "stats-rules", "规则统计页签", "T1")
-	a.k.tab = tabDanger
-	a.loadStats()
-	both(t, a, "stats-danger", "本应拦截 4（未生效）")
-	a.k.dangerSel = 0
-	a.openExplain(a.k.events[0].HitID)
-	both(t, a, "stats-explain", "命中 #")
+	a.Goto(PageOverview)
+	tt := ui.NewTester(a.View, 1440, 900)
+	tt.SetTitleBar(ui.TitleBar{Height: 28, Left: 78})
+	tt.Frame()
+	tt.Advance(800 * time.Millisecond)
+	tt.Frame()
+	writePNG("wd-titlebar-light", tt.Image())
 }
 
-func TestScreenshotJudge(t *testing.T) {
+func TestShotRules(t *testing.T) {
+	a, srv := newDemoApp(t)
+	a.Goto(PageRules)
+	a.rl.sel = "T1"
+	shoot(t, a, "rules", false, "规则", "保存阈值", "命中统计")
+	a.rl.sel = "X2"
+	shoot(t, a, "rules-x2", true, "不可停用", "安全底线规则")
+	// 停用一条规则：只发 disabled
+	a.rl.sel = "L1"
+	off := true
+	a.putRule("L1", api.RuleEdit{Disabled: &off}, "L1 已停用")
+	if len(srv.Puts) != 1 || a.rl.err != "" {
+		t.Fatalf("puts=%v err=%q", srv.Puts, a.rl.err)
+	}
+	// X2 的 PUT 由服务端拒绝，界面原样显示
+	a.putRule("X2", api.RuleEdit{Disabled: &off}, "x")
+	if a.rl.err == "" {
+		t.Fatal("X2 停用应被服务端拒绝并显示错误")
+	}
+}
+
+func TestShotJudge(t *testing.T) {
 	a, _ := newDemoApp(t)
 	a.Goto(PageJudge)
-	a.j.sel, a.j.selID = 0, a.j.calls[0].ID
-	a.loadJudgeDetail()
-	both(t, a, "judge", "judge 调用 #5")
-	a.Goto(PageRouting)
-	a.j.routeSel = 1
-	both(t, a, "routing", "judge 路由表", "supervisor-judge")
+	a.selectJudge(5)
+	shoot(t, a, "judge", true, "裁决记录", "judge 调用 #5")
+	a.jd.tab = 1
+	shoot(t, a, "judge-routes", false, "路由与健康", "supervisor-judge")
 }
 
-func TestScreenshotRulesAndReplay(t *testing.T) {
+func TestShotReplay(t *testing.T) {
 	a, _ := newDemoApp(t)
-	a.Goto(PageRules)
-	a.r.sel = 2
-	both(t, a, "rules", "T1", "保存阈值")
-	a.r.sel = 6
-	both(t, a, "rules-x2", "受保护")
 	a.Goto(PageReplay)
-	a.p.chosen.Add(2)
-	a.p.chosen.Add(3)
-	a.loadCompare()
-	a.p.sel, a.p.selID = 1, 3
-	a.loadRunDetail()
-	both(t, a, "replay", "运行列表", "对比 run 2 → run 3")
-	a.p.tab = 1
-	both(t, a, "replay-eval", "n/a 不是通过")
+	shoot(t, a, "replay", false, "对比", "评测报告")
+}
+
+func TestShotDanger(t *testing.T) {
+	a, _ := newDemoApp(t)
+	a.Goto(PageDanger)
+	shoot(t, a, "danger", true, "危险")
+	a.selectSession(fake.SessD)
+	a.Goto(PageSessions)
+	shoot(t, a, "sessions-enforced", true, "已拦截")
 }

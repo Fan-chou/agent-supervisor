@@ -73,7 +73,8 @@ func main() {
 			Width:    1440,
 			Height:   900,
 			MinWidth: 960, MinHeight: 600,
-			Content: ui.View(a.View),
+			TitleBarStyle: mygo.TitleBarHidden, // 标题栏由界面自己画（导航轨顶部与页头可拖动窗口）
+			Content:       ui.View(a.View),
 		})
 		a.Start()
 		if *quitAfter > 0 {
