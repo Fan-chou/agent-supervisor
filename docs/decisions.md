@@ -172,3 +172,6 @@
 120. **减少追求测试（08:43）**：不再扩大测试规模、不追覆盖率；只保证必要测试通过。本轮只加 1 个测试（批量 BBBEEA 绑定）。重点放在数据收集（hook dump、监督记录、导出、标注入口）顺畅可用。
 121. **收尾（08:43）**：默认 shadow 不拦截、`opencodeEnforce` 保持关、出错 hook 放行不变；新增 `docs/usage.md`（安装/启用/停用/数据收集/未完成项）。
 122. **Esc 中断（08:43）**：留到 Jack 日常使用时顺带验证，现在不处理。
+
+## 2026-10-19 08:49：Jack 的决定
+123. **前端 UI（MyGo）延后（08:49）**：Jack 2026-10-19 08:49: frontend UI (MyGo) deferred to later; this phase only wraps up backend + CLI。
