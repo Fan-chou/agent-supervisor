@@ -23,6 +23,7 @@ var types = map[string]func() any{
 	"Hit":              func() any { return new(Hit) },
 	"JudgeCallDetail":  func() any { return new(JudgeCallDetail) },
 	"JudgeCallList":    func() any { return new(JudgeCallList) },
+	"JudgeRoutes":      func() any { return new(JudgeRoutes) },
 	"Rule":             func() any { return new(Rule) },
 	"RuleList":         func() any { return new(RuleList) },
 	"RuleStat":         func() any { return new(RuleStat) },

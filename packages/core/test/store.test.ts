@@ -317,6 +317,21 @@ describe("查询：命中率 / 误报率 / 按模型 / 对比", () => {
     expect(m1.latencyP95).toBe(400);
     expect(s.find((x) => x.model === "m2")?.ignoreRate).toBe(1);
   });
+  test("judgeRoutes / judgeHealth：调用按 sync 与规则匹配到路由；连续失败 = 不可用，降级 = 降级中", async () => {
+    const { judgeRoutes, judgeHealth, matchRoute } = await import("../src/index.ts");
+    const store = new LogStore(":memory:");
+    const run = store.startRun({ kind: "live" });
+    const add = (sync: boolean, ruleIds: string[], status: string, ts: number, down = false) => store.insertJudgeCall(run, { sessionId: "s", ts, ruleIds, sync, model: "m", status, formatDowngraded: down, formatLevel: down ? "json_object" : "json_schema", latencyMs: 100, error: status === "ok" ? undefined : "boom" });
+    add(true, ["L1"], "ok", 1);
+    add(false, ["T2"], "ok", 2, true);
+    for (const t of [3, 4, 5]) add(false, ["L1"], "timeout", t);
+    const cfg = { enabled: true, base_url: "u", model: "def", routes: [{ when: { sync: true }, model: "fast" }, { when: { rule: "T*" }, model: "strong" }] };
+    const r = judgeRoutes(store.db, cfg, {}, (s, ids) => matchRoute(cfg.routes, s, ids));
+    expect(r.routes.map((x) => [x.use, x.model, x.status, x.calls])).toEqual([["同步（sync=true）", "fast", "ok", 1], ["规则 T*", "strong", "degraded", 1], ["默认", "def", "unavailable", 3]]);
+    expect(r.routes[2]!.reasons).toContain("最近连续 3 次调用失败");
+    expect(judgeHealth(store.db, 10, 60_000)).toMatchObject({ health: "unavailable", recent_calls: 5, recent_failures: 3, last_error: "boom" });
+    expect(judgeHealth(store.db, 10_000_000, 60_000).health).toBe("idle");
+  });
   test("explainHit：命中 → 证据事件 → 决策 → judge → 投递 → 标注", async () => {
     const { store, sim } = mkSim({ cfg: cfgWith({ mode: "enforce" }) });
     await sim.start();

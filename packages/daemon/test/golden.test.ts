@@ -34,7 +34,7 @@ describe("黄金样例：符合 Schema", () => {
   }
   test("每个对外 Schema 都有样例（子定义由包含它们的样例整体覆盖）", () => {
     const covered = new Set(fixtures.map((f) => f.schema));
-    const inline = new Set(["Decision", "TimelineEntry", "JudgeCall", "Rule"]); // 分别在 Timeline / JudgeCallList / RuleList 里
+    const inline = new Set(["Decision", "TimelineEntry", "JudgeCall", "Rule", "JudgeRouteRow"]); // 分别在 Timeline / JudgeCallList / RuleList 里
     for (const n of SCHEMA_NAMES) expect(covered.has(n) || inline.has(n), n).toBe(true);
   });
   test("StreamMessage 样例覆盖全部 8 种 type；streamId 格式 <epoch>.<n>", () => {
@@ -83,6 +83,9 @@ describe("黄金样例：字段集合与真实响应一致（防漂移）", () =
     expect(keys(await get(`/v1/runs/${d.runId}`))).toEqual(keys(fx("RunDetail")));
     const st = await get("/v1/status");
     for (const k of keys(fx("Status"))) expect(keys(st), `Status.${k}`).toContain(k);
+    const jr = await get("/v1/judge/routes");
+    expect(keys(jr)).toEqual(keys(fx("JudgeRoutes")));
+    expect(keys(jr.routes[0])).toEqual(keys(fx("JudgeRoutes").routes[0]));
     const jl = await get("/v1/judge-calls");
     expect(keys(jl)).toEqual(keys(fx("JudgeCallList")));
     expect(keys(jl.calls[0])).toEqual(keys(fx("JudgeCallList").calls[0]));

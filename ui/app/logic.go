@@ -177,6 +177,21 @@ func Num(p *float64, digits int) string {
 }
 
 // Compact 把大数缩写成 1.2k / 3.4M。
+// FmtBytes 把字节数写成 KB / MB / GB（1024 进制，一位小数）。
+func FmtBytes(n int64) string {
+	const k = 1024.0
+	v := float64(n)
+	switch {
+	case v < k:
+		return fmt.Sprintf("%d B", n)
+	case v < k*k:
+		return fmt.Sprintf("%.1f KB", v/k)
+	case v < k*k*k:
+		return fmt.Sprintf("%.1f MB", v/(k*k))
+	}
+	return fmt.Sprintf("%.1f GB", v/(k*k*k))
+}
+
 func Compact(v float64) string {
 	switch {
 	case v >= 1e6:

@@ -262,6 +262,9 @@ func (c *Client) JudgeStats(ctx context.Context, q url.Values) ([]JudgeStat, err
 	r, err := get[JudgeStatList](c, ctx, "/v1/judge-calls/stats", q)
 	return r.Rows, err
 }
+func (c *Client) JudgeRoutes(ctx context.Context, q url.Values) (JudgeRoutes, error) {
+	return get[JudgeRoutes](c, ctx, "/v1/judge/routes", q)
+}
 func (c *Client) DangerStats(ctx context.Context, q url.Values) (DangerStats, error) {
 	return get[DangerStats](c, ctx, "/v1/danger/stats", q)
 }

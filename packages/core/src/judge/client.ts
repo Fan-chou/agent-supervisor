@@ -63,6 +63,18 @@ function scrubBody(s: string): string {
 
 const globToRe = (g: string) => new RegExp("^" + g.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$");
 
+/** 第一条命中的路由下标（null = 走默认模型）。client 与 /v1/judge/routes 共用，保证界面看到的就是实际的走向。 */
+export function matchRoute(routes: Config["judge"]["routes"] | undefined, sync: boolean, ruleIds: string[]): number | null {
+  const rs = routes ?? [];
+  for (let i = 0; i < rs.length; i++) {
+    const w = rs[i]!.when ?? {};
+    if (w.sync !== undefined && w.sync !== sync) continue;
+    if (w.rule !== undefined && !ruleIds.some((id) => globToRe(w.rule!).test(id))) continue;
+    return i;
+  }
+  return null;
+}
+
 export class JudgeClient {
   readonly stats = new Map<string, ModelStats>();
   /** 按 model 缓存降级后的 response_format。 */
@@ -85,13 +97,8 @@ export class JudgeClient {
   }
 
   routeModel(req: JudgeRequest): string {
-    for (const r of this.cfg.routes ?? []) {
-      const w = r.when ?? {};
-      if (w.sync !== undefined && w.sync !== req.sync) continue;
-      if (w.rule !== undefined && !req.hits.some((h) => globToRe(w.rule!).test(h.ruleId))) continue;
-      return r.model;
-    }
-    return this.cfg.model;
+    const i = matchRoute(this.cfg.routes, req.sync, req.hits.map((h) => h.ruleId));
+    return i === null ? this.cfg.model : this.cfg.routes[i]!.model;
   }
 
   private stat(model: string): ModelStats {

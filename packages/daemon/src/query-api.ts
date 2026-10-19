@@ -7,7 +7,9 @@ import {
   dangerStats,
   explainHit,
   judgeCallDetail,
+  judgeRoutes,
   judgeStats,
+  matchRoute,
   listHits,
   listJudgeCalls,
   listRuns,
@@ -134,7 +136,7 @@ export function handleQuery(db: Database, method: string, u: URL, now: number = 
   if (cfg && p === "/v1/rules") return ok({ rules: ruleViews(cfg, edited), mode: cfg.mode });
   if (cfg && p === "/v1/config") return ok(configView(cfg, process.env, base));
 
-  const known = /^\/v1\/(sessions|hits|runs|replays|eval\/reports|rules\/stats|judge-calls(?:\/(?:stats|export\.csv|\d+))?|danger\/(stats|events))(\/|\.csv$|$)/.test(p);
+  const known = /^\/v1\/(sessions|hits|runs|replays|eval\/reports|rules\/stats|judge\/routes|judge-calls(?:\/(?:stats|export\.csv|\d+))?|danger\/(stats|events))(\/|\.csv$|$)/.test(p);
   if (!known) return null;
   const sc = scopeOf(db, u);
   if (isReply(sc)) return sc;
@@ -223,6 +225,12 @@ export function handleQuery(db: Database, method: string, u: URL, now: number = 
     const byModel = q.get("by") === "model";
     const rows = (byModel ? modelRuleStats(db, sc) : ruleStats(db, sc)) as unknown as Record<string, unknown>[];
     return p.endsWith(".csv") ? csv(rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, v])))) : ok({ by: byModel ? "model" : "rule", rows });
+  }
+  if (p === "/v1/judge/routes") {
+    if (!cfg) return null;
+    // 默认看近 7 天；自己给了 since 就用它
+    const scope = { ...sc, since: sc.since ?? now - 7 * 86_400_000 };
+    return ok(judgeRoutes(db, cfg.judge, scope, (sync, ids) => matchRoute(cfg.judge.routes, sync, ids)));
   }
   if (p === "/v1/judge-calls/stats") return ok({ rows: judgeStats(db, sc) });
   if (p === "/v1/judge-calls" || p === "/v1/judge-calls/export.csv") {

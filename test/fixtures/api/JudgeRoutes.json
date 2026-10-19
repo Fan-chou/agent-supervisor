@@ -1,0 +1,25 @@
+{
+  "schema": "JudgeRoutes",
+  "value": {
+    "enabled": true,
+    "base_url": "http://127.0.0.1:3425/v1",
+    "default_model": "supervisor-judge",
+    "since": 1699395200000,
+    "routes": [
+      {
+        "index": 0, "use": "同步（sync=true）", "when": { "sync": true }, "model": "fast-judge", "status": "ok",
+        "calls": 38, "ok": 38, "parse_fail": 0, "parse_fail_rate": 0, "timeouts": 0, "errors": 0, "latency_p95": 2400,
+        "format_level": "json_schema", "format_downgrades": 0,
+        "last_failure_id": null, "last_failure_ts": null, "last_failure_status": null, "last_failure_error": null,
+        "reasons": ["routes[0] 命中"]
+      },
+      {
+        "index": null, "use": "默认", "when": {}, "model": "supervisor-judge", "status": "degraded",
+        "calls": 115, "ok": 100, "parse_fail": 9, "parse_fail_rate": 0.078, "timeouts": 1, "errors": 5, "latency_p95": 14000,
+        "format_level": "json_object", "format_downgrades": 1,
+        "last_failure_id": 42, "last_failure_ts": 1699400000000, "last_failure_status": "parse_fail", "last_failure_error": "响应不是合法 JSON",
+        "reasons": ["没有路由命中时走 judge.model", "response_format 已降级 1 次，当前 json_object"]
+      }
+    ]
+  }
+}

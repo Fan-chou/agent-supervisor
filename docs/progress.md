@@ -253,3 +253,13 @@
 3. 是否要 CSV 导出入口、子 agent 展开（#132、#135）。
 4. 打包形式（签名/公证/与 Bun 守护进程的安装方式）尚未做。
 5. 确认无日期选择器的取舍（#134）。
+
+## 前端 run2：`/v1/judge/routes` + Status judge 健康/日志库大小（decisions #137–139）
+**做了什么**
+- 后端：`GET /v1/judge/routes`（`core/src/store/queries-ui.ts` 的 `judgeRoutes`/`judgeHealthOf`，路由匹配抽成 `matchRoute` 与 `JudgeClient` 共用）；`/v1/status` 加 `dbBytes` 与 `judge.health/recent_calls/recent_failures/last_error`。schemas.ts 加 `JudgeRoutes`/`JudgeRouteRow`，`bun run gen:ui` 重新生成 `ui/api/types_gen.go`，黄金样例新增 `JudgeRoutes.json`、更新 `Status.json`。
+- 前端：路由页（`ui/app/routing.go`，从 judge.go 拆出）改用真实接口，「推断」标注已去掉；顶栏 judge 芯片按健康显示「▲ judge 降级 / ✕ judge 不可用」，并显示「日志库 N MB」。假守护进程同步（`/v1/judge/routes`、Status 新字段）。
+- 删除 `ui/cmd/uismoke`。其余（CSV、子 agent、日期选择器、打包）按 Jack 决定不做。
+**测试结果**：`bun test` 1088 通过 / 0 失败（新增 1 个 core 逻辑测试 + golden 里对 `/v1/judge/routes` 的字段对齐）；`tsc --noEmit` 干净；`go -C ui test -count=1 ./...` 通过；深浅色截图看过（`-shots`）。不联网，不读禁区目录。
+**偏离 design**：状态阈值（连续 3 次失败、15%/≥10 样本、15 分钟窗口、近 7 天）是实现选的通用常量，frontend-design §5 只给了 15%。路由页没有时间范围控件（固定近 7 天）。
+**没做 / 注意**：判断归属依赖调用当时的 `rule_ids`/`sync`；配置改过路由后，历史调用会按**当前**路由重新归类。没有在真窗口里看新的路由页与顶栏（截图只是离屏渲染）。
+**等 Jack**：HEAD 在 904728a 之上有未提交改动（见 git status），需要监督者代提交；不 push。

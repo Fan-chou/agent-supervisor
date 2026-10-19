@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"sort"
 	"strings"
 
 	"github.com/Fan-chou/agent-supervisor/ui/api"
@@ -28,6 +27,7 @@ type judgePage struct {
 	withCache                bool
 	cacheInit                bool
 
+	routes    *api.JudgeRoutes
 	cfg       *api.ConfigView
 	cfgLoaded bool
 	routeList ui.ListState
@@ -98,26 +98,6 @@ func (a *App) loadJudgeDetail() {
 				a.j.detail = map[int64]api.JudgeCallDetail{}
 			}
 			a.j.detail[id] = d
-		}, nil
-	})
-}
-
-func (a *App) loadRouting() {
-	a.async("config", func(ctx context.Context) (func(), error) {
-		cv, err := a.Client.Config(ctx)
-		if err != nil {
-			return nil, err
-		}
-		st, serr := a.Client.JudgeStats(ctx, nil)
-		l, lerr := a.Client.JudgeCalls(ctx, url.Values{"limit": {"200"}})
-		return func() {
-			a.j.cfg, a.j.cfgLoaded = &cv, true
-			if serr == nil {
-				a.j.stats = st
-			}
-			if lerr == nil {
-				a.j.calls, a.j.totals = l.Calls, l.Totals
-			}
 		}, nil
 	})
 }
@@ -368,163 +348,6 @@ func (a *App) judgeDetailPanel(c *ui.Context, d api.JudgeCallDetail) {
 					a.openSession(d.SessionID, 0, "")
 				}
 			})
-		})
-	})
-}
-
-// ---- Judge 路由 ----
-// /v1/judge/routes 还没有（design §9 的计划接口），所以这页只用 /v1/config + /v1/judge-calls/stats + judge_calls 记录，
-// 能推出什么就显示什么；推不出的（降级原因的具体 4xx 文本）不编造。见 decisions #129。
-
-type routeRow struct {
-	Use, Model, Reason string
-	Stat               *api.JudgeStat
-}
-
-// RoutesFromConfig 从生效配置里取 judge.routes（match + model）和默认模型。
-func RoutesFromConfig(cfg map[string]any) (rows []routeRow, enabled bool, baseURL string) {
-	jm, _ := cfg["judge"].(map[string]any)
-	if jm == nil {
-		return nil, false, ""
-	}
-	enabled, _ = jm["enabled"].(bool)
-	baseURL, _ = jm["base_url"].(string)
-	if rs, ok := jm["routes"].([]any); ok {
-		for i, r := range rs {
-			rm, _ := r.(map[string]any)
-			if rm == nil {
-				continue
-			}
-			use := "（未写匹配条件）"
-			if m, ok := rm["match"].(map[string]any); ok {
-				var parts []string
-				for k, v := range m {
-					parts = append(parts, fmt.Sprintf("%s=%v", k, v))
-				}
-				sort.Strings(parts)
-				use = strings.Join(parts, " ")
-			}
-			model, _ := rm["model"].(string)
-			rows = append(rows, routeRow{Use: use, Model: model, Reason: fmt.Sprintf("routes[%d] 命中", i)})
-		}
-	}
-	def, _ := jm["model"].(string)
-	rows = append(rows, routeRow{Use: "默认", Model: def, Reason: "没有路由命中时走 judge.model"})
-	return rows, enabled, baseURL
-}
-
-// RouteStatus 给每个目标一个状态：未使用 / 正常 / 降级中（解析失败率超线或 response_format 已降级）。
-func RouteStatus(s *api.JudgeStat) (string, string) {
-	switch {
-	case s == nil || s.Calls == 0:
-		return "未使用", "近期没有调用"
-	case s.Calls >= 10 && s.ParseFailRate != nil && *s.ParseFailRate > 0.15:
-		return "降级中", fmt.Sprintf("parse_fail 率 %s 高于警告线 15%%（样本 ≥10）", Pct(s.ParseFailRate))
-	case s.FormatDowngrades > 0:
-		return "降级中", fmt.Sprintf("response_format 已降级 %d 次", s.FormatDowngrades)
-	case s.Timeouts+s.Errors > 0 && s.Ok == 0:
-		return "不可用", "没有成功的调用"
-	}
-	return "正常", ""
-}
-
-func (a *App) routingView(c *ui.Context) {
-	p := palOf(c)
-	j := &a.j
-	if e := a.errOf("config"); e != "" {
-		a.errBar(c, "加载失败："+e, a.loadRouting)
-	}
-	if !j.cfgLoaded {
-		a.emptyNote(c, "正在加载 judge 配置…")
-		return
-	}
-	rows, enabled, baseURL := RoutesFromConfig(j.cfg.Config)
-	byModel := map[string]*api.JudgeStat{}
-	for i := range j.stats {
-		byModel[j.stats[i].Model] = &j.stats[i]
-	}
-	ui.Scroll(c).Grow(1).Padding(10, 14).Children(func() {
-		ui.Column(c).FillWidth().Gap(12).Children(func() {
-			banner(c, p.Muted, p.Faint, "路由只读：改路由请编辑 config.yaml。状态与原因来自 judge_calls 记录，不是界面猜的。")
-			if !enabled {
-				ui.Text(c, "judge 未启用（--judge=off 或未配置）").Bold().FontSize(16)
-			}
-			section(c, "judge 配置", func() {
-				kv(c, "base_url", baseURL)
-				kv(c, "key", fmt.Sprintf("环境变量 %s（%s）", j.cfg.Judge.ApiKeyEnv, map[bool]string{true: "已设置", false: "未设置"}[j.cfg.Judge.ApiKeySet]))
-				if len(rows) == 1 {
-					ui.Text(c, "没有配置路由：所有调用走 judge.model。").FontSize(12).TextColor(p.Muted)
-				}
-			})
-			cols := []ui.TableColumn{{Title: "用途（匹配条件）", MinWidth: 180}, {Title: "当前模型", Width: 170}, {Title: "状态", Width: 90}, {Title: "模型近期调用", Width: 100, Align: ui.End}, {Title: "parse_fail", Width: 84, Align: ui.End}, {Title: "p95", Width: 64, Align: ui.End}, {Title: "为什么这样走", MinWidth: 220}}
-			j.routeList.Selected = &j.routeSel
-			ui.Table(c, &j.routeList, cols, len(rows), func(i, col int) {
-				r := rows[i]
-				s := byModel[r.Model]
-				st, why := RouteStatus(s)
-				t := func(x string) ui.Element { return ui.Text(c, x).FontSize(13).SingleLine() }
-				switch col {
-				case 0:
-					t(r.Use)
-				case 1:
-					t(Or(r.Model, "–"))
-				case 2:
-					col := p.Ok
-					switch st {
-					case "降级中":
-						col = p.Warn
-					case "不可用":
-						col = p.Danger
-					case "未使用":
-						col = p.Muted
-					}
-					t(map[string]string{"正常": "● 正常", "降级中": "▲ 降级中", "不可用": "✕ 不可用", "未使用": "○ 未使用"}[st]).TextColor(col).Bold()
-				case 3:
-					if s == nil {
-						t("–")
-					} else {
-						t(fmt.Sprint(s.Calls))
-					}
-				case 4:
-					if s == nil || s.Calls == 0 {
-						t("–")
-					} else {
-						t(Pct(s.ParseFailRate))
-					}
-				case 5:
-					if s == nil {
-						t("–")
-					} else {
-						t(ms(s.LatencyP95))
-					}
-				case 6:
-					t(Or(why, r.Reason)).TextColor(p.dim(i == j.routeSel))
-				}
-			}).Height(float32(36 + 34*len(rows))).Label("judge 路由表")
-			if j.routeSel >= 0 && j.routeSel < len(rows) {
-				r := rows[j.routeSel]
-				s := byModel[r.Model]
-				section(c, "选中「"+r.Use+"」", func() {
-					kv(c, "走向", Or(r.Model, "–")+" · "+r.Reason)
-					if s != nil {
-						kv(c, "调用", fmt.Sprintf("%d（ok %d · 超时 %d · 出错 %d · parse_fail %d）", s.Calls, s.Ok, s.Timeouts, s.Errors, s.ParseFail))
-						kv(c, "response_format 降级", fmt.Sprintf("%d 次", s.FormatDowngrades))
-						kv(c, "裁决分布", fmt.Sprintf("ignore %d · advise %d · block %d（ignore 率 %s）", s.Ignores, s.Advises, s.Blocks, Pct(s.IgnoreRate)))
-						kv(c, "tokens", fmt.Sprintf("prompt %s（缓存 %s）· completion %s", Compact(s.PromptTokens), Compact(s.CachedTokens), Compact(s.CompletionTokens)))
-						kv(c, "成本", fmt.Sprintf("$%.3f", s.CostUsd))
-					}
-					for _, call := range j.calls {
-						if Str(call.Model) == r.Model && call.Status != "ok" {
-							kv(c, "最近一次失败", fmt.Sprintf("%s %s：%s", FmtTime(call.Ts), call.Status, Or(Str(call.Error), "–")))
-							if ui.Button(c, "打开该调用").Clicked() {
-								a.j.focusID = call.ID
-								a.Goto(PageJudge)
-							}
-							break
-						}
-					}
-				})
-			}
 		})
 	})
 }

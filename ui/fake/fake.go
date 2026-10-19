@@ -110,6 +110,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.putRule(w, r, strings.TrimPrefix(p, "/v1/rules/"))
 	case p == "/v1/config":
 		writeJSON(w, 200, s.config())
+	case p == "/v1/judge/routes":
+		writeJSON(w, 200, s.judgeRoutes())
 	case p == "/v1/judge-calls":
 		writeJSON(w, 200, s.judgeCalls())
 	case p == "/v1/judge-calls/stats":
@@ -127,9 +129,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) status() api.Status {
-	return api.Status{Protocol: 1, Version: "0.1.0", Mode: s.Mode, StartedAt: s.ms(3 * time.Hour), RunID: 1, Db: "~/.agent-supervisor/state.db", Sessions: 3,
+	return api.Status{Protocol: 1, Version: "0.1.0", Mode: s.Mode, StartedAt: s.ms(3 * time.Hour), RunID: 1, Db: "~/.agent-supervisor/state.db", Sessions: 3, DbBytes: 12582912,
 		Outbox: map[string]int64{"pending": 0, "delivered": 4}, AdapterFailures15m: map[string]int64{"claude": 0, "codex": 1, "opencode": 0},
-		Judge: api.StatusJudge{Enabled: true, Model: "supervisor-judge"}}
+		Judge: api.StatusJudge{Enabled: true, BaseUrl: "http://127.0.0.1:3425/v1", Model: "supervisor-judge", Health: "degraded", RecentCalls: 12, RecentFailures: 3, LastError: ptr("响应不是合法 JSON（已重试 1 次）")}}
 }
 
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {

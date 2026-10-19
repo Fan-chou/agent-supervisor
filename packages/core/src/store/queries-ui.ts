@@ -603,3 +603,108 @@ export function sessionStateOf(a: SessionActivity | undefined, now: number, acti
   if (a?.endedTs) return "ended";
   return a?.lastTs !== null && a?.lastTs !== undefined && now - a.lastTs <= activeMs ? "active" : "idle";
 }
+
+// ---------- judge 健康与路由（frontend-design §5；全部来自 judge_calls，不猜） ----------
+
+export type JudgeHealth = "ok" | "degraded" | "unavailable" | "idle";
+export interface JudgeCallLite {
+  id: number;
+  ts: number;
+  status: string;
+  error: string | null;
+  format_level: string | null;
+  format_downgraded: number | null;
+}
+const PARSE_FAIL_WARN = 0.15;
+const PARSE_FAIL_MIN_SAMPLES = 10;
+const CONSECUTIVE_FAIL = 3;
+
+/** 一组调用（按 ts 升序）→ 健康状态与可追溯的原因。idle = 窗口内没有调用。 */
+export function judgeHealthOf(calls: JudgeCallLite[]): { health: JudgeHealth; reasons: string[]; lastFailure: JudgeCallLite | null } {
+  if (!calls.length) return { health: "idle", reasons: [], lastFailure: null };
+  const fails = calls.filter((c) => c.status !== "ok");
+  const lastFailure = fails.length ? fails[fails.length - 1]! : null;
+  const reasons: string[] = [];
+  let tail = 0;
+  for (let i = calls.length - 1; i >= 0 && calls[i]!.status !== "ok"; i--) tail++;
+  const pf = calls.filter((c) => c.status === "parse_fail").length;
+  const down = calls.filter((c) => Number(c.format_downgraded) === 1);
+  if (tail >= CONSECUTIVE_FAIL) reasons.push(`最近连续 ${tail} 次调用失败`);
+  if (calls.length >= PARSE_FAIL_MIN_SAMPLES && pf / calls.length > PARSE_FAIL_WARN) reasons.push(`parse_fail 率 ${Math.round((pf / calls.length) * 1000) / 10}% 高于警告线 ${PARSE_FAIL_WARN * 100}%（样本 ≥${PARSE_FAIL_MIN_SAMPLES}）`);
+  if (down.length) reasons.push(`response_format 已降级 ${down.length} 次，当前 ${down[down.length - 1]!.format_level ?? "?"}`);
+  const health: JudgeHealth = tail >= CONSECUTIVE_FAIL ? "unavailable" : reasons.length ? "degraded" : "ok";
+  return { health, reasons, lastFailure };
+}
+
+type RouteCall = JudgeCallLite & { sync: number | null; rule_ids: string | null; latency_ms: number | null };
+const callsIn = (db: Database, scope: Scope) => {
+  const w = where(scope);
+  return q<RouteCall>(db, `SELECT id, ts, status, error, format_level, format_downgraded, sync, rule_ids, latency_ms FROM judge_calls WHERE ${w.sql} ORDER BY ts, id`, w.args);
+};
+
+/** /v1/status 里的 judge 健康（只看 now 之前 windowMs 内的调用）。 */
+export function judgeHealth(db: Database, now: number, windowMs = 15 * 60_000) {
+  const calls = callsIn(db, { since: now - windowMs });
+  const h = judgeHealthOf(calls);
+  return { health: h.health, recent_calls: calls.length, recent_failures: calls.filter((c) => c.status !== "ok").length, last_error: h.lastFailure?.error ?? null };
+}
+
+const useText = (w: { rule?: string; sync?: boolean }): string => {
+  const p: string[] = [];
+  if (w.sync !== undefined) p.push(w.sync ? "同步（sync=true）" : "异步（sync=false）");
+  if (w.rule !== undefined) p.push(`规则 ${w.rule}`);
+  return p.length ? p.join(" · ") : "（未写匹配条件）";
+};
+
+export interface JudgeRoutesCfg {
+  enabled: boolean;
+  base_url: string;
+  model: string;
+  routes: { when: { rule?: string; sync?: boolean }; model: string }[];
+}
+
+/** 每个「用途」（judge.routes 的每一条 + 默认）当前走哪个模型、状态、为什么。每次调用按它当时的 sync 与命中规则重新匹配到路由。 */
+export function judgeRoutes(db: Database, cfg: JudgeRoutesCfg, scope: Scope, matcher: (sync: boolean, ruleIds: string[]) => number | null) {
+  const groups = new Map<number | null, RouteCall[]>();
+  for (const c of callsIn(db, scope)) {
+    const ids = (c.rule_ids ?? "").split(",").filter(Boolean); // 库里是逗号分隔
+    const k = matcher(Number(c.sync) === 1, ids);
+    groups.set(k, [...(groups.get(k) ?? []), c]);
+  }
+  const row = (index: number | null, when: { rule?: string; sync?: boolean }, model: string) => {
+    const cs = groups.get(index) ?? [];
+    const h = judgeHealthOf(cs);
+    const n = (st: string) => cs.filter((c) => c.status === st).length;
+    const lat = cs.map((c) => Number(c.latency_ms)).filter((x) => Number.isFinite(x) && x > 0);
+    const reasons = [index === null ? (cfg.routes.length ? "没有路由命中时走 judge.model" : "没有配置路由：所有调用走 judge.model") : `routes[${index}] 命中`, ...h.reasons];
+    if (!cfg.enabled) reasons.push("judge 未启用");
+    return {
+      index,
+      use: index === null ? "默认" : useText(when),
+      when,
+      model,
+      status: h.health === "idle" ? "unused" : h.health,
+      calls: cs.length,
+      ok: n("ok"),
+      parse_fail: n("parse_fail"),
+      parse_fail_rate: cs.length ? n("parse_fail") / cs.length : null,
+      timeouts: n("timeout"),
+      errors: n("error"),
+      latency_p95: pct(lat, 0.95) ?? null,
+      format_level: [...cs].reverse().find((c) => c.format_level)?.format_level ?? null,
+      format_downgrades: cs.filter((c) => Number(c.format_downgraded) === 1).length,
+      last_failure_id: h.lastFailure?.id ?? null,
+      last_failure_ts: h.lastFailure?.ts ?? null,
+      last_failure_status: h.lastFailure?.status ?? null,
+      last_failure_error: h.lastFailure?.error ?? null,
+      reasons,
+    };
+  };
+  return {
+    enabled: cfg.enabled,
+    base_url: cfg.base_url,
+    default_model: cfg.model,
+    since: scope.since ?? null,
+    routes: [...cfg.routes.map((r, i) => row(i, r.when ?? {}, r.model)), row(null, {}, cfg.model)],
+  };
+}

@@ -318,9 +318,19 @@ func (a *App) topBar(c *ui.Context) {
 				if a.status.Judge.Model != "" {
 					label += " · " + a.status.Judge.Model
 				}
-				chip(c, label, p.Muted, p.Faint)
+				fg, bg := p.Muted, p.Faint
+				switch a.status.Judge.Health {
+				case "degraded":
+					label, fg, bg = "▲ judge 降级", p.Warn, p.WarnBg
+				case "unavailable":
+					label, fg, bg = "✕ judge 不可用", ui.RGB(255, 255, 255), p.Danger
+				}
+				chip(c, label, fg, bg)
 			} else {
 				chip(c, "judge 关", p.Muted, p.Faint)
+			}
+			if a.status.DbBytes > 0 {
+				ui.Text(c, "日志库 "+FmtBytes(a.status.DbBytes)).FontSize(12).SingleLine().TextColor(p.Muted).Tooltip(a.status.Db)
 			}
 			ui.Text(c, fmt.Sprintf("v%s · 协议 %d", a.status.Version, a.status.Protocol)).FontSize(12).TextColor(p.Muted).Tooltip("日志库：" + a.status.Db)
 		}

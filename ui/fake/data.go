@@ -407,7 +407,19 @@ func (s *Server) config() api.ConfigView {
 	return api.ConfigView{Source: "daemon-startup", Judge: api.ConfigViewJudge{ApiKeyEnv: "SUPERVISOR_API_KEY", ApiKeySet: true},
 		Sources: map[string]string{"mode": "default", "judge.model": "configured"},
 		Config: map[string]any{"mode": s.Mode, "judge": map[string]any{"enabled": true, "base_url": "http://127.0.0.1:3425/v1", "model": "supervisor-judge", "api_key_env": "SUPERVISOR_API_KEY",
-			"routes": []any{map[string]any{"match": map[string]any{"sync": true}, "model": "fast-judge"}, map[string]any{"match": map[string]any{"rules": "T*"}, "model": "supervisor-judge"}}}}}
+			"routes": []any{map[string]any{"when": map[string]any{"sync": true}, "model": "fast-judge"}, map[string]any{"when": map[string]any{"rule": "T*"}, "model": "supervisor-judge"}}}}}
+}
+
+func (s *Server) judgeRoutes() api.JudgeRoutes {
+	f := func(v float64) *float64 { return &v }
+	return api.JudgeRoutes{Enabled: true, BaseUrl: "http://127.0.0.1:3425/v1", DefaultModel: "supervisor-judge", Since: ptr[int64](s.ms(7 * 24 * time.Hour)),
+		Routes: []api.JudgeRouteRow{
+			{Index: ptr[int64](0), Use: "同步（sync=true）", When: api.JudgeRouteRowWhen{Sync: true}, Model: "fast-judge", Status: "ok", Calls: 38, Ok: 38, ParseFailRate: f(0), LatencyP95: f(2400), FormatLevel: ptr("json_schema"), Reasons: []string{"routes[0] 命中"}},
+			{Index: ptr[int64](1), Use: "规则 T*", When: api.JudgeRouteRowWhen{Rule: "T*"}, Model: "supervisor-judge", Status: "ok", Calls: 61, Ok: 60, ParseFail: 1, ParseFailRate: f(0.016), LatencyP95: f(9100), FormatLevel: ptr("json_schema"), Reasons: []string{"routes[1] 命中"}},
+			{Use: "默认", When: api.JudgeRouteRowWhen{}, Model: "supervisor-judge", Status: "degraded", Calls: 115, Ok: 100, ParseFail: 9, Timeouts: 1, Errors: 5, ParseFailRate: f(0.078), LatencyP95: f(14000), FormatLevel: ptr("json_object"), FormatDowngrades: 1,
+				LastFailureID: ptr[int64](2), LastFailureTs: ptr[int64](s.ms(12 * time.Minute)), LastFailureStatus: ptr("parse_fail"), LastFailureError: ptr("响应不是合法 JSON（已重试 1 次）"),
+				Reasons: []string{"没有路由命中时走 judge.model", "response_format 已降级 1 次，当前 json_object"}},
+		}}
 }
 
 func (s *Server) judgeCalls() api.JudgeCallList {

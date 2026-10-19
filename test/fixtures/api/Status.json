@@ -7,9 +7,10 @@
     "startedAt": 1700000000000,
     "runId": 1,
     "db": "/home/u/.agent-supervisor/state.db",
+    "dbBytes": 12582912,
     "sessions": 2,
     "outbox": { "pending": 0, "claimed": 0, "delivered": 1, "stale": 0, "expired": 0 },
     "adapterFailures15m": { "claude": 0, "codex": 1 },
-    "judge": { "enabled": false }
+    "judge": { "enabled": true, "base_url": "http://127.0.0.1:3425/v1", "model": "supervisor-judge", "health": "degraded", "recent_calls": 12, "recent_failures": 3, "last_error": "timeout" }
   }
 }

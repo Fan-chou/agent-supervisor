@@ -92,7 +92,30 @@ const DangerStats = obj({
 });
 const RuleStat = obj({ rule: str, hits: int, sessions: int, hitsPer100Calls: nul(num), sessionRate: nul(num), bySev: rec(int), actions: rec(int), outcomes: rec(int), suppressed: rec(int), applied: int, labeledFp: int, labeledUseful: int, fpRate: nul(num), delivered: int, complied: int, notComplied: int, complianceRate: nul(num) });
 const Run = obj({ id: int, kind: en("live", "replay", "eval"), label: nul(str), source: nul(str), mode: nul(str), judge_mode: nul(str), thresholds_hash: nul(str), overrides_json: nul(str), started_ts: int, ended_ts: nul(int), sessions: int, hits: int }, ["id", "kind", "started_ts", "sessions", "hits"]);
-const Status = obj({ protocol: int, version: str, mode: en("shadow", "advise", "enforce"), startedAt: int, runId: int, db: str, sessions: int, outbox: rec(int), adapterFailures15m: rec(int), judge: obj({ enabled: bool, base_url: str, model: str }, ["enabled"]) }, ["protocol", "version", "mode", "startedAt", "runId", "sessions", "adapterFailures15m"]);
+const Status = obj({ protocol: int, version: str, mode: en("shadow", "advise", "enforce"), startedAt: int, runId: int, db: str, dbBytes: int, sessions: int, outbox: rec(int), adapterFailures15m: rec(int), judge: obj({ enabled: bool, base_url: str, model: str, health: en("ok", "degraded", "unavailable", "idle"), recent_calls: int, recent_failures: int, last_error: nul(str) }, ["enabled"]) }, ["protocol", "version", "mode", "startedAt", "runId", "sessions", "adapterFailures15m"]);
+
+const JudgeRouteRow = obj({
+  index: nul(int),
+  use: str,
+  when: obj({ rule: str, sync: bool }, []),
+  model: str,
+  status: en("ok", "degraded", "unavailable", "unused"),
+  calls: int,
+  ok: int,
+  parse_fail: int,
+  parse_fail_rate: nul(num),
+  timeouts: int,
+  errors: int,
+  latency_p95: nul(num),
+  format_level: nul(str),
+  format_downgrades: int,
+  last_failure_id: nul(int),
+  last_failure_ts: nul(int),
+  last_failure_status: nul(str),
+  last_failure_error: nul(str),
+  reasons: arr(str),
+});
+const JudgeRoutes = obj({ enabled: bool, base_url: str, default_model: str, since: nul(int), routes: arr({ $ref: "#/$defs/JudgeRouteRow" }) });
 const Delivery = obj({ kind: en("block", "ask", "advise", "stop_continue"), text: str, deliveryId: str, ruleId: str, createdAtSeq: int }, ["kind", "text"]);
 const StreamMessage = obj(
   { streamId: str, type: en("session", "event", "hit", "decision", "delivery", "status", "heartbeat", "reset"), ts: int, sessionId: str, harness: str, runId: int, seq: int, phase: str, tool: str, status: str, model: str, ruleId: str, sev: str, category: str, dangerous: bool, action: str, applied: bool, outcome: nul(str), deliveryId: str, kind: str, hookPoint: str, mode: str, sessions: int, reason: str },
@@ -160,7 +183,7 @@ const RunDetail = obj({
   judge_calls: int,
 });
 
-const DEFS: Record<string, S> = { RunDetail, Rule, RuleList, ConfigView, ConfigValidation, Decision, TimelineCall, TimelineEvent, TimelineHit, TimelineEntry, Hit, SessionSummary, DangerEvent, DangerStats, RuleStat, Run, Status, Delivery, StreamMessage, Timeline, JudgeCall, JudgeCallList, JudgeCallDetail };
+const DEFS: Record<string, S> = { JudgeRouteRow, JudgeRoutes, RunDetail, Rule, RuleList, ConfigView, ConfigValidation, Decision, TimelineCall, TimelineEvent, TimelineHit, TimelineEntry, Hit, SessionSummary, DangerEvent, DangerStats, RuleStat, Run, Status, Delivery, StreamMessage, Timeline, JudgeCall, JudgeCallList, JudgeCallDetail };
 export const SCHEMA_NAMES = Object.keys(DEFS).filter((n) => !["TimelineCall", "TimelineEvent", "TimelineHit"].includes(n));
 
 /** 返回自包含的 Schema（$defs 里带上所有定义，$ref 就地可解析）；未知名字返回 null。 */

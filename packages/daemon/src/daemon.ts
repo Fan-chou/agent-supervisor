@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   Engine, LogStore, Outbox, StoreSink, beginRun, truncate, checkPrecondition, computeWsFingerprint, createJudgeClient, expandHome, loadInjectionHashes, loadPlan, parsePlanMd, saveInjection, savePlan, wsToString,
-  outcomeOf, applyRuleEdits, loadRuleEdits, readEnforceState, ruleViews, saveRuleEdits, validateConfigDraft, validateRuleEdit, type Config, type RuleEdits, type Decision, type Delivery, type JudgeFn, type OutboxKind, type Precondition, type StepRecord, type JudgeClient,
+  judgeHealth, outcomeOf, applyRuleEdits, loadRuleEdits, readEnforceState, ruleViews, saveRuleEdits, validateConfigDraft, validateRuleEdit, type Config, type RuleEdits, type Decision, type Delivery, type JudgeFn, type OutboxKind, type Precondition, type StepRecord, type JudgeClient,
 } from "@sv/core";
 import { normalizeClaudeHook, type ClaudeHookPayload } from "../../adapter-claude/src/index.ts";
 import { handleCompare, handleQuery } from "./query-api.ts";
@@ -400,6 +400,20 @@ export class Daemon {
     }
   }
 
+  /** 日志库文件大小（主库 + WAL）；读不到就 0，不影响 status。 */
+  private dbBytes(): number {
+    const f = this.store.db.filename;
+    let n = 0;
+    for (const p of [f, f + "-wal"]) {
+      try {
+        n += statSync(p).size;
+      } catch {
+        /* 内存库或文件不存在 */
+      }
+    }
+    return n;
+  }
+
   status() {
     const since = this.now() - 15 * 60_000;
     const fails = (this.store.db.query("SELECT harness, COUNT(*) AS n FROM adapter_health WHERE ok = 0 AND ts >= ? GROUP BY harness").all(since) as { harness: string; n: number }[]);
@@ -413,7 +427,8 @@ export class Daemon {
       sessions: this.sessions.size,
       outbox: this.outbox.counts(),
       adapterFailures15m: Object.fromEntries(fails.map((f) => [f.harness, f.n])),
-      judge: this.judge ? { enabled: true, base_url: this.cfg.judge.base_url, model: this.cfg.judge.model, stats: this.judgeClient ? Object.fromEntries(this.judgeClient.stats) : undefined } : { enabled: false },
+      dbBytes: this.dbBytes(),
+      judge: this.judge ? { enabled: true, base_url: this.cfg.judge.base_url, model: this.cfg.judge.model, stats: this.judgeClient ? Object.fromEntries(this.judgeClient.stats) : undefined, ...judgeHealth(this.store.db, this.now()) } : { enabled: false },
     };
   }
 

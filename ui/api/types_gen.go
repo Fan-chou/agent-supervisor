@@ -5,6 +5,44 @@ package api
 // SchemaVersion 是生成时的 schema 版本。
 const SchemaVersion = "v1"
 
+// JudgeRouteRowWhen 对应 schema JudgeRouteRowWhen。
+type JudgeRouteRowWhen struct {
+	Rule string `json:"rule"`
+	Sync bool   `json:"sync"`
+}
+
+// JudgeRouteRow 对应 schema JudgeRouteRow。
+type JudgeRouteRow struct {
+	Index             *int64            `json:"index"`
+	Use               string            `json:"use"`
+	When              JudgeRouteRowWhen `json:"when"`
+	Model             string            `json:"model"`
+	Status            string            `json:"status"`
+	Calls             int64             `json:"calls"`
+	Ok                int64             `json:"ok"`
+	ParseFail         int64             `json:"parse_fail"`
+	ParseFailRate     *float64          `json:"parse_fail_rate"`
+	Timeouts          int64             `json:"timeouts"`
+	Errors            int64             `json:"errors"`
+	LatencyP95        *float64          `json:"latency_p95"`
+	FormatLevel       *string           `json:"format_level"`
+	FormatDowngrades  int64             `json:"format_downgrades"`
+	LastFailureID     *int64            `json:"last_failure_id"`
+	LastFailureTs     *int64            `json:"last_failure_ts"`
+	LastFailureStatus *string           `json:"last_failure_status"`
+	LastFailureError  *string           `json:"last_failure_error"`
+	Reasons           []string          `json:"reasons"`
+}
+
+// JudgeRoutes 对应 schema JudgeRoutes。
+type JudgeRoutes struct {
+	Enabled      bool            `json:"enabled"`
+	BaseUrl      string          `json:"base_url"`
+	DefaultModel string          `json:"default_model"`
+	Since        *int64          `json:"since"`
+	Routes       []JudgeRouteRow `json:"routes"`
+}
+
 // RunDetail 对应 schema RunDetail。
 type RunDetail struct {
 	ID             int64          `json:"id"`
@@ -265,9 +303,13 @@ type Run struct {
 
 // StatusJudge 对应 schema StatusJudge。
 type StatusJudge struct {
-	Enabled bool   `json:"enabled"`
-	BaseUrl string `json:"base_url"`
-	Model   string `json:"model"`
+	Enabled        bool    `json:"enabled"`
+	BaseUrl        string  `json:"base_url"`
+	Model          string  `json:"model"`
+	Health         string  `json:"health"`
+	RecentCalls    int64   `json:"recent_calls"`
+	RecentFailures int64   `json:"recent_failures"`
+	LastError      *string `json:"last_error"`
 }
 
 // Status 对应 schema Status。
@@ -278,6 +320,7 @@ type Status struct {
 	StartedAt          int64            `json:"startedAt"`
 	RunID              int64            `json:"runId"`
 	Db                 string           `json:"db"`
+	DbBytes            int64            `json:"dbBytes"`
 	Sessions           int64            `json:"sessions"`
 	Outbox             map[string]int64 `json:"outbox"`
 	AdapterFailures15m map[string]int64 `json:"adapterFailures15m"`
@@ -426,6 +469,9 @@ var Required = map[string][]string{
 	"JudgeCallDetail":          {"id", "repairs", "bodiesStored", "hits", "decisions", "deliveries"},
 	"JudgeCallList":            {"calls", "nextCursor", "totals"},
 	"JudgeCallListTotals":      {"calls", "ok", "failed", "parseFail", "promptTokens", "completionTokens", "cachedTokens", "costUsd", "latencyP50", "latencyP95"},
+	"JudgeRouteRow":            {"index", "use", "when", "model", "status", "calls", "ok", "parse_fail", "parse_fail_rate", "timeouts", "errors", "latency_p95", "format_level", "format_downgrades", "last_failure_id", "last_failure_ts", "last_failure_status", "last_failure_error", "reasons"},
+	"JudgeRouteRowWhen":        {},
+	"JudgeRoutes":              {"enabled", "base_url", "default_model", "since", "routes"},
 	"Rule":                     {"id", "title", "category", "level", "thresholds", "override", "disabled", "edited", "protected"},
 	"RuleList":                 {"rules", "mode"},
 	"RuleStat":                 {"rule", "hits", "sessions", "hitsPer100Calls", "sessionRate", "bySev", "actions", "outcomes", "suppressed", "applied", "labeledFp", "labeledUseful", "fpRate", "delivered", "complied", "notComplied", "complianceRate"},

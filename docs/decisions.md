@@ -190,3 +190,8 @@
 134. **无日期选择器**：用预设时间范围 Select（MyGo 无日历控件）。
 135. **CSV 导出延后**（守护进程已有 `judge-calls/csv`，界面入口待做）。
 136. **表格列必须唯一 ID/Title**（MyGo 重复会 panic）；选中行的弱化文字走 `pal.dim(selected)` 保证对比度。
+
+## 2026-10-19 09:34：Jack 的决定（前端 run2）
+137. **补 `GET /v1/judge/routes` 与 Status 的 judge 健康 / 日志库大小**（取代 #128 的「推断」）。`/v1/judge/routes`：judge.routes 每条 + 默认各一行，字段含 `use/when/model/status(ok|degraded|unavailable|unused)/calls/parse_fail_rate/latency_p95/format_level/format_downgrades/last_failure_*/reasons[]`；默认看近 7 天（`since` 可覆盖）。每次调用按它当时的 `sync` 与命中规则，用与 `JudgeClient.routeModel` 同一个 `matchRoute` 重新归到路由（不按模型名分支）。状态规则（通用常量）：最近连续 ≥3 次失败 = 不可用；parse_fail 率 >15%（样本 ≥10）或 response_format 降级过 = 降级中；窗口内无调用 = 未使用。`Status.dbBytes`（主库 + WAL）；`Status.judge` 增加 `health/recent_calls/recent_failures/last_error`（最近 15 分钟，同一套规则）。可空内联对象不进 schema，`last_failure_*` 拍平。黄金样例 `JudgeRoutes.json`、`Status.json` 已更新；Go 类型重新生成；假守护进程同步（顺带修了 fake 里 `match/rules` 误写，真实配置是 `when/rule`）。
+138. **暂不做**：CSV 导出入口、子 agent 展开、日期选择器（时间范围用预设下拉）、打包/签名/公证。Jack 已在本机用 `-demo` 跑过真窗口，效果认可。
+139. **`ui/cmd/uismoke` 已删除**（UI0 冒烟已完成，结论在 frontend-design §11.1，无引用）。
