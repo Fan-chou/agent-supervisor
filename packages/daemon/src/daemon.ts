@@ -192,7 +192,8 @@ export class Daemon {
       }
       const prevMask = process.umask(0o077); // 创建 socket 的瞬间就是 0600，没有可被他人连接的窗口
       try {
-        const s = Bun.serve({ unix: this.socketPath, fetch: handler(true), idleTimeout: 255, maxRequestBodySize: 4 * 1024 * 1024 });
+        // Bun 的类型对 unix 监听不开放 idleTimeout，但运行时的空闲超时对 unix 同样生效（Windows 实测），所以强制传；流路由里另有 server.timeout(req, 0)
+        const s = Bun.serve({ unix: this.socketPath, fetch: handler(true), idleTimeout: 255, maxRequestBodySize: 4 * 1024 * 1024 } as unknown as Parameters<typeof Bun.serve>[0]);
         this.servers.push(s);
       } finally {
         process.umask(prevMask);
