@@ -27,6 +27,8 @@ func main() {
 	url := flag.String("url", "", "改用 HTTP 基址（如 http://127.0.0.1:7777），需配 -token-file")
 	tokenFile := flag.String("token-file", "", "HTTP Bearer token 文件（只读取，不打印）")
 	demo := flag.Bool("demo", false, "使用内置合成数据的假守护进程（不连真实守护进程）")
+	demoEvents := flag.Int("demo-events", 0, "配合 -demo：给演示会话追加这么多条调用（压测滚动/切页）")
+	demoLive := flag.Bool("demo-live", false, "配合 -demo：每 8 秒推送一条新的危险事件（演示新事件滑入）")
 	quitAfter := flag.Duration("quit-after", 0, "运行这么久后自动退出（冒烟用）")
 	flag.Parse()
 
@@ -34,6 +36,14 @@ func main() {
 	switch {
 	case *demo:
 		srv := fake.New()
+		srv.Extra = *demoEvents
+		if *demoLive {
+			go func() {
+				for range time.Tick(8 * time.Second) {
+					srv.AddLive()
+				}
+			}()
+		}
 		defer srv.Close()
 		cl = api.NewHTTP(srv.URL, "")
 	case *url != "":

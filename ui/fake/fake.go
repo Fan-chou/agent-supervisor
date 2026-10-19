@@ -29,13 +29,33 @@ type Server struct {
 	Offline bool
 	// Puts 记录收到的 PUT（测试用）。
 	Puts []string
+	// Extra > 0 时在会话 A 的时间线后追加这么多调用（压测：滚动/切页是否掉帧）。
+	Extra int
+	live  []step
+	bump  chan struct{}
+}
+
+// AddLive 模拟「新事件到达」：给会话 A 追加一次危险调用，并通过流通知界面。
+func (s *Server) AddLive() {
+	s.mu.Lock()
+	n := len(s.live)
+	cmd := fmt.Sprintf("rm -rf /tmp/live-%d", n)
+	st := sh(cmd)
+	st.mut = true
+	st.hits = []hspec{{rule: "X2", sev: "H", msg: "X2：rm -rf", danger: "rm", subject: cmd, reason: "递归删除", action: "block", outcome: "would_have_blocked"}}
+	s.live = append(s.live, st)
+	s.mu.Unlock()
+	select {
+	case s.bump <- struct{}{}:
+	default:
+	}
 }
 
 func ptr[T any](v T) *T { return &v }
 
 // New 启动假守护进程（127.0.0.1 随机端口，无需 token）。
 func New() *Server {
-	s := &Server{Now: time.Now, Mode: "shadow", StreamEvery: 15 * time.Second}
+	s := &Server{Now: time.Now, Mode: "shadow", StreamEvery: 15 * time.Second, bump: make(chan struct{}, 1)}
 	s.Rules = defaultRules()
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
 	return s
@@ -144,18 +164,24 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	if fl != nil {
 		fl.Flush()
 	}
-	if s.StreamEvery <= 0 {
-		<-r.Context().Done()
-		return
-	}
 	n := 1
-	t := time.NewTicker(s.StreamEvery)
-	defer t.Stop()
+	tick := make(<-chan time.Time)
+	if s.StreamEvery > 0 {
+		t := time.NewTicker(s.StreamEvery)
+		defer t.Stop()
+		tick = t.C
+	}
 	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case <-t.C:
+		case <-s.bump:
+			n++
+			_ = enc.Encode(api.StreamMessage{StreamID: fmt.Sprintf("demo.%d", n), Type: "hit", Ts: s.Now().UnixMilli(), SessionID: SessA, Dangerous: true})
+			if fl != nil {
+				fl.Flush()
+			}
+		case <-tick:
 			n++
 			_ = enc.Encode(api.StreamMessage{StreamID: fmt.Sprintf("demo.%d", n), Type: "heartbeat", Ts: s.Now().UnixMilli()})
 			if fl != nil {

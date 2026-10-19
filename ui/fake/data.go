@@ -203,6 +203,23 @@ func (s *Server) timeline(id string) []api.TimelineEntry {
 			sh("git status --short"), ed("src/lexer.py"), pytest(0), sh("git diff --stat"),
 			{tool: "Bash", kind: "shell", cmd: "pytest -q tests/test_lexer.py", class: "test_one", status: "pending"},
 		}
+		s.mu.Lock()
+		extra, live := s.Extra, append([]step(nil), s.live...)
+		s.mu.Unlock()
+		// 压测：Extra 个调用，每 5 个一条 L 命中、每 10 个一条 X2 危险（会拦）
+		for i := 0; i < extra; i++ {
+			st := sh(fmt.Sprintf("echo step %d", i))
+			switch {
+			case i%10 == 9:
+				st.mut = true
+				st.cmd = fmt.Sprintf("rm -rf build-%d", i)
+				st.hits = []hspec{{rule: "X2", sev: "H", msg: "X2：rm -rf", danger: "rm", subject: st.cmd, reason: "递归删除", action: "block", outcome: "would_have_blocked"}}
+			case i%5 == 4:
+				st.hits = []hspec{{rule: "T1", sev: "L", msg: "无改动重跑", action: "advise", outcome: "would_have_advised"}}
+			}
+			steps = append(steps, st)
+		}
+		steps = append(steps, live...)
 		return s.buildTimeline(id, steps, 50*time.Minute, 90*time.Second)
 	case SessB:
 		steps := []step{

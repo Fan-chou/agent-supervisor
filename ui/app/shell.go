@@ -153,12 +153,7 @@ func (a *App) connDot(c *ui.Context) {
 		col = p.Danger
 	}
 	ui.Column(c).AlignItems(ui.Center).Gap(4).Children(func() {
-		d := a.dot(c, col, 10)
-		if m.State == Live {
-			// 实时：外圈呼吸
-			ui.Box(c).Absolute().Top(0).Left(0).Size(10, 10).Radius(5).PassThrough().Border(1.5, col).
-				Opacity(1 - ui.EaseOut(d.Loop("pulse", 2400*time.Millisecond, ui.Linear)))
-		}
+		a.dot(c, col, 10)
 		a.txt(c, strings.TrimLeft(m.State.Label(), "●◐↻◑✕ "), 10, p.Muted).SingleLine()
 	}).Tooltip(m.State.Label())
 }

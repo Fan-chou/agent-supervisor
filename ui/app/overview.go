@@ -93,9 +93,10 @@ func (a *App) stateDot(c *ui.Context, state string) {
 	p := a.pl
 	switch state {
 	case "active":
-		d := a.dot(c, p.Ok, 9)
-		ui.Box(c).Absolute().Top(0).Left(0).Size(9, 9).Radius(4.5).PassThrough().Border(1.5, p.Ok).
-			Opacity(1 - ui.EaseOut(d.Loop("sdot", 1800e6, ui.Linear)))
+		// 进行中：实心点外加静态细环（不做常驻动画，空闲 CPU≈0）
+		ui.Box(c).Size(9, 9).Radius(4.5).Border(1.5, p.Ok).Padding(1.5).Children(func() {
+			a.dot(c, p.Ok, 3)
+		})
 	case "idle":
 		ui.Box(c).Size(9, 9).Radius(4.5).Border(1.5, p.Muted)
 	default:

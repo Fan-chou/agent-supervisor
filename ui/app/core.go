@@ -71,6 +71,11 @@ type App struct {
 	ex    explainState
 	toast string // 下一帧弹出的提示
 
+	// 新事件高亮（motion.go）：seen 记录已见 key，fresh 记录新到时间；reduce 来自系统「减弱动态效果」。
+	seen   map[string]map[string]bool
+	fresh  map[string]time.Time
+	reduce bool
+
 	ss sessionsPage
 	dg dangerPage
 	rl rulesPage
