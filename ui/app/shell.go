@@ -35,6 +35,15 @@ func (a *App) View(c *ui.Context) {
 		c.OnShortcut(ui.Cmd, ui.Key(int(ui.Key1)+i), func() { a.Goto(d.id) })
 	}
 	c.OnShortcut(ui.Cmd, ui.KeyR, a.refresh)
+	c.OnShortcut(ui.Cmd, ui.KeyK, func() {
+		if a.pal.open {
+			a.pal.open = false
+		} else {
+			a.openPalette()
+		}
+	})
+	a.tickFresh(c)
+	defer a.palette(c)
 	if a.toast != "" {
 		c.Toast(a.toast)
 		a.toast = ""
@@ -178,7 +187,25 @@ func (a *App) header(c *ui.Context) {
 			}
 		})
 		a.statusCluster(c)
+		a.paletteButton(c)
 	})
+}
+
+// paletteButton 是页头的「搜索 ⌘K」入口；悬停给出快捷键提示。
+func (a *App) paletteButton(c *ui.Context) {
+	p := a.pl
+	b := ui.Row(c).Key("palette-btn").Gap(6).Padding(4, 8).Radius(6).Border(1, p.Line).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	b = a.hoverable(b, false)
+	b.Children(func() {
+		icon(c, "search", 13, p.Muted)
+		if !a.narrow {
+			a.txt(c, "搜索", 12, p.Muted)
+		}
+		a.txt(c, "⌘K", 11, p.Muted)
+	}).Label("命令面板").Tooltip("命令面板 · ⌘K")
+	if b.Clicked() {
+		a.openPalette()
+	}
 }
 
 func (a *App) statusCluster(c *ui.Context) {

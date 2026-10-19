@@ -76,6 +76,8 @@ type App struct {
 	fresh  map[string]time.Time
 	reduce bool
 
+	pal palState // 命令面板（palette.go）
+
 	ss sessionsPage
 	dg dangerPage
 	rl rulesPage
@@ -197,6 +199,7 @@ func (a *App) refresh() {
 // resetIncremental 在流发出 reset 时丢弃增量状态并重新拉取。
 func (a *App) resetIncremental() {
 	a.ss.entries, a.ss.tlLoaded = nil, false
+	a.ss.ver++
 	a.sessLoad = false
 }
 

@@ -32,6 +32,57 @@ type sessionsPage struct {
 	rows     []TLRow
 	hitSel   int64
 	showInsp bool
+
+	// 派生数据缓存：entries 变了（ver 变）或筛选变了才重算，平时每帧零开销。
+	ver   int
+	cache tlCache
+}
+
+func entryKey(e api.TimelineEntry) string {
+	switch {
+	case e.Hit != nil:
+		return fmt.Sprintf("h%d", e.Hit.HitID)
+	case e.Call != nil:
+		return fmt.Sprintf("c%d", e.Call.Seq)
+	}
+	return fmt.Sprintf("e%d", e.Seq())
+}
+
+type hbCell struct {
+	seq  int64
+	hits []*api.TimelineHit
+}
+
+type tlCache struct {
+	ver, filter int
+	ok          bool
+	rows        []TLRow
+	stats       TimelineStats
+	cells       []hbCell
+}
+
+// derived 返回当前时间线的行/统计/心跳格；entries 与筛选都没变时直接用缓存。
+func (a *App) derived() *tlCache {
+	t := &a.ss
+	if t.cache.ok && t.cache.ver == t.ver && t.cache.filter == t.filter {
+		return &t.cache
+	}
+	f := TimelineFilter{OnlyHits: t.filter == 1, OnlyDanger: t.filter == 2}
+	c := tlCache{ver: t.ver, filter: t.filter, ok: true, rows: BuildRows(t.entries, f), stats: StatsOfTimeline(t.entries)}
+	idx := map[int64]int{}
+	for _, e := range t.entries {
+		switch {
+		case e.Call != nil:
+			idx[e.Call.Seq] = len(c.cells)
+			c.cells = append(c.cells, hbCell{seq: e.Call.Seq})
+		case e.Hit != nil:
+			if i, ok := idx[e.Hit.Seq]; ok {
+				c.cells[i].hits = append(c.cells[i].hits, e.Hit)
+			}
+		}
+	}
+	t.cache = c
+	return &t.cache
 }
 
 func (s *sessionsPage) init() {
@@ -64,6 +115,7 @@ func (a *App) selectSession(id string) {
 		return
 	}
 	a.ss.sel, a.ss.entries, a.ss.tlLoaded, a.ss.hasMore = id, nil, false, false
+	a.ss.ver++
 	a.ss.hitSel, a.ss.showInsp = 0, false
 	a.ss.tl = ui.ListState{FollowEnd: true}
 	a.loadTimeline()
@@ -125,6 +177,14 @@ func (a *App) loadTimeline() {
 				a.ss.hasMore = true
 			}
 			a.ss.tlLoaded = true
+				a.ss.ver++
+				keys := make([]string, 0, len(tl.Entries))
+				for _, e := range tl.Entries {
+					if e.Hit != nil {
+						keys = append(keys, entryKey(e))
+					}
+				}
+				a.noteList("tl:"+id, keys)
 		}, nil
 	})
 }
@@ -251,7 +311,7 @@ func (a *App) sessionDetail(c *ui.Context) {
 		})
 		return
 	}
-	st := StatsOfTimeline(a.ss.entries)
+	st := a.derived().stats
 	a.card(c).FillWidth().Gap(10).Children(func() {
 		ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Box(c).Size(9, 9).Children(func() { a.stateDot(c, s.State) })
@@ -301,8 +361,7 @@ func (a *App) sessionDetail(c *ui.Context) {
 }
 
 func (a *App) timelineList(c *ui.Context) {
-	f := TimelineFilter{OnlyHits: a.ss.filter == 1, OnlyDanger: a.ss.filter == 2}
-	rows := BuildRows(a.ss.entries, f)
+	rows := a.derived().rows
 	a.ss.rows = rows
 	if len(rows) == 0 {
 		a.card(c).Grow(1).Children(func() {
@@ -310,16 +369,7 @@ func (a *App) timelineList(c *ui.Context) {
 		})
 		return
 	}
-	a.ss.tl.Key = func(i int) any {
-		e := rows[i]
-		switch {
-		case e.Hit:
-			return fmt.Sprintf("h%d", e.Entry.Hit.HitID)
-		case e.Entry.Call != nil:
-			return fmt.Sprintf("c%d", e.Entry.Call.Seq)
-		}
-		return fmt.Sprintf("e%d", e.Entry.Seq())
-	}
+	a.ss.tl.Key = func(i int) any { return entryKey(rows[i].Entry) }
 	ui.List(c, &a.ss.tl, len(rows), func(i int) { a.timelineRow(c, rows[i]) }).Grow(1).MinWidth(0).MinHeight(0)
 }
 
@@ -335,7 +385,11 @@ func (a *App) timelineRow(c *ui.Context, r TLRow) {
 		dangerous = e.Hit.Dangerous
 	}
 	isCall := e.Call != nil
-	ui.Row(c).FillWidth().AlignItems(ui.Stretch).Children(func() {
+	row := ui.Row(c).FillWidth().AlignItems(ui.Stretch)
+	if r.Hit {
+		row = a.markFresh(row, "tl:"+a.ss.sel, entryKey(e))
+	}
+	row.Children(func() {
 		ui.Box(c).Width(70).Padding(11, 8, 0, 0).Children(func() {
 			if !r.Hit {
 				a.txt(c, hhmmss(e.Ts()), 11, p.Muted).Font("monospace").NoWrap()
@@ -454,23 +508,7 @@ func (a *App) hitCard(c *ui.Context, h *api.TimelineHit) {
 // heartbeat 是会话的「心跳条」：一格一次调用；命中逐条叠在格子上方，形状随三态，点击跳到该调用。
 func (a *App) heartbeat(c *ui.Context) {
 	p := a.pl
-	type cell struct {
-		seq  int64
-		hits []*api.TimelineHit
-	}
-	var cells []cell
-	idx := map[int64]int{}
-	for _, e := range a.ss.entries {
-		switch {
-		case e.Call != nil:
-			idx[e.Call.Seq] = len(cells)
-			cells = append(cells, cell{seq: e.Call.Seq})
-		case e.Hit != nil:
-			if i, ok := idx[e.Hit.Seq]; ok {
-				cells[i].hits = append(cells[i].hits, e.Hit)
-			}
-		}
-	}
+	cells := a.derived().cells
 	if len(cells) == 0 {
 		return
 	}
