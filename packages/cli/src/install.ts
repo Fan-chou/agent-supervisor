@@ -5,7 +5,16 @@ import { join } from "node:path";
 
 // 固定路径，不是 npx（design §2）。发行版 Agent Supervisor 启动 sv 时注入 SV_HOOK_PATH = 解压出的 sv-hook。
 const HOOK_PATH = process.env.SV_HOOK_PATH || "~/.agent-supervisor/bin/sv-hook";
-const HOOK = /\s/.test(HOOK_PATH) ? JSON.stringify(HOOK_PATH) : HOOK_PATH; // 路径含空格（Application Support）时加引号
+/**
+ * 写进 hook 配置的命令前缀。
+ * Windows：Claude Code 官方文档说命令串交给 Git Bash 执行（没装 Git Bash 才用 PowerShell），反斜杠会被 bash 当转义吃掉，
+ * 所以一律转成正斜杠并加双引号（Windows 接受 `C:/x/sv-hook.exe`）。其他平台：路径含空格（Application Support）时才加引号。
+ */
+export function hookCommandPrefix(path: string, platform: string = process.platform): string {
+  if (platform === "win32") return JSON.stringify(path.replace(/\\/g, "/"));
+  return /\s/.test(path) ? JSON.stringify(path) : path;
+}
+const HOOK = hookCommandPrefix(HOOK_PATH);
 const HOOK_STEP = process.env.SV_HOOK_PATH
   ? `#    发行版已自动解压到 ${process.env.SV_HOOK_PATH}，无需编译（升级程序会原地更新，路径不变）`
   : "#    bun run build:hook && mkdir -p ~/.agent-supervisor/bin && cp bin/sv-hook ~/.agent-supervisor/bin/sv-hook";
