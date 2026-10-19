@@ -2,6 +2,15 @@
 
 默认行为：**shadow 模式只记录、永不拦截**（含危险命令：只标 `severity=dangerous`、`outcome=would_have_blocked`）；OpenCode 的 `opencodeEnforce` 默认关；任何出错（守护进程没开、超时、坏响应、hook 自己抛异常）hook 都是 exit 0 且不输出，不会卡住 agent。所以装上之后，守护进程没启动时 agent 照常工作，只是没有记录（hook 只把"守护进程不可达"这件事写进 `health-spool.jsonl`，下次启动时补记为 adapter_health；工具调用事件本身不补）。
 
+## 0. 发行版（单程序，推荐）
+从 GitHub Actions / Release 下载 zip：macOS 是 `Agent Supervisor.app`，Windows 是 `Agent Supervisor.exe`，后端（sv / sv-hook / OpenCode 插件 / 配置样例）都内嵌在里面。
+- 首次运行自动解压到固定目录（内容变了才重写）：macOS `~/Library/Application Support/agent-supervisor/bin`，Windows `%LOCALAPPDATA%\agent-supervisor\bin`（`SV_BIN_DIR` 可覆盖）。打开界面时守护进程没在跑会自动后台启动（日志 `../daemon.log`）。
+- 命令行透传：`<程序> sv <参数>` 等同下文的 `sv`，`<程序> hook <参数>` 等同 sv-hook。macOS 的程序路径是 `"Agent Supervisor.app/Contents/MacOS/sv-ui"`。
+- `<程序> sv install claude|codex|opencode` 打印的 hook 命令直接指向解压出的 sv-hook 固定路径（含空格时已加引号），升级不改路径；hook 出错照旧 fail-open。
+- 未签名：macOS 首次打开右键「打开」，或 `xattr -dr com.apple.quarantine "Agent Supervisor.app"`。
+
+下面是从源码运行的方式。
+
 ## 1. 守护进程（三个 agent 共用）
 ```
 cd <本仓库>

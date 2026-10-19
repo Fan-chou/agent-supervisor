@@ -2,6 +2,7 @@
 //
 //	sv-ui                       # 连 ~/.agent-supervisor/sock
 //	sv-ui -url http://127.0.0.1:PORT -token-file PATH
+//	sv-ui sv <args> / sv-ui hook <args>  # 发行版：透传给内嵌的 sv / sv-hook
 //	sv-ui -demo                 # 内置合成数据的假守护进程，不连真实守护进程
 package main
 
@@ -22,6 +23,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && passthrough(os.Args[1:]) {
+		return
+	}
 	home, _ := os.UserHomeDir()
 	sock := flag.String("sock", filepath.Join(home, ".agent-supervisor", "sock"), "守护进程 Unix socket 路径")
 	url := flag.String("url", "", "改用 HTTP 基址（如 http://127.0.0.1:7777），需配 -token-file")
@@ -61,6 +65,7 @@ func main() {
 		}
 		cl = api.NewHTTP(*url, tok)
 	default:
+		ensureDaemon(*sock)
 		if w := api.CheckPerm(*sock); w != "" {
 			fmt.Fprintln(os.Stderr, "警告:", w)
 		}

@@ -8,10 +8,10 @@ permissions:
   contents: write
 jobs:
   package:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: ui/go.mod
           cache-dependency-path: ui/go.sum
@@ -22,22 +22,22 @@ jobs:
       - run: go -C ui vet ./...
       - name: package
         env:
-          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.sha) }}
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0-dev' }}
         run: scripts/package.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: agent-supervisor-macos-arm64
-          path: dist/*darwin-arm64.zip
-      - uses: actions/upload-artifact@v4
+          path: dist/agent-supervisor-macos-arm64.zip
+          archive: false
+      - uses: actions/upload-artifact@v7
         with:
-          name: agent-supervisor-macos-amd64
-          path: dist/*darwin-amd64.zip
-      - uses: actions/upload-artifact@v4
+          path: dist/agent-supervisor-macos-amd64.zip
+          archive: false
+      - uses: actions/upload-artifact@v7
         with:
-          name: agent-supervisor-windows-amd64
-          path: dist/*windows-amd64.zip
+          path: dist/agent-supervisor-windows-amd64.zip
+          archive: false
       - if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*.zip
           generate_release_notes: true

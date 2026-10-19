@@ -3,7 +3,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const HOOK = "~/.agent-supervisor/bin/sv-hook"; // 固定路径，不是 npx（design §2）
+// 固定路径，不是 npx（design §2）。发行版 Agent Supervisor 启动 sv 时注入 SV_HOOK_PATH = 解压出的 sv-hook。
+const HOOK_PATH = process.env.SV_HOOK_PATH || "~/.agent-supervisor/bin/sv-hook";
+const HOOK = /\s/.test(HOOK_PATH) ? JSON.stringify(HOOK_PATH) : HOOK_PATH; // 路径含空格（Application Support）时加引号
+const HOOK_STEP = process.env.SV_HOOK_PATH
+  ? `#    发行版已自动解压到 ${process.env.SV_HOOK_PATH}，无需编译（升级程序会原地更新，路径不变）`
+  : "#    bun run build:hook && mkdir -p ~/.agent-supervisor/bin && cp bin/sv-hook ~/.agent-supervisor/bin/sv-hook";
 
 export function claudeHooksJson(): string {
   const entry = (timeout: number, matcher?: string) => [{ ...(matcher ? { matcher } : {}), hooks: [{ type: "command", command: `${HOOK} claude`, timeout }] }];
@@ -70,7 +75,7 @@ export function codexInstallSnippet(): string {
     "# Codex 0.163.x 接入（只打印，不改任何文件；本命令不会读取 ~/.codex 下的任何内容，包括 auth.json）",
     "# 0) 下面的格式没有在 0.163 上实测：安装前请对照 Codex 当前的 hooks 文档核对（字段名、timeout 的单位、是否需要打开 hooks 功能开关）。",
     "# 1) 编译 hook 二进制并放到固定路径（Claude Code 与 Codex 共用同一个二进制）：",
-    "#    bun run build:hook && mkdir -p ~/.agent-supervisor/bin && cp bin/sv-hook ~/.agent-supervisor/bin/sv-hook",
+    HOOK_STEP,
     "# 2) 把下面的 hooks 合并进 ~/.codex/hooks.json（或 config.toml 里等价的 [hooks] 表）。",
     `#    command 必须保持为固定字符串 \`${CODEX_HOOK}\`：Codex 的非托管钩子按哈希绑定信任，命令串一变就要重新审核；升级二进制不改命令串。`,
     "#    如果 Codex 不展开 `~`，把它换成绝对路径（换完同样要重新审核）。",
@@ -85,7 +90,7 @@ export function codexInstallSnippet(): string {
 export function installSnippet(o: { launchd?: boolean }): string {
   const parts = [
     "# 1) 编译 hook 二进制并放到固定路径：",
-    "#    bun run build:hook && mkdir -p ~/.agent-supervisor/bin && cp bin/sv-hook ~/.agent-supervisor/bin/sv-hook",
+    HOOK_STEP,
     "# 2) 把下面的 hooks 合并进 Claude Code 的 settings（~/.claude/settings.json 或项目的 .claude/settings.json）：",
     claudeHooksJson(),
     "# 3) 启动守护进程：sv start   （默认 mode=shadow：只记录，不拦截）",
@@ -96,6 +101,8 @@ export function installSnippet(o: { launchd?: boolean }): string {
 
 /** 插件源码打成一个自包含文件（把 core 里的 x2Check / redactDeep 内联进去）。读的是本仓库里的文件，不是用户目录。 */
 export async function opencodePluginSource(): Promise<string> {
+  // 发行版：打包时已预先打成自包含文件，由 Agent Supervisor 解压后用 SV_OPENCODE_PLUGIN 指过来。
+  if (process.env.SV_OPENCODE_PLUGIN) return readFileSync(process.env.SV_OPENCODE_PLUGIN, "utf8");
   const r = await Bun.build({ entrypoints: [join(import.meta.dir, "../../adapter-opencode/plugin/agent-supervisor.ts")], target: "bun", format: "esm", minify: false });
   if (!r.success || !r.outputs.length) throw new Error("打包 OpenCode 插件失败：" + r.logs.map(String).join("; "));
   return await r.outputs[0].text();
