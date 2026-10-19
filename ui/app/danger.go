@@ -195,7 +195,7 @@ func (a *App) dangerCard(c *ui.Context, e api.DangerEvent) {
 				ui.Spacer(c)
 				a.txt(c, FmtTime(e.Ts)+" · "+a.rel(e.Ts), 11, p.Muted).Tooltip(FmtISO(e.Ts))
 			})
-			ui.Text(c, Or(Str(e.Subject), "–")).Font("monospace").FontSize(13).FontWeight(600).Selectable()
+			ui.Text(c, Or(Str(e.Subject), "–")).Font("monospace").FontSize(13).FontWeight(600)
 			if r := Str(e.Reason); r != "" {
 				a.txt(c, r, 12, p.Muted)
 			}

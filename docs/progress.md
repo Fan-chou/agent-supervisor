@@ -283,3 +283,27 @@
 **截图**（`.supervisor-run/shots/`，前缀 `ln-`，浅/深各一，关键页另有 `-gray`）：`ln-overview`、`ln-overview-tall`、`ln-overview-min`、`ln-sessions`、`ln-sessions-min`、`ln-sessions-inspector`、`ln-sessions-enforced`、`ln-danger`、`ln-rules`、`ln-rules-x2`、`ln-judge`、`ln-judge-routes`、`ln-replay`、`ln-titlebar-light`。
 **测试**：`go -C ui vet/test ./...` 通过，`bun test` 通过。旧的 `wd-` 截图是上一版风格，已作废。
 **未验证**：真实窗口（TitleBarHidden、拖动区）仍未实机看过。
+
+## 前端交互打磨（Cmd+K / J-K / 右侧面板 / 新事件动效 / 只读右键；见 docs/ui-design.md §10，decisions #146–151）
+**做了什么**
+- `⌘K` 命令面板（`palette.go`）：页面/会话/规则，90ms 防抖，Up/Down/Enter/Esc；打开时补载规则与会话。
+- 键盘导航（`nav.go`）：J/K/↑↓/Enter/Esc 各页统一；面板打开时页面键位暂停；输入框打字不触发（有测试）。
+- 右侧滑出面板（危险/会话命中检视/Judge）：浮层不推挤列表，位移+透明度 200ms 缓出。规则页详情仍常驻（要编辑阈值）。
+- 新事件滑入 + 高亮淡出（`motion.go`）：首屏不算新；高亮窗口 1.6s；减弱动态效果时无位移、固定强度、到点重画一次。
+- 悬停提示（导航 ⌘N、页头 ⌘K、关闭 Esc）；右键菜单（危险事件/命中/会话/规则/裁决）只含查看、复制、跳转，无任何写操作。
+- 性能：时间线 rows/stats/心跳格按（数据版本，筛选）缓存；危险页筛选结果缓存；去掉所有 `Loop` 常驻动画（空闲不请求帧，`TestIdleNoFrames` 六页覆盖）。
+- 演示：`sv-ui -demo -demo-events 5000`（会话 A 灌 5000 步）、`-demo-live`（每 8 秒推一条新危险事件，看滑入高亮）。
+- 顺手：`TestRunnerReconnects` 的 post 加互斥（真实环境 post 在主线程串行，测试里原先是多协程并发写 App 状态）。
+
+**性能检查**（`TestPerfFlood5000`，Tester 离屏、只含 CPU 侧布局/绘制，不含 GPU 栅格；`go -C ui test ./app -run Perf -v` 复现；本机 Apple 芯片一次实测）
+| 项 | 耗时 |
+|---|---|
+| 灌 5000 步（≈6000+ 行含命中）后首帧（含建缓存） | ≈6.5 ms |
+| 稳态帧 | ≈0.7 ms |
+| 滚动一帧 | ≈2 ms |
+| 切页（含同步拉数据到本地 fake） | 危险 23 ms · 总览 20 ms · 会话/规则/Judge 9–11 ms |
+| 空闲 3 秒后是否还有待处理帧 | 否（CPU≈0 靠「不请求帧」，不是靠测得的 CPU 百分比） |
+结论：5000 条下滚动与切页帧耗时远低于 16.7 ms 预算（切页首帧含数据加载，可能略超，但属一次性）。**未测**：真实窗口里的 GPU 帧时间与 `top` 的 CPU 占用（本环境不开真实窗口）；请 Jack 用 `sv-ui -demo -demo-events 5000 -demo-live` 实机看一眼。
+**截图**（`.supervisor-run/shots/`，前缀 `ux-`，浅/深各一）：`ux-palette`、`ux-panel`（危险页右侧检视）、`ux-tooltip`（导航「危险 · ⌘3」）、`ux-tooltip-k`（页头 ⌘K）、`ux-context-menu`。**注意**：右键菜单是系统原生菜单，离屏 Tester 渲染不出来，所以 `ux-context-menu-*` 只能显示被右键的那张卡片，菜单内容由 `TestContextMenusReadOnly` 断言（`查看详情 / 复制命令·对象 / 复制会话 ID / 复制命中 ID / 跳到该会话`，且不含任何写操作字样）。
+**测试**：`go -C ui vet ./...`、`go -C ui test ./...`、`bun test`、`bun run typecheck` 通过（见提交时的实际输出）。
+**偏离/遗留**：回放页没有 J/K（只有两列对比，没有长列表）；`SearchField` 占位符仍是英文 Search；缺少的工具：无（未安装任何东西）。

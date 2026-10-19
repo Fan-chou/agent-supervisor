@@ -318,8 +318,8 @@ func TestContextMenusReadOnly(t *testing.T) {
 	}
 	tt.Frame()
 	items := tt.Menu()
-	if len(items) == 0 {
-		t.Fatal("右键应弹出菜单")
+	if len(items) == 0 || !strings.Contains(strings.Join(items, " "), "复制会话 ID") {
+		t.Fatalf("右键应弹出我们的只读菜单：%v", items)
 	}
 	for _, it := range items {
 		for _, bad := range []string{"删除", "停用", "启用", "修改", "保存", "放行", "拦截"} {
@@ -327,6 +327,147 @@ func TestContextMenusReadOnly(t *testing.T) {
 				t.Fatalf("右键菜单不应含写操作 %q：%v", bad, items)
 			}
 		}
+	}
+}
+
+// 交互截图（-shots=<目录>，前缀 ux-）：命令面板、右侧详情面板、悬停提示、右键菜单；浅/深各一张。
+func TestShotUX(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		sfx := "-light"
+		if dark {
+			sfx = "-dark"
+		}
+		mk := func(page string) (*App, *clock, *ui.Tester) {
+			a, ck, _ := newUX(t)
+			a.Goto(page)
+			tt := ui.NewTester(a.View, 1440, 900)
+			tt.SetDark(dark)
+			tt.Frame()
+			tt.Advance(600 * time.Millisecond)
+			tt.Frame()
+			return a, ck, tt
+		}
+		// 1) 命令面板：输入 "t" 过滤出若干规则/页面
+		a, ck, tt := mk(PageOverview)
+		tt.Key(ui.Cmd, ui.KeyK)
+		tt.Frame()
+		tt.Type("t")
+		ck.t = ck.t.Add(300 * time.Millisecond)
+		tt.Advance(300 * time.Millisecond)
+		tt.Frame()
+		tt.Key(0, ui.KeyDown)
+		tt.Advance(300 * time.Millisecond)
+		tt.Frame()
+		writePNG("ux-palette"+sfx, tt.Image())
+		if !tt.HasText("规则") || len(a.pal.items) == 0 {
+			t.Fatalf("面板截图状态不对：%+v", a.pal.items)
+		}
+
+		// 2) 右侧详情面板（危险页，J → Enter）
+		a, _, tt = mk(PageDanger)
+		tt.TypeKey(0, ui.KeyJ, "j")
+		tt.Frame()
+		tt.Key(0, ui.KeyEnter)
+		tt.Frame()
+		tt.Advance(500 * time.Millisecond)
+		tt.Frame()
+		writePNG("ux-panel"+sfx, tt.Image())
+		if !tt.HasText("决策（每条单独列出）") {
+			t.Fatal("面板内容缺失")
+		}
+
+		// 3) 悬停提示：停在导航「危险」上
+		_, _, tt = mk(PageSessions)
+		if r, ok := tt.Find("危险"); ok {
+			tt.Move(r.X+r.W/2, r.Y+r.H/2)
+		}
+		tt.Frame()
+		tt.Advance(1200 * time.Millisecond)
+		tt.Frame()
+		writePNG("ux-tooltip"+sfx, tt.Image())
+
+		// 3b) 悬停提示：页头 ⌘K 按钮
+		_, _, tt = mk(PageOverview)
+		if r, ok := tt.Find("⌘K"); ok {
+			tt.Move(r.X+r.W/2, r.Y+r.H/2)
+		}
+		tt.Frame()
+		tt.Advance(1200 * time.Millisecond)
+		tt.Frame()
+		writePNG("ux-tooltip-k"+sfx, tt.Image())
+
+		// 4) 右键菜单
+		a, _, tt = mk(PageDanger)
+		evs := a.dangerFiltered()
+		if err := tt.RightClick(Str(evs[0].Subject)); err != nil {
+			t.Fatal(err)
+		}
+		tt.Frame()
+		tt.Advance(300 * time.Millisecond)
+		tt.Frame()
+		t.Logf("菜单项 %v", tt.Menu())
+		writePNG("ux-context-menu"+sfx, tt.Image())
+	}
+}
+
+// 性能检查：演示会话灌 5000 条调用（约 6000+ 行含命中），测稳态帧、滚动、切页的帧耗时。
+// 阈值很宽松（防止 CI 机器抖动误报）；真实数字用 -v 看，记录在 docs/progress.md。
+func TestPerfFlood5000(t *testing.T) {
+	a, srv := newDemoApp(t)
+	srv.Extra = 5000
+	a.Goto(PageSessions)
+	a.LoadAll()
+	a.selectSession(fake.SessA)
+	n := len(a.ss.entries)
+	if n < 5000 {
+		t.Fatalf("应加载到 ≥5000 条记录：%d", n)
+	}
+	tt := ui.NewTester(a.View, 1440, 900)
+	timeIt := func(label string, f func()) time.Duration {
+		start := time.Now()
+		f()
+		d := time.Since(start)
+		t.Logf("%-22s %v", label, d)
+		return d
+	}
+	timeIt("首帧(含建缓存)", func() { tt.Frame() })
+	var worst time.Duration
+	for i := 0; i < 20; i++ {
+		d := timeIt("稳态帧", func() { tt.Frame() })
+		if d > worst {
+			worst = d
+		}
+	}
+	if worst > 150*time.Millisecond {
+		t.Errorf("稳态帧过慢：%v", worst)
+	}
+	var sw time.Duration
+	for i := 0; i < 20; i++ {
+		d := timeIt("滚动一帧", func() { tt.Scroll(700, 500, 0, -400); tt.Frame() })
+		if d > sw {
+			sw = d
+		}
+	}
+	if sw > 200*time.Millisecond {
+		t.Errorf("滚动帧过慢：%v", sw)
+	}
+	for _, pg := range []string{PageDanger, PageOverview, PageSessions, PageRules, PageJudge, PageSessions} {
+		d := timeIt("切到 "+pg, func() { a.Goto(pg); tt.Frame() })
+		if d > 400*time.Millisecond {
+			t.Errorf("切页过慢 %s：%v", pg, d)
+		}
+	}
+	// 回到会话页后空闲：不应有待处理帧
+	tt.Advance(3 * time.Second)
+	tt.Frame()
+	if tt.FramePending() {
+		t.Error("灌 5000 条后空闲时仍在请求帧")
+	}
+	// 缓存：entries 不变时 derived 必须复用（同一指针/同一切片）
+	c1 := a.derived()
+	c2 := a.derived()
+	if c1 != c2 || len(c1.rows) == 0 {
+		t.Error("derived 缓存失效")
 	}
 }
 

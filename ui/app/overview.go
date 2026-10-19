@@ -176,6 +176,7 @@ func (a *App) overviewRecent(c *ui.Context) {
 	for _, e := range evs {
 		e := e
 		row := ui.Row(c).Key(e.HitID).FillWidth().Gap(10).Padding(8, 10).Radius(6).AlignItems(ui.Start).Border(1, ui.Transparent)
+		row = a.markFresh(row, "danger", fmt.Sprint(e.HitID))
 		a.hoverable(row, false).Children(func() {
 			ui.Column(c).Gap(3).Grow(1).MinWidth(0).Children(func() {
 				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
