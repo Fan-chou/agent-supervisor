@@ -211,3 +211,17 @@
 - **数据请求已写**：`docs/data-request.md`（A. Claude hook 真实载荷样本，用 `SV_HOOK_DUMP=1`；B. 30 个会话标注，用 `sv export` + `sv mark`/`eval/labels.yaml`）。只用本项目自己记录的数据，不读 `~/.claude`、`~/.codex/sessions` 等；等 Jack 自己采集并检查后交给我。
 - **等 Jack**：①跑真机清单并回传报告；②按 data-request.md 采集 A/B 两类数据；③（可选）如果希望我直接在本会话里跑 `opencode`/守护进程，需要放行这些命令。
 - 本轮只改文档，未改代码；最近一次全量 `bun test` 1084 通过 / 0 失败、`tsc` 干净（run12 末尾）。
+
+## run14：按 OpenCode 真机 run1 修适配器 + 收尾（decisions #119–122）
+**真机结论**（`.supervisor-run/opencode-real-run1.txt`，OpenCode 2.0.32）：五个钩子 + event.subscribe 注册成功；探针 deny 生效；X2 `git reset --hard` 记 would_have_blocked；唯一没过的机器门槛是 `before_precedes_evaluate`（出现 BBBEEA、EA、A、BE…）；Esc 未测。
+**改了什么**
+- 插件：本地 X2 绑定按 (会话, 调用 id) 存（批量调用里危险调用不是最后一个 before 也能对上；evaluate 无对应 before 则放行）。
+- `sv opencode-report`：`before_precedes_evaluate` 按调用 id 对账（写类/未知工具的 evaluate 必须有 before 在前；只读工具孤立 evaluate 无害）。**注意：这是门槛语义的调整，不是放松拦截**——拦截仍要 mode=enforce + `opencodeEnforce` 开 + 环境变量，三道闸都没动。用 run1 的原始 dump 重新出报告还没做（dump 在测试项目 `.sv-home/dumps/`，本会话读不了）。
+- 登记：`opencode.json` 改空配置；`sv install opencode` / 测试项目说明改为 `.opencode/plugins/` 自动加载。工具名/参数形态 core 早已兼容，无需改。
+- 文档：新增 `docs/usage.md`（安装/启用/停用/数据收集/未完成项）；README 指向它。
+**测试**：`bun test` 1085 通过 / 0 失败；`tsc --noEmit` 干净。只新增 1 个测试（decisions #120）。
+**需要 Jack 决定 / 做的**
+1. 在测试项目重跑 `./report.sh`（或把 `.sv-home/dumps/opencode-*.jsonl` 里不敏感的部分给我）确认新的 `before_precedes_evaluate` 通过；若 EA 里有 shell/write/edit 的孤立 evaluate，门槛仍会不过——那说明这些调用的 X2 绑不上，需要再讨论。
+2. 日常使用时顺带按一次 Esc 看 `reason=user`。
+3. 按 `docs/usage.md` §6 开始收集数据（Claude/Codex dump、shadow 记录、标注）。
+4. 是否要把 `opencode-sv-probe` 里的插件更新成新版（重新 `sv install opencode` 覆盖 `.opencode/plugins/agent-supervisor.ts`）。

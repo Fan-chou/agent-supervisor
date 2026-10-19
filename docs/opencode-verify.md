@@ -32,7 +32,7 @@
 sv opencode-probe-project <目录>            # 先看计划（dry-run）
 sv opencode-probe-project <目录> --apply    # Jack 同意后才创建
 ```
-测试项目里：`opencode.json`（项目级配置，`plugins` 指向项目内插件）、`.opencode/plugins/agent-supervisor.ts`、`start-daemon.sh`（shadow，数据目录 `.sv-home`）、`run-observe.sh`、`run-probe.sh`、`report.sh`，并 `git init` + 一次提交。
+测试项目里：`opencode.json`（空配置；插件从 `.opencode/plugins/` 自动加载，run1 真机确认，`plugins` 写 .ts 路径会警告）、`.opencode/plugins/agent-supervisor.ts`、`start-daemon.sh`（shadow，数据目录 `.sv-home`）、`run-observe.sh`、`run-probe.sh`、`report.sh`，并 `git init` + 一次提交。
 
 1. **启动**：终端 A `./start-daemon.sh`；终端 B `./run-observe.sh`（`SV_OPENCODE_DUMP=1`，脚本里 `unset SV_OPENCODE_ENFORCE`）。先 `./report.sh` 确认插件被加载（「钩子注册」里五个钩子 + `event.subscribe` 都是「已注册」；`event.subscribe` 失败只是少了中断信号，不影响拦截门槛）。dump 为空 = 登记写法不对，停下来，**不要往全局配置里放**。
 2. **只读观察**：让 agent 依次做：列文件并读 README；新建 notes.txt 再改成两行；运行 `false` 再 `echo ok`；用 todowrite 列三步计划；Esc 中断一次；再开第二个会话。然后 `./report.sh`。看：各钩子字段；`BEA`/`EBA`/`BA` 计数（#5、#6）；`evaluate` 的 `source` 形状；`context` 的 `system` 元素；`prompt` 的 `prompt` 形状；`location`（#4）；报告「中断事件」一节：Esc 之后应出现 `reason=user × N`（#10）；守护进程侧的事件里也应有 phase=interrupt。
@@ -50,3 +50,7 @@ sv opencode-probe-project <目录> --apply    # Jack 同意后才创建
 - 探针按预期工作。
 - shadow 下至少一周，OpenCode 的 `would_have_blocked` 记录人工看过没有误报。
 - Jack 明确批准，并通过 `opencodeEnforce` 开关（decisions #110）打开——开关会检查最近一次报告。
+
+## 6. 真机 run1 结果（2026-10-19，OpenCode 2.0.32；decisions #119）
+已确认：五个钩子 + event.subscribe 注册成功；探针 deny 生效；X2 记 would_have_blocked；工具名 read/write/edit/shell，参数 path、oldString/newString、shell{command,workdir?}，失败看 metadata.exit；evaluate.source={type:"tool",messageID,id}；批量调用顺序 BBBEEA，另有 EA、A、BE…（evaluate 不总在 before 之后，也不是每个调用都有 before）；run 模式没有 todowrite；插件从 .opencode/plugins/ 目录自动加载。
+仍待：Esc 是否产生 reason=user（日常使用时验证）。

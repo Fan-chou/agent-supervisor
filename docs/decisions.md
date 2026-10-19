@@ -166,3 +166,9 @@
 ## 2026-10-19 07:18：Jack 对 run12 的回复
 117. **同意真机核对（07:18）**：测试项目放 `~/Documents/dev/opencode-sv-probe`，可以 `--apply` 并开始真机流程。仍只用项目级配置，绝不碰 `~/.config/opencode`；`opencodeEnforce` 保持默认关；探针只在 `run-probe.sh` 里打开。需要交互（Esc 中断、开第二个会话等）我做不了的，写清楚留给 Jack；能自动跑的先跑完并记录结果。
 118. **同意提供数据用于 Claude hook 真实载荷校准和 30 个会话标注（07:18）**：先写明需要哪些数据、怎么采集（只用本项目 hook 自己记录的数据，不读 `~/.claude`、`~/.codex/sessions` 等目录），列给 Jack；不自行去读他的私人会话记录。清单见 `docs/data-request.md`。
+
+## 2026-10-19 08:43：Jack 对 OpenCode 真机 run1 的回复
+119. **按真机结果改 OpenCode 适配器（08:43）**：①插件登记改指目录——`opencode.json` 不再写 `plugins`（写 .ts 会警告 `plugin path must be a directory`），插件放 `.opencode/plugins/` 自动加载；`sv install opencode` / 测试项目同步。②工具名 `read/write/edit/shell`、参数 `path`、`oldString/newString`、`shell{command,workdir?}`、失败看 `metadata.exit`：core 与插件早已兼容这些写法（`SHELL_NAMES` 含 shell，`path`/`oldString` 都认），不改。③批量调用顺序 BBBEEA/EA/A：插件的本地 X2 绑定从"每会话最近一次 before"改为按 (会话, 调用 id) 存，evaluate 用 `source.id` 精确取；对不上（EA）= 放行，不放松安全语义。没有 `source.id` 时退回最近一次 before。④`sv opencode-report` 的 `before_precedes_evaluate`：evaluate 带调用 id 时按 id 对账——**写类/未知工具**的 evaluate 必须有同 id 的 before 在前才算过；只读工具的孤立 evaluate 无害。没带 id 的老样本仍用原来的"不得有 E 开头的调用"。⑤没有 todowrite：计划相关规则本来就在无计划时停用；计划来源只剩 `.supervisor/plan.md`，写进 usage.md。
+120. **减少追求测试（08:43）**：不再扩大测试规模、不追覆盖率；只保证必要测试通过。本轮只加 1 个测试（批量 BBBEEA 绑定）。重点放在数据收集（hook dump、监督记录、导出、标注入口）顺畅可用。
+121. **收尾（08:43）**：默认 shadow 不拦截、`opencodeEnforce` 保持关、出错 hook 放行不变；新增 `docs/usage.md`（安装/启用/停用/数据收集/未完成项）。
+122. **Esc 中断（08:43）**：留到 Jack 日常使用时顺带验证，现在不处理。
