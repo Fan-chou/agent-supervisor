@@ -10,13 +10,15 @@ import (
 )
 
 type replayPage struct {
-	runs   []api.Run
-	evals  []api.EvalReport
-	a, b   int64 // 对比的两个运行（0 = 未选）
-	cmp    *api.RunCompare
-	sel    int64
-	detail *api.RunDetail
-	list   ui.ListState
+	runs  []api.Run
+	evals []api.EvalReport
+	a, b  int64 // 对比的两个运行（0 = 未选）
+	// defaulted：只在第一次加载时默认选最近两次，之后用户清掉就不再自动补回
+	defaulted bool
+	cmp       *api.RunCompare
+	sel       int64
+	detail    *api.RunDetail
+	list      ui.ListState
 }
 
 func (r *replayPage) init() {}
@@ -33,7 +35,8 @@ func (a *App) loadReplay() {
 			if a.rp.sel == 0 && len(runs) > 0 {
 				a.selectRun(runs[0].ID)
 			}
-			if a.rp.a == 0 && a.rp.b == 0 {
+			if !a.rp.defaulted && a.rp.a == 0 && a.rp.b == 0 {
+				a.rp.defaulted = true
 				// 默认拿最近两次回放/评测做对比
 				var ids []int64
 				for _, r := range runs {
@@ -117,7 +120,7 @@ func (a *App) runList(c *ui.Context) {
 	a.rp.list.Key = func(i int) any { return runs[i].ID }
 	ui.List(c, &a.rp.list, len(runs), func(i int) {
 		r := runs[i]
-		row := ui.Row(c).Key(r.ID).FillWidth().Margin(0, 0, 4, 0).Gap(10).Padding(10, 10).Radius(10).AlignItems(ui.Center).Border(1, ui.Transparent)
+		row := ui.Row(c).Key(r.ID).FillWidth().Margin(0, 0, 4, 0).Gap(10).Padding(10, 10).Radius(6).AlignItems(ui.Center).Border(1, ui.Transparent)
 		a.hoverable(row, a.rp.sel == r.ID).Children(func() {
 			ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
 				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
@@ -200,7 +203,7 @@ func (a *App) compareCard(c *ui.Context) {
 			} else if r.DeltaHits < 0 {
 				col = p.Ok
 			}
-			ui.Row(c).FillWidth().Gap(10).Padding(9, 12).Radius(10).Background(p.Card2).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).FillWidth().Gap(10).Padding(9, 12).Radius(6).Background(p.Card2).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, r.Rule).Font("monospace").FontWeight(700).Grow(1).Basis(0)
 				ui.Text(c, fmt.Sprintf("%d → %d", r.HitsA, r.HitsB)).FontFeatures("tnum").Grow(2).Basis(0)
 				a.txt(c, signed(r.DeltaHits), 13, col).FontWeight(650).Grow(1).Basis(0)
@@ -257,7 +260,7 @@ func (a *App) evalCard(c *ui.Context) {
 		for _, ev := range a.rp.evals {
 			ui.Text(c, fmt.Sprintf("run #%d · %s", ev.Run.ID, Str(ev.Run.Label))).FontSize(14).FontWeight(600)
 			for _, r := range ev.Rules {
-				ui.Row(c).FillWidth().Gap(10).Padding(8, 12).Radius(10).Background(p.Card2).AlignItems(ui.Center).Children(func() {
+				ui.Row(c).FillWidth().Gap(10).Padding(8, 12).Radius(6).Background(p.Card2).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, r.Rule).Font("monospace").FontWeight(700).Width(40)
 					ui.Text(c, fmt.Sprintf("命中 %d · 会话 %d", r.Hits, r.Sessions)).FontSize(12).Grow(1)
 					a.txt(c, "误报率 "+Pct(r.FpRate)+map[bool]string{true: " · 样本少", false: ""}[SmallSample(r)], 12, p.Muted)

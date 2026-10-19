@@ -26,6 +26,8 @@ type rulesPage struct {
 	draftID string
 	err     string
 	busy    bool
+	// resetDraft：保存成功后，下一次规则刷新重建草稿
+	resetDraft bool
 }
 
 func (r *rulesPage) init() {}
@@ -49,8 +51,10 @@ func (a *App) loadRules() {
 			if r.sel == "" && len(r.rules) > 0 {
 				r.sel = r.rules[0].ID
 			}
-			// 保存后以服务端为准：草稿与服务端值一致时重置草稿
-			r.draftID = ""
+			// 保存/恢复默认成功后以服务端为准重建草稿；平时的后台刷新不动未保存的输入（decisions #133）
+			if r.resetDraft {
+				r.draftID, r.resetDraft = "", false
+			}
 		}, nil
 	})
 }
@@ -95,12 +99,12 @@ func (a *App) putRule(id string, edit api.RuleEdit, okMsg string) {
 		return func() {
 			a.rl.busy = false
 			if err != nil {
-				a.rl.err = err.Error()
-				a.rl.draftID = ""
+				a.rl.err = err.Error() // 草稿保留，方便改完再试
 				a.loadRules()
 				return
 			}
 			a.toast = okMsg
+			a.rl.resetDraft = true
 			a.loadRules()
 		}, nil
 	})
@@ -138,7 +142,7 @@ func (a *App) ruleList(c *ui.Context) {
 		ru := rules[i]
 		sel := r.sel == ru.ID
 		st := r.stats[ru.ID]
-		row := ui.Row(c).Key(ru.ID).FillWidth().Margin(0, 0, 4, 0).Gap(10).Padding(10, 10).Radius(10).AlignItems(ui.Center).Border(1, ui.Transparent)
+		row := ui.Row(c).Key(ru.ID).FillWidth().Margin(0, 0, 4, 0).Gap(10).Padding(10, 10).Radius(6).AlignItems(ui.Center).Border(1, ui.Transparent)
 		a.hoverable(row, sel)
 		if ru.Disabled {
 			row = row.Opacity(0.55)
@@ -148,7 +152,7 @@ func (a *App) ruleList(c *ui.Context) {
 			ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
 				ui.Text(c, ru.Title).FontSize(13).SingleLine()
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					a.bar(c, float64(st.Hits)/float64(maxHits), p.Accent.Alpha(0.7), 6).Grow(1)
+					a.bar(c, float64(st.Hits)/float64(maxHits), p.Muted.Alpha(0.6), 6).Grow(1)
 					a.txt(c, fmt.Sprintf("%d", st.Hits), 11, p.Muted).FontFeatures("tnum").Width(26)
 				})
 			})
@@ -190,7 +194,7 @@ func (a *App) ruleDetail(c *ui.Context) {
 					a.pill(c, "类别 "+r.Category, p.Muted, p.Shade)
 					a.pill(c, "级别 "+r.Level, p.Muted, p.Shade)
 					if r.ObserveOnly {
-						a.pill(c, "仅观察", p.Accent, p.AccentSoft)
+						a.pill(c, "仅观察", p.Muted, p.Shade)
 					}
 					if r.Edited {
 						a.pill(c, "已修改", p.Warn, p.WarnSoft)
@@ -213,7 +217,7 @@ func (a *App) ruleDetail(c *ui.Context) {
 			}
 		})
 		if locked {
-			ui.Row(c).FillWidth().Gap(8).Padding(10, 12).Radius(10).Background(p.Shade).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).FillWidth().Gap(8).Padding(10, 12).Radius(6).Background(p.Shade).AlignItems(ui.Center).Children(func() {
 				icon(c, "shield-check", 16, p.Text)
 				ui.Text(c, "X2 是安全底线规则：为了不让界面成为关掉危险检测的入口，它不能被停用，也没有可调阈值。").FontSize(12)
 			})
@@ -246,7 +250,7 @@ func (a *App) ruleDetail(c *ui.Context) {
 
 func (a *App) statCell(c *ui.Context, title, value, note string) {
 	p := a.pl
-	ui.Column(c).Grow(1).Basis(0).Gap(2).Padding(12, 14).Radius(12).Background(p.Card2).Children(func() {
+	ui.Column(c).Grow(1).Basis(0).Gap(2).Padding(12, 14).Radius(8).Background(p.Card2).Children(func() {
 		a.muted(c, title)
 		ui.Text(c, value).FontSize(24).FontWeight(700).FontFeatures("tnum")
 		a.txt(c, note, 11, p.Muted)
@@ -311,7 +315,7 @@ func (a *App) thresholdEditor(c *ui.Context, r *api.Rule) {
 	ui.Grid(c).Columns(2).GapX(14).GapY(10).FillWidth().Children(func() {
 		for _, f := range fields {
 			v := a.rl.draft[f.Path]
-			ui.Column(c).Gap(4).Padding(10, 12).Radius(10).Background(p.Card2).Children(func() {
+			ui.Column(c).Gap(4).Padding(10, 12).Radius(6).Background(p.Card2).Children(func() {
 				a.txt(c, f.Path, 12, p.Muted).Font("monospace")
 				if v == nil {
 					ui.Text(c, fmt.Sprint(f.Raw)).FontSize(13)

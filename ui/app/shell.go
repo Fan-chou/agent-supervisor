@@ -28,6 +28,8 @@ func (a *App) View(c *ui.Context) {
 		a.pl = lightPal()
 	}
 	c.SetTheme(theme(dark, a.pl))
+	w, _ := c.Size()
+	a.narrow = w < 1200 // 窄窗口：页头收起次要标签
 	for i, d := range pageDefs {
 		d := d
 		c.OnShortcut(ui.Cmd, ui.Key(int(ui.Key1)+i), func() { a.Goto(d.id) })
@@ -88,12 +90,11 @@ func (a *App) rail(c *ui.Context) {
 	p := a.pl
 	bar := c.TitleBar()
 	ui.Column(c).Width(80).Padding(float32(max(bar.Height, 0))+14, 0, 14, 0).AlignItems(ui.Center).Gap(6).
-		Background(p.Card).BorderWidth(0, 1, 0, 0).BorderColor(p.Line).Children(func() {
+		Background(p.Card2).BorderWidth(0, 1, 0, 0).BorderColor(p.Line).Children(func() {
 		ui.Box(c).Absolute().Top(0).Left(0).Right(0).Height(max(bar.Height, 0) + 8).DragWindow()
 		// 徽标：三态合一的小盾
-		ui.Box(c).Size(40, 40).Radius(12).Center().
-			Gradient(p.Accent, p.Accent.Mix(ui.Hex("#B04BFF"), 0.55), 135).
-			Children(func() { icon(c, "shield-check", 22, ui.Hex("#FFFFFF")) }).Label("agent-supervisor")
+		ui.Box(c).Size(32, 32).Radius(8).Center().Border(1, p.Line).
+			Children(func() { icon(c, "shield-check", 16, p.Text) }).Label("agent-supervisor")
 		ui.Box(c).Height(14)
 		for _, d := range pageDefs {
 			a.navItem(c, d)
@@ -106,21 +107,21 @@ func (a *App) rail(c *ui.Context) {
 func (a *App) navItem(c *ui.Context, d pageDef) {
 	p := a.pl
 	sel := a.page == d.id
-	it := ui.Column(c).Key(d.id).Width(64).Padding(9, 0, 7, 0).AlignItems(ui.Center).Gap(4).Radius(14).Cursor(ui.CursorPointer)
+	it := ui.Column(c).Key(d.id).Width(64).Padding(9, 0, 7, 0).AlignItems(ui.Center).Gap(4).Radius(8).Cursor(ui.CursorPointer)
 	if !sel && it.Hovered() {
 		it = it.Background(p.Shade)
 	}
 	it.Transition(ui.ElementTransition{Colors: true, Duration: 120 * time.Millisecond}).Children(func() {
 		if sel {
-			ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).PassThrough().Radius(14).Background(p.AccentSoft).
+			ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).PassThrough().Radius(8).Background(p.Shade).
 				Transition(ui.ElementTransition{Animation: &ui.Snappy, Match: navMatch{}})
 		}
 		fg := p.Muted
 		if sel {
-			fg = p.Accent
+			fg = p.Text
 		}
 		ui.Box(c).Children(func() {
-			icon(c, d.icon, 20, fg)
+			icon(c, d.icon, 17, fg)
 			if d.id == PageDanger && a.hasToday && a.today.Total > 0 {
 				ui.Row(c).Absolute().Top(-6).Right(-10).Padding(0, 5).Radius(8).Background(p.Danger).Children(func() {
 					ui.Text(c, fmt.Sprint(a.today.Total)).FontSize(10).FontWeight(700).TextColor(ui.Hex("#FFFFFF"))
@@ -173,10 +174,13 @@ func (a *App) header(c *ui.Context) {
 		}
 	}
 	bar := c.TitleBar()
-	ui.Row(c).FillWidth().Padding(18, 24+bar.Right, 14, 24).Gap(16).AlignItems(ui.Center).DragWindow().Children(func() {
+	ui.Row(c).FillWidth().Padding(14, 24+bar.Right, 14, 24).Margin(0, 0, 18, 0).Gap(16).AlignItems(ui.Center).DragWindow().
+		BorderWidth(0, 0, 1, 0).BorderColor(p.Line).Children(func() {
 		ui.Column(c).Gap(2).Grow(1).MinWidth(0).Children(func() {
-			ui.Text(c, d.title).FontSize(22).FontWeight(650)
-			a.txt(c, pageSubtitle[a.page], 12, p.Muted).SingleLine()
+			ui.Text(c, d.title).FontSize(17).FontWeight(600)
+			if !a.narrow {
+				a.txt(c, pageSubtitle[a.page], 12, p.Muted).SingleLine()
+			}
 		})
 		a.statusCluster(c)
 	})
@@ -187,7 +191,9 @@ func (a *App) statusCluster(c *ui.Context) {
 	ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 		if a.hasToday {
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				a.muted(c, "今日")
+				if !a.narrow {
+					a.muted(c, "今日")
+				}
 				a.triadCounts(c, a.today.Total, a.today.WouldHaveBlocked, a.today.Enforced)
 			})
 		}
@@ -221,11 +227,15 @@ func (a *App) statusCluster(c *ui.Context) {
 		}
 		for h, n := range st.AdapterFailures15m {
 			if n > 0 {
-				a.pill(c, fmt.Sprintf("⚠ %s 适配器失败 %d", h, n), p.Warn, p.WarnSoft)
+				txt := fmt.Sprintf("⚠ %s 适配器失败 %d", h, n)
+				if a.narrow {
+					txt = fmt.Sprintf("⚠ %s %d", h, n)
+				}
+				a.pill(c, txt, p.Warn, p.WarnSoft)
 			}
 		}
-		if a.Demo {
-			a.pill(c, "DEMO · 合成数据", ui.Hex("#FFFFFF"), ui.Hex("#7C3AED"))
+		if a.Demo && !a.narrow {
+			a.pill(c, "DEMO · 合成数据", p.Muted, p.Shade)
 		}
 		if a.permWarn != "" {
 			a.pill(c, "⚠ "+a.permWarn, p.Warn, p.WarnSoft)

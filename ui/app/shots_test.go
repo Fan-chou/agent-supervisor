@@ -18,7 +18,7 @@ import (
 )
 
 // 截图测试：把真实客户端指向进程内假守护进程（合成数据），用 Tester 离屏渲染。
-// 加 -shots=<目录> 时写出 PNG：wd-<页>-light / -dark，关键页再加 -gray（由亮度转换，用来验证三态在灰度下仍可分）。
+// 加 -shots=<目录> 时写出 PNG：ln-<页>-light / -dark，关键页再加 -gray（由亮度转换，用来验证三态在灰度下仍可分）。
 // 不设则只做断言。不发任何网络请求（只连本机 httptest）。
 
 var shotsDir = flag.String("shots", "", "写出截图 PNG 的目录")
@@ -65,8 +65,13 @@ func gray(src image.Image) image.Image {
 // shoot 渲染 浅色 + 深色（withGray 时再加一张灰度），返回深色 Tester 供断言。
 func shoot(t *testing.T, a *App, name string, withGray bool, must ...string) {
 	t.Helper()
+	shootSize(t, a, name, 1440, 900, withGray, must...)
+}
+
+func shootSize(t *testing.T, a *App, name string, w, h int, withGray bool, must ...string) {
+	t.Helper()
 	for _, dark := range []bool{false, true} {
-		tt := ui.NewTester(a.View, 1440, 900)
+		tt := ui.NewTester(a.View, w, h)
 		tt.SetDark(dark)
 		tt.Frame()
 		tt.Advance(800 * time.Millisecond) // 让进入动画走完再截图
@@ -75,9 +80,9 @@ func shoot(t *testing.T, a *App, name string, withGray bool, must ...string) {
 		if dark {
 			suffix = "-dark"
 		}
-		writePNG("wd-"+name+suffix, tt.Image())
+		writePNG("ln-"+name+suffix, tt.Image())
 		if withGray && !dark {
-			writePNG("wd-"+name+"-gray", gray(tt.Image()))
+			writePNG("ln-"+name+"-gray", gray(tt.Image()))
 		}
 		for _, m := range must {
 			if !tt.HasText(m) {
@@ -91,6 +96,16 @@ func TestShotOverview(t *testing.T) {
 	a, _ := newDemoApp(t)
 	a.Goto(PageOverview)
 	shoot(t, a, "overview", true, "总览", "危险操作", "已拦截", "进行中的会话")
+}
+
+// 总览下半部分（图表、环形图、健康卡）与最小窗口 960×600 的布局。
+func TestShotOverviewTallAndMin(t *testing.T) {
+	a, _ := newDemoApp(t)
+	a.Goto(PageOverview)
+	shootSize(t, a, "overview-tall", 1440, 1300, false, "规则命中 · 近 7 天", "Judge 与系统")
+	shootSize(t, a, "overview-min", 960, 600, false, "总览")
+	a.Goto(PageSessions)
+	shootSize(t, a, "sessions-min", 960, 600, false, "会话")
 }
 
 func TestShotSessions(t *testing.T) {
@@ -119,7 +134,7 @@ func TestShotTitleBar(t *testing.T) {
 	tt.Frame()
 	tt.Advance(800 * time.Millisecond)
 	tt.Frame()
-	writePNG("wd-titlebar-light", tt.Image())
+	writePNG("ln-titlebar-light", tt.Image())
 }
 
 func TestShotRules(t *testing.T) {
@@ -140,6 +155,33 @@ func TestShotRules(t *testing.T) {
 	a.putRule("X2", api.RuleEdit{Disabled: &off}, "x")
 	if a.rl.err == "" {
 		t.Fatal("X2 停用应被服务端拒绝并显示错误")
+	}
+}
+
+// 未保存的阈值输入不能被后台刷新冲掉；保存成功后才以服务端值重建草稿。
+func TestRuleDraftSurvivesRefresh(t *testing.T) {
+	a, srv := newDemoApp(t)
+	a.Goto(PageRules)
+	a.rl.sel = "T1"
+	r := a.selectedRule()
+	a.ensureDraft(r)
+	*a.rl.draft["ladder.H"] = 5
+	a.refresh()
+	a.refresh()
+	r = a.selectedRule()
+	a.ensureDraft(r)
+	if got := *a.rl.draft["ladder.H"]; got != 5 {
+		t.Fatalf("后台刷新冲掉了未保存的输入：%v", got)
+	}
+	// 保存：只发改过的键
+	a.putRule("T1", api.RuleEdit{Thresholds: BuildThresholdBody(map[string]float64{"ladder.H": 5})}, "ok")
+	if len(srv.Puts) != 1 || a.rl.err != "" {
+		t.Fatalf("puts=%v err=%q", srv.Puts, a.rl.err)
+	}
+	r = a.selectedRule()
+	a.ensureDraft(r)
+	if got := a.rl.orig["ladder.H"]; got != 5 {
+		t.Fatalf("保存后草稿应按服务端新值重建，orig=%v", got)
 	}
 }
 

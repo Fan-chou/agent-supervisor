@@ -22,25 +22,25 @@ type pal struct {
 
 func lightPal() pal {
 	return pal{Dark: false,
-		Bg: ui.Hex("#F4F2EC"), Card: ui.Hex("#FFFFFF"), Card2: ui.Hex("#F0EDE5"), Line: ui.Hex("#E3DFD3"),
-		Text: ui.Hex("#1D1B16"), Muted: ui.Hex("#6F6A5D"),
-		Accent: ui.Hex("#4F46E5"), AccentSoft: ui.RGBA(79, 70, 229, 0.10),
-		Danger: ui.Hex("#D93A1E"), DangerSoft: ui.RGBA(217, 58, 30, 0.10),
-		Would: ui.Hex("#9A6A00"), WouldSoft: ui.RGBA(154, 106, 0, 0.06),
-		Ink: ui.Hex("#1D1B16"), InkText: ui.Hex("#F7F5EF"),
-		Ok: ui.Hex("#2E8F62"), OkSoft: ui.RGBA(46, 143, 98, 0.12), Warn: ui.Hex("#B4640A"), WarnSoft: ui.RGBA(180, 100, 10, 0.12),
-		Shade: ui.RGBA(29, 27, 22, 0.05)}
+		Bg: ui.Hex("#FFFFFF"), Card: ui.Hex("#FFFFFF"), Card2: ui.Hex("#F6F6F7"), Line: ui.Hex("#E6E6E9"),
+		Text: ui.Hex("#1C1D21"), Muted: ui.Hex("#6E7179"),
+		Accent: ui.Hex("#5E6AD2"), AccentSoft: ui.RGBA(94, 106, 210, 0.08),
+		Danger: ui.Hex("#D93A1E"), DangerSoft: ui.RGBA(217, 58, 30, 0.05),
+		Would: ui.Hex("#9A6A00"), WouldSoft: ui.RGBA(154, 106, 0, 0.03),
+		Ink: ui.Hex("#1C1D21"), InkText: ui.Hex("#FFFFFF"),
+		Ok: ui.Hex("#6E7179"), OkSoft: ui.RGBA(0, 0, 0, 0.04), Warn: ui.Hex("#8A5A12"), WarnSoft: ui.RGBA(138, 90, 18, 0.06),
+		Shade: ui.RGBA(0, 0, 0, 0.045)}
 }
 
 func darkPal() pal {
 	return pal{Dark: true,
-		Bg: ui.Hex("#0E1013"), Card: ui.Hex("#171A1F"), Card2: ui.Hex("#1E2228"), Line: ui.Hex("#2A2F37"),
-		Text: ui.Hex("#E8E6E1"), Muted: ui.Hex("#8E9099"),
-		Accent: ui.Hex("#8B93FF"), AccentSoft: ui.RGBA(139, 147, 255, 0.14),
-		Danger: ui.Hex("#FF6A4D"), DangerSoft: ui.RGBA(255, 106, 77, 0.14),
-		Would: ui.Hex("#E8B84A"), WouldSoft: ui.RGBA(232, 184, 74, 0.07),
-		Ink: ui.Hex("#F2EFE8"), InkText: ui.Hex("#0E1013"),
-		Ok: ui.Hex("#4CC38A"), OkSoft: ui.RGBA(76, 195, 138, 0.14), Warn: ui.Hex("#E8A04A"), WarnSoft: ui.RGBA(232, 160, 74, 0.14),
+		Bg: ui.Hex("#0F1011"), Card: ui.Hex("#0F1011"), Card2: ui.Hex("#17181A"), Line: ui.Hex("#26272B"),
+		Text: ui.Hex("#E6E6E8"), Muted: ui.Hex("#8A8F98"),
+		Accent: ui.Hex("#8C95F5"), AccentSoft: ui.RGBA(140, 149, 245, 0.10),
+		Danger: ui.Hex("#FF6A4D"), DangerSoft: ui.RGBA(255, 106, 77, 0.07),
+		Would: ui.Hex("#E8B84A"), WouldSoft: ui.RGBA(232, 184, 74, 0.04),
+		Ink: ui.Hex("#EDEDEF"), InkText: ui.Hex("#0F1011"),
+		Ok: ui.Hex("#8A8F98"), OkSoft: ui.RGBA(255, 255, 255, 0.05), Warn: ui.Hex("#D9A25A"), WarnSoft: ui.RGBA(217, 162, 90, 0.08),
 		Shade: ui.RGBA(255, 255, 255, 0.05)}
 }
 
@@ -90,11 +90,7 @@ func (a *App) label(c *ui.Context, s string) ui.Element {
 // card 是白色圆角卡片（浅色带极淡阴影，深色带内描边高光）。
 func (a *App) card(c *ui.Context) ui.Element {
 	p := a.pl
-	e := ui.Column(c).Padding(16).Radius(14).Background(p.Card).Border(1, p.Line)
-	if p.Dark {
-		return e.InsetShadow(0, 1, 0, 0, ui.RGBA(255, 255, 255, 0.04))
-	}
-	return e.Shadow(0, 1, 2, 0, ui.RGBA(29, 27, 22, 0.05)).Shadow(0, 6, 18, -6, ui.RGBA(29, 27, 22, 0.08))
+	return ui.Column(c).Padding(18).Radius(8).Border(1, p.Line)
 }
 
 // hoverable 让元素悬停时背景换成 Card2，并平滑过渡颜色。
@@ -102,7 +98,7 @@ func (a *App) hoverable(e ui.Element, selected bool) ui.Element {
 	p := a.pl
 	switch {
 	case selected:
-		e = e.Background(p.AccentSoft).Border(1, p.Accent)
+		e = e.Background(p.Shade)
 	case e.Hovered():
 		e = e.Background(p.Card2)
 	}
@@ -110,8 +106,12 @@ func (a *App) hoverable(e ui.Element, selected bool) ui.Element {
 }
 
 func (a *App) pill(c *ui.Context, text string, fg, bg ui.Color) ui.Element {
-	return ui.Row(c).Padding(2, 8).Radius(999).Background(bg).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, text).FontSize(12).TextColor(fg).SingleLine()
+	// Linear 式：无底色，1px 细线 + 灰色文字；只有危险/告警色保留
+	if fg == a.pl.Ok || fg == a.pl.Accent || fg == a.pl.Text {
+		fg = a.pl.Muted
+	}
+	return ui.Row(c).Padding(1, 6).Radius(4).Border(1, a.pl.Line).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, text).FontSize(11).TextColor(fg).SingleLine()
 	})
 }
 
@@ -148,12 +148,12 @@ func (a *App) stateChip(c *ui.Context, k StateKind, text string) ui.Element {
 	p := a.pl
 	switch k {
 	case StDanger:
-		return ui.Row(c).Gap(4).Padding(2, 8, 2, 6).Radius(6).Background(p.DangerSoft).AlignItems(ui.Center).Children(func() {
+		return ui.Row(c).Gap(4).Padding(2, 4, 2, 2).AlignItems(ui.Center).Children(func() {
 			icon(c, "triangle-alert", 13, p.Danger)
 			ui.Text(c, text).FontSize(12).FontWeight(650).TextColor(p.Danger).SingleLine()
 		}).Label(text)
 	case StWould:
-		return ui.Row(c).Gap(4).Padding(1, 8, 1, 6).Radius(6).Border(1.5, p.Would).BorderStyle(ui.BorderDashed).AlignItems(ui.Center).Children(func() {
+		return ui.Row(c).Gap(4).Padding(1, 7, 1, 5).Radius(5).Border(1, p.Would).BorderStyle(ui.BorderDashed).AlignItems(ui.Center).Children(func() {
 			icon(c, "shield", 13, p.Would)
 			ui.Text(c, text).FontSize(12).Italic().TextColor(p.Would).SingleLine()
 		}).Label(text)
@@ -210,11 +210,8 @@ func (a *App) dangerChip(c *ui.Context, category string) ui.Element {
 // sevMark 是 ▲H ●M ·L：图形 + 文字 + 颜色。
 func (a *App) sevMark(c *ui.Context, sev string) ui.Element {
 	col := a.pl.Muted
-	switch sev {
-	case "H":
-		col = a.pl.Danger
-	case "M":
-		col = a.pl.Warn
+	if sev == "H" || sev == "M" {
+		col = a.pl.Text // 级别只用灰度 + 符号（▲ ● ·）
 	}
 	return ui.Text(c, SevMark(sev)).FontWeight(700).FontSize(12).TextColor(col).SingleLine()
 }
@@ -281,14 +278,14 @@ func (a *App) bigTile(c *ui.Context, k StateKind, n int64, title, sub string, on
 	p := a.pl
 	var fg ui.Color
 	var ic string
-	e := ui.Column(c).Grow(1).Basis(0).Padding(18, 20).Radius(16).Gap(2)
+	e := ui.Column(c).Grow(1).Basis(0).Padding(16, 18).Radius(8).Gap(2)
 	switch k {
 	case StDanger:
 		fg, ic = p.Danger, "triangle-alert"
-		e = e.Background(p.DangerSoft).Border(1, p.Danger.Alpha(0.35))
+		e = e.Border(1, p.Line)
 	case StWould:
 		fg, ic = p.Would, "shield"
-		e = e.Background(p.WouldSoft).Border(2, p.Would).BorderStyle(ui.BorderDashed)
+		e = e.Border(1.5, p.Would).BorderStyle(ui.BorderDashed)
 	default:
 		fg, ic = p.InkText, "shield-check"
 		e = e.Background(p.Ink).Border(1, p.Ink)
@@ -298,7 +295,7 @@ func (a *App) bigTile(c *ui.Context, k StateKind, n int64, title, sub string, on
 			icon(c, ic, 18, fg)
 			ui.Text(c, title).FontSize(13).FontWeight(650).TextColor(fg)
 		})
-		num := ui.Text(c, fmt.Sprint(n)).FontSize(44).FontWeight(700).TextColor(fg).FontFeatures("tnum")
+		num := ui.Text(c, fmt.Sprint(n)).FontSize(30).FontWeight(600).TextColor(fg).FontFeatures("tnum")
 		if k == StWould {
 			num.Italic()
 		}

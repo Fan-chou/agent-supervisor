@@ -103,7 +103,7 @@ func (a *App) inspector(c *ui.Context, onClose func()) {
 	for _, d := range ex.Decisions {
 		d := d
 		outcome, mode := ms(d, "outcome"), ms(d, "mode")
-		ui.Column(c).FillWidth().Gap(5).Padding(10).Radius(10).Background(p.Card2).Children(func() {
+		ui.Column(c).FillWidth().Gap(5).Padding(10).Radius(6).Background(p.Card2).Children(func() {
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "动作 "+Or(ms(d, "action"), "–")).FontSize(12).FontWeight(600)
 				a.outcomeChip(c, outcome, mode)

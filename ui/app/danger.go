@@ -114,9 +114,9 @@ func (a *App) dangerCard(c *ui.Context, e api.DangerEvent) {
 	p := a.pl
 	sel := a.dg.sel == e.HitID
 	k := stateOf(Str(e.Outcome))
-	card := ui.Row(c).Key(e.HitID).FillWidth().Margin(0, 0, 8, 0).Gap(14).Padding(14, 16).Radius(14).Background(p.Card).Border(1, p.Line).AlignItems(ui.Start)
+	card := ui.Row(c).Key(e.HitID).FillWidth().Margin(0, 0, 8, 0).Gap(14).Padding(14, 16).Radius(8).Border(1, p.Line).AlignItems(ui.Start)
 	if sel {
-		card = card.Background(p.AccentSoft).Border(1.5, p.Accent)
+		card = card.Background(p.Shade)
 	} else if card.Hovered() {
 		card = card.Background(p.Card2)
 	}

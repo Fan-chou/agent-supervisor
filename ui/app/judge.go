@@ -164,7 +164,7 @@ func (a *App) statCardJ(c *ui.Context, title, value, note string) {
 
 func (a *App) judgeRow(c *ui.Context, jc api.JudgeCall) {
 	p := a.pl
-	row := ui.Column(c).Key(jc.ID).FillWidth().Margin(0, 0, 6, 0).Gap(6).Padding(11, 12).Radius(12).Background(p.Card).Border(1, p.Line)
+	row := ui.Column(c).Key(jc.ID).FillWidth().Margin(0, 0, 6, 0).Gap(6).Padding(11, 12).Radius(8).Border(1, p.Line)
 	row = a.hoverable(row, a.jd.sel == jc.ID)
 	row.Children(func() {
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
@@ -181,7 +181,7 @@ func (a *App) judgeRow(c *ui.Context, jc api.JudgeCall) {
 				a.pill(c, r, p.Text, p.Shade).Font("monospace")
 			}
 			if jc.Sync {
-				a.pill(c, "同步", p.Accent, p.AccentSoft)
+				a.pill(c, "同步", p.Muted, p.Shade)
 			}
 			ui.Spacer(c)
 			a.txt(c, Or(Str(jc.Model), "–")+" · "+fmtMs(jc.LatencyMs), 11, p.Muted)
@@ -218,7 +218,7 @@ func (a *App) judgeDetail(c *ui.Context) {
 		}
 		if m := Str(d.MessageRaw); m != "" {
 			a.label(c, "给 agent 的话（原文）")
-			ui.Text(c, m).FontSize(13).Selectable().Padding(10, 12).Radius(10).Background(p.Card2).FillWidth()
+			ui.Text(c, m).FontSize(13).Selectable().Padding(10, 12).Radius(6).Background(p.Card2).FillWidth()
 		}
 		if d.Error != nil {
 			a.errLine(c, *d.Error)
@@ -306,8 +306,8 @@ func (a *App) routeCard(c *ui.Context, i int, r api.JudgeRouteRow) {
 			if r.Index != nil {
 				label = fmt.Sprint(*r.Index + 1)
 			}
-			ui.Box(c).Size(26, 26).Radius(13).Background(p.AccentSoft).Center().Children(func() {
-				ui.Text(c, label).FontSize(12).FontWeight(700).TextColor(p.Accent)
+			ui.Box(c).Size(26, 26).Radius(13).Background(p.Shade).Center().Children(func() {
+				ui.Text(c, label).FontSize(12).FontWeight(700).TextColor(p.Text)
 			}).Width(Or2(r.Index == nil, 44, 26)).Radius(13)
 			ui.Text(c, r.Use).FontSize(14).FontWeight(600)
 			icon(c, "arrow-right", 14, p.Muted)
@@ -330,7 +330,7 @@ func (a *App) routeCard(c *ui.Context, i int, r api.JudgeRouteRow) {
 			a.txt(c, "· "+why, 12, p.Muted)
 		}
 		if r.LastFailureID != nil {
-			ui.Row(c).FillWidth().Gap(8).Padding(8, 12).Radius(10).Background(p.WarnSoft).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).FillWidth().Gap(8).Padding(8, 12).Radius(6).Background(p.WarnSoft).AlignItems(ui.Center).Children(func() {
 				icon(c, "circle-alert", 14, p.Warn)
 				ui.Text(c, fmt.Sprintf("最近失败 #%d · %s · %s", *r.LastFailureID, Str(r.LastFailureStatus), Str(r.LastFailureError))).FontSize(12).TextColor(p.Warn)
 			})
@@ -363,7 +363,7 @@ func (a *App) judgeModelStats(c *ui.Context) {
 		return
 	}
 	for _, s := range rows {
-		ui.Column(c).FillWidth().Gap(5).Padding(10, 12).Radius(10).Background(p.Card2).Children(func() {
+		ui.Column(c).FillWidth().Gap(5).Padding(10, 12).Radius(6).Background(p.Card2).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Text(c, s.Model).Font("monospace").FontSize(13).FontWeight(600)
 				ui.Spacer(c)

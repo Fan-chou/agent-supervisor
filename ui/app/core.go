@@ -56,7 +56,8 @@ type App struct {
 	permWarn  string
 	reloadGen int
 
-	pl pal // 当前帧的调色板
+	pl     pal  // 当前帧的调色板
+	narrow bool // 窗口宽度 < 1200：收起次要信息
 
 	// 全局
 	status   *api.Status

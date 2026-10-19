@@ -210,9 +210,9 @@ func (a *App) groupHeader(c *ui.Context, g *Group) {
 func (a *App) sessionCard(c *ui.Context, s api.SessionSummary) {
 	p := a.pl
 	sel := a.ss.sel == s.SessionID
-	card := ui.Column(c).Key(s.SessionID).FillWidth().Margin(0, 0, 6, 0).Gap(6).Padding(11, 12).Radius(12).Background(p.Card).Border(1, p.Line)
+	card := ui.Column(c).Key(s.SessionID).FillWidth().Margin(0, 0, 6, 0).Gap(6).Padding(11, 12).Radius(8).Border(1, p.Line)
 	if sel {
-		card = card.Background(p.AccentSoft).Border(1.5, p.Accent)
+		card = card.Background(p.Shade)
 	} else if card.Hovered() {
 		card = card.Background(p.Card2)
 	}
@@ -259,7 +259,12 @@ func (a *App) sessionDetail(c *ui.Context) {
 			a.pill(c, Or(Str(s.Harness), "?"), p.Muted, p.Shade)
 			a.pill(c, map[string]string{"active": "进行中", "idle": "闲置", "ended": "已结束"}[s.State], p.Muted, p.Shade)
 			ui.Spacer(c)
-			a.triadCounts(c, int64(max(st.Danger, int(s.Danger.Total))), int64(max(st.Would, int(s.Danger.WouldHaveBlocked))), int64(max(st.Enforced, int(s.Danger.Enforced))))
+			tot, wd, enf := int64(max(st.Danger, int(s.Danger.Total))), int64(max(st.Would, int(s.Danger.WouldHaveBlocked))), int64(max(st.Enforced, int(s.Danger.Enforced)))
+			if a.narrow {
+				a.miniTriad(c, tot, wd, enf)
+			} else {
+				a.triadCounts(c, tot, wd, enf)
+			}
 		})
 		ui.Row(c).FillWidth().Gap(14).Children(func() {
 			a.txt(c, ShortPath(Str(s.Project)), 12, p.Muted)
@@ -274,9 +279,11 @@ func (a *App) sessionDetail(c *ui.Context) {
 			a.muted(c, "仅显示最近的记录")
 		}
 		ui.Spacer(c)
-		a.txt(c, "◌ 空心虚线 = 会拦（未生效）", 11, p.Would).Italic()
-		a.txt(c, "■ 实心 = 已拦截", 11, p.Text).FontWeight(700)
-		a.txt(c, "▲ 危险", 11, p.Danger).FontWeight(650)
+		if !a.narrow {
+			a.txt(c, "◌ 空心虚线 = 会拦（未生效）", 11, p.Would).Italic()
+			a.txt(c, "■ 实心 = 已拦截", 11, p.Text).FontWeight(700)
+			a.txt(c, "▲ 危险", 11, p.Danger).FontWeight(650)
+		}
 	})
 	if msg := a.errOf("timeline"); msg != "" {
 		a.errLine(c, msg)
@@ -391,9 +398,9 @@ func (a *App) callLine(c *ui.Context, cl *api.TimelineCall) {
 		ui.Text(c, Or(Str(cl.NormCmd), "–")).Font("monospace").FontSize(12).SingleLine().Grow(1).MinWidth(0)
 		switch cl.Status {
 		case "pending":
-			a.pill(c, "运行中", p.Accent, p.AccentSoft)
+			a.pill(c, "运行中", p.Muted, p.Shade)
 		case "fail":
-			a.pill(c, fmt.Sprintf("失败 exit %d", I64(cl.ExitCode)), p.Danger, p.DangerSoft)
+			a.pill(c, fmt.Sprintf("失败 exit %d", I64(cl.ExitCode)), p.Muted, p.Shade)
 		}
 		if cl.Mutating != nil && *cl.Mutating {
 			a.txt(c, "写", 11, p.Muted).Tooltip("会修改工作区")
@@ -405,16 +412,10 @@ func (a *App) hitCard(c *ui.Context, h *api.TimelineHit) {
 	p := a.pl
 	k := stateOf(Str(h.Outcome))
 	sel := a.ss.hitSel == h.HitID
-	card := ui.Column(c).Key(h.HitID).FillWidth().Gap(5).Padding(10, 12).Radius(10)
-	switch {
-	case h.Dangerous:
-		card = card.Background(p.DangerSoft)
-	default:
-		card = card.Background(p.Card)
-	}
+	card := ui.Column(c).Key(h.HitID).FillWidth().Gap(5).Padding(10, 12).Radius(6)
 	switch {
 	case sel:
-		card = card.Border(2, p.Accent)
+		card = card.Border(1.5, p.Text)
 	case k == StEnforced:
 		card = card.Border(2, p.Ink)
 	case k == StWould:
@@ -489,6 +490,8 @@ func (a *App) heartbeat(c *ui.Context) {
 			pt.Fill(ui.Rect{X: x, Y: base - 8, W: w, H: 8}, p.Line, 1)
 			for j, h := range ce.hits {
 				if j > 2 {
+					// 一格最多画 3 个标记；多出来的明说，不悄悄吞掉（命中在时间线里仍逐条列出）
+					pt.Text(x+w/2-8, base-12-4*11-6, fmt.Sprintf("+%d", len(ce.hits)-3), 10, p.Muted)
 					break
 				}
 				y := base - 12 - float32(j+1)*11

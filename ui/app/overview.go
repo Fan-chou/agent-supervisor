@@ -54,12 +54,10 @@ func (a *App) modeBanner(c *ui.Context) {
 		title, ic = "观察模式 · 监督只记录，不会拦截任何操作", "eye"
 		sub = fmt.Sprintf("今天标记了 %d 次危险操作；如果开启拦截，其中 %d 次会被拦下。目前真正被拦截：%d 次。", d.Total, d.WouldHaveBlocked, d.Enforced)
 	}
-	ui.Row(c).FillWidth().Padding(16, 20).Gap(16).Radius(16).AlignItems(ui.Center).
-		LinearGradient(ui.LinearGradient{Angle: 100, Oklab: true, Stops: []ui.GradientStop{{Color: p.AccentSoft, At: 0}, {Color: p.Card, At: 0.75}}}).
-		Border(1, p.Line).Children(func() {
-		ui.Box(c).Size(44, 44).Radius(22).Center().Background(p.Card).Border(1, p.Line).Children(func() { icon(c, ic, 22, p.Accent) })
+	ui.Row(c).FillWidth().Padding(2, 0).Gap(12).AlignItems(ui.Start).Children(func() {
+		icon(c, ic, 16, p.Muted).Margin(2, 0, 0, 0)
 		ui.Column(c).Gap(3).Grow(1).MinWidth(0).Children(func() {
-			ui.Text(c, title).FontSize(17).FontWeight(650)
+			ui.Text(c, title).FontSize(15).FontWeight(600)
 			a.txt(c, sub, 13, p.Muted)
 		})
 	})
@@ -107,7 +105,7 @@ func (a *App) stateDot(c *ui.Context, state string) {
 
 func (a *App) sessionCompact(c *ui.Context, s api.SessionSummary) {
 	p := a.pl
-	row := ui.Row(c).Key(s.SessionID).FillWidth().Gap(12).Padding(10, 12).Radius(10).AlignItems(ui.Center).Border(1, ui.Transparent)
+	row := ui.Row(c).Key(s.SessionID).FillWidth().Gap(12).Padding(10, 12).Radius(6).AlignItems(ui.Center).Border(1, ui.Transparent)
 	row = a.hoverable(row, false)
 	row.Children(func() {
 		ui.Box(c).Size(9, 9).Children(func() { a.stateDot(c, s.State) })
@@ -118,7 +116,9 @@ func (a *App) sessionCompact(c *ui.Context, s api.SessionSummary) {
 			})
 			a.txt(c, ShortPath(Str(s.Project))+" · "+Or(Str(s.Model), "模型未知"), 12, p.Muted).SingleLine()
 		})
-		a.hitBars(c, s)
+		if !a.narrow {
+			a.hitBars(c, s)
+		}
 		ui.Column(c).Gap(3).AlignItems(ui.End).Children(func() {
 			if s.Danger.Total > 0 {
 				a.triadCounts(c, s.Danger.Total, s.Danger.WouldHaveBlocked, s.Danger.Enforced)
@@ -143,7 +143,7 @@ func (a *App) hitBars(c *ui.Context, s api.SessionSummary) {
 			sev string
 			n   int64
 			col ui.Color
-		}{{"H", s.HitsH, p.Danger}, {"M", s.HitsM, p.Warn}, {"L", s.HitsL, p.Muted}} {
+		}{{"H", s.HitsH, p.Text}, {"M", s.HitsM, p.Text}, {"L", s.HitsL, p.Muted}} {
 			if x.n == 0 {
 				continue
 			}
@@ -174,7 +174,7 @@ func (a *App) overviewRecent(c *ui.Context) {
 	}
 	for _, e := range evs {
 		e := e
-		row := ui.Row(c).Key(e.HitID).FillWidth().Gap(10).Padding(8, 10).Radius(10).AlignItems(ui.Start).Border(1, ui.Transparent)
+		row := ui.Row(c).Key(e.HitID).FillWidth().Gap(10).Padding(8, 10).Radius(6).AlignItems(ui.Start).Border(1, ui.Transparent)
 		a.hoverable(row, false).Children(func() {
 			ui.Column(c).Gap(3).Grow(1).MinWidth(0).Children(func() {
 				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
@@ -195,7 +195,9 @@ func (a *App) overviewRecent(c *ui.Context) {
 
 func (a *App) ruleHasMore() bool { return len(a.dg.events) > 6 }
 
-var sevColors = func(p pal) [3]ui.Color { return [3]ui.Color{p.Muted.Alpha(0.45), p.Warn, p.Danger} }
+var sevColors = func(p pal) [3]ui.Color {
+	return [3]ui.Color{p.Muted.Alpha(0.25), p.Muted.Alpha(0.55), p.Text.Alpha(0.85)}
+}
 
 func (a *App) overviewRules(c *ui.Context) {
 	p := a.pl
@@ -249,10 +251,6 @@ func (a *App) overviewRules(c *ui.Context) {
 	}).Label("各规则命中数（按级别堆叠）").Height(170).Gap(6)
 }
 
-var catColors = func(p pal) []ui.Color {
-	return []ui.Color{p.Danger, p.Would, p.Accent, p.Ok, p.Muted}
-}
-
 func (a *App) overviewCategories(c *ui.Context) {
 	p := a.pl
 	a.label(c, "危险类别 · 近 7 天")
@@ -270,32 +268,18 @@ func (a *App) overviewCategories(c *ui.Context) {
 		a.emptyState(c, "shield-check", "近 7 天没有危险操作", "")
 		return
 	}
-	vals := make([]float64, len(cats))
-	for i, k := range cats {
-		vals[i] = float64(a.week.ByCategory[k])
+	hi := a.week.ByCategory[cats[0]] // 灰色横条 + 数字，不用环形图
+	if hi < 1 {
+		hi = 1
 	}
-	slices := chart.Pie(vals, 0.04)
-	cols := catColors(p)
-	ui.Row(c).FillWidth().Gap(18).AlignItems(ui.Center).Children(func() {
-		ui.Box(c).Size(132, 132).Label("危险类别分布").Draw(func(pt *ui.Painter, r ui.Rect) {
-			for i, s := range slices {
-				pt.FillPath(chart.Sector(r.X+66, r.Y+66, 42, 64, s), cols[i%len(cols)])
-			}
-		}).Children(func() {
-			ui.Column(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).Center().PassThrough().Children(func() {
-				ui.Text(c, fmt.Sprint(a.week.Total)).FontSize(24).FontWeight(700).FontFeatures("tnum")
-				a.muted(c, "次")
+	ui.Column(c).FillWidth().Gap(10).Children(func() {
+		for _, k := range cats {
+			ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, k).FontSize(13).Width(52)
+				a.bar(c, float64(a.week.ByCategory[k])/float64(hi), p.Muted.Alpha(0.55), 6).Grow(1)
+				ui.Text(c, fmt.Sprint(a.week.ByCategory[k])).FontSize(13).FontFeatures("tnum").Width(24).TextAlign(ui.End)
 			})
-		})
-		ui.Column(c).Gap(7).Grow(1).MinWidth(0).Children(func() {
-			for i, k := range cats {
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					a.dot(c, cols[i%len(cols)], 9)
-					ui.Text(c, k).FontSize(13).Grow(1)
-					ui.Text(c, fmt.Sprint(a.week.ByCategory[k])).FontSize(13).FontWeight(600).FontFeatures("tnum")
-				})
-			}
-		})
+		}
 	})
 }
 
