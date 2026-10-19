@@ -34,7 +34,7 @@ export interface DaemonOptions {
   idleEvictMs?: number;
   /** 测试用：不创建 UDS，只用 TCP。 */
   noUnix?: boolean;
-  /** /v1/stream 心跳间隔（毫秒），默认 15000；测试用。 */
+  /** /v1/stream 心跳间隔（毫秒），默认 5000（要小于 Bun 的 10 秒默认空闲超时，作双保险）；测试用。 */
   streamHeartbeatMs?: number;
   /** OpenCode 真机核对通过后才设为 true；默认 false = opencode 会话永不拦截（decisions #89）。 */
   opencodeEnforce?: boolean;
@@ -192,7 +192,7 @@ export class Daemon {
       }
       const prevMask = process.umask(0o077); // 创建 socket 的瞬间就是 0600，没有可被他人连接的窗口
       try {
-        const s = Bun.serve({ unix: this.socketPath, fetch: handler(true), maxRequestBodySize: 4 * 1024 * 1024 });
+        const s = Bun.serve({ unix: this.socketPath, fetch: handler(true), idleTimeout: 255, maxRequestBodySize: 4 * 1024 * 1024 });
         this.servers.push(s);
       } finally {
         process.umask(prevMask);
@@ -200,7 +200,7 @@ export class Daemon {
       chmodSync(this.socketPath, 0o600);
     }
     if (this.opts.port !== undefined) {
-      const s = Bun.serve({ hostname: "127.0.0.1", port: this.opts.port, fetch: handler(false), maxRequestBodySize: 4 * 1024 * 1024 });
+      const s = Bun.serve({ hostname: "127.0.0.1", port: this.opts.port, fetch: handler(false), idleTimeout: 255, maxRequestBodySize: 4 * 1024 * 1024 });
       this.port = s.port;
       this.servers.push(s);
     }

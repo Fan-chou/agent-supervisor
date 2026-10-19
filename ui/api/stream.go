@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// StreamIdleTimeout：超过这么久没收到任何消息（含心跳）就视为断开（§10.1，心跳每 15 秒一条）。
+// StreamIdleTimeout：超过这么久没收到任何消息（含心跳）就视为断开（§10.1，心跳每 5 秒一条）。
 const StreamIdleTimeout = 45 * time.Second
 
 // Stream 订阅 GET /v1/stream，用 NDJSON（每行一个 StreamMessage；HTTP 与 UDS 都显式要 ndjson，不解析 SSE）。

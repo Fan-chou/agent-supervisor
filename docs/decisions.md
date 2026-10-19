@@ -212,3 +212,4 @@
 152. **输入框聚焦时页面键位让路**：`typingIn` 登记上一帧是否有输入框（搜索框/阈值数字框）聚焦，聚焦时 J/K/↑↓/Enter 不响应，避免切走规则丢掉未保存的阈值草稿。MyGo 的 Enter/Exit 动效不会自动跟随系统「减弱动态效果」，所以右侧面板在 `reduce` 时改用无位移的纯淡入淡出（`panelMotion`）。
 153. **Windows 命令行**：不在 GUI 子系统的 exe 里 AttachConsole（cmd 不会等 GUI 程序，输出会和提示符交错，不可靠），改在 zip 里加控制台转发器 `sv.exe`（`ui/cmd/sv`，不内嵌后端）：先 `Agent Supervisor.exe extract` 同步后端，再转交解压出的 sv，继承标准输入输出并传递退出码。钩子仍直接指向 `sv-hook.exe`。传输仍是 unix socket（afunix）。
 154. **Windows 钩子路径**：`sv install claude|codex` 在 win32 上输出带引号的正斜杠路径（Claude Code 官方文档：命令串交给 Git Bash，无 Git Bash 才用 PowerShell）。Codex 的 Windows 执行方式未能核实官方文档。Windows 上界面不再检查 0600（无 POSIX 权限位）。
+155. **流不被空闲超时掐断**（Windows 实测 daemon.log：`request timed out after 10 seconds`）：两处 `Bun.serve` 都设 `idleTimeout: 255`（Bun 上限），流心跳默认从 15 秒降到 5 秒（小于 Bun 默认 10 秒），`/v1/stream` 里仍对该请求 `server.timeout(req, 0)`，三重保险。UI 侧断线后本来就会带 `since` 重连续传。心跳间隔以此条为准（覆盖 #85 的 15 秒）。

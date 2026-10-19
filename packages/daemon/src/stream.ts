@@ -1,7 +1,7 @@
 // GET /v1/stream（frontend-design §10.1）：只读的增量推送。
 // - 每条消息 {streamId, type, ts, …}；streamId 形如 "<epoch>.<n>"（epoch = 守护进程启动时间的 36 进制），n 单调递增。
 // - 有上限的环形缓冲：重连带 ?since=<streamId>（或 SSE 的 Last-Event-ID）即可续上；since 已被挤出、或来自上一个守护进程（epoch 不同）时，先发 `reset`，客户端丢弃增量状态并重新拉取各列表。
-// - 心跳默认每 15 秒一条；订阅过滤 ?sessions=a,b&types=event,hit。
+// - 心跳默认每 5 秒一条（必须小于 Bun 默认的 10 秒空闲超时）；订阅过滤 ?sessions=a,b&types=event,hit。
 // - 消息只带「发生了什么、在哪个会话」的轻量字段，细节让客户端用 REST 查（timeline?since_seq= 等），所以这里永远不放命令正文/输出。
 // - publish 永远不抛异常、不阻塞 hook 路径；慢订阅者（队列堆满）直接断开，它重连时会按游标补上或收到 reset。
 
@@ -143,7 +143,7 @@ export class StreamHub {
           }
           replaying = false;
           for (const m of pending) if (idx(m) > maxSent) (send(m), (maxSent = idx(m)));
-          const hb = this.opts.heartbeatMs ?? 15_000;
+          const hb = this.opts.heartbeatMs ?? 5_000;
           timer = setInterval(() => {
             try {
               send({ streamId: this.lastId, type: "heartbeat", ts: this.now() });

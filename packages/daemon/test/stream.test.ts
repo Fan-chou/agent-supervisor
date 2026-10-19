@@ -18,7 +18,7 @@ afterEach(async () => {
 async function boot(opts: { hb?: number; mode?: string } = {}) {
   const home = mkdtempSync(join(tmpdir(), "sv-st-"));
   dirs.push(home);
-  const d = await startDaemon({ cfg: resolveConfig({ mode: opts.mode ?? "shadow" }, defaultConfig()), home, dbPath: join(home, "state.db"), socketPath: join(home, "sock"), port: 0, streamHeartbeatMs: opts.hb ?? 15_000 });
+  const d = await startDaemon({ cfg: resolveConfig({ mode: opts.mode ?? "shadow" }, defaultConfig()), home, dbPath: join(home, "state.db"), socketPath: join(home, "sock"), port: 0, streamHeartbeatMs: opts.hb });
   daemons.push(d);
   return { d, home };
 }
@@ -199,4 +199,42 @@ describe("/v1/stream", () => {
     expect(((await r.json()) as any).ok).toBe(true);
     expect((d.store.db.query("SELECT COUNT(*) AS n FROM events").get() as { n: number }).n).toBeGreaterThan(0);
   });
+});
+
+describe("长连接不被空闲超时掐断", () => {
+  // 回归：Bun.serve 默认 10 秒空闲超时，而心跳曾是 15 秒，Windows 上流每 10 秒被断（日志 "request timed out after 10 seconds"）。
+  test("无任何业务事件时，流在 22 秒内保持打开并持续收到心跳（unix 与 HTTP 两个入口）", async () => {
+    const { d } = await boot(); // 默认心跳间隔
+    const ac = new AbortController();
+    const targets: Array<[string, RequestInit]> = [
+      ["http://localhost/v1/stream", { unix: d.socketPath!, signal: ac.signal } as RequestInit],
+      [`http://127.0.0.1:${d.port}/v1/stream?format=ndjson`, { signal: ac.signal, headers: { authorization: `Bearer ${d.token}` } }],
+    ];
+    const results = await Promise.all(
+      targets.map(async ([u, init]) => {
+        const res = await fetch(u, init);
+        expect(res.status).toBe(200);
+        const reader = res.body!.getReader();
+        const dec = new TextDecoder();
+        let heartbeats = 0;
+        let ended = false;
+        const deadline = Date.now() + 22_000;
+        while (Date.now() < deadline) {
+          const r = await Promise.race([reader.read(), new Promise<null>((ok) => setTimeout(() => ok(null), Math.max(1, deadline - Date.now())))]);
+          if (r === null) break;
+          if (r.done) {
+            ended = true;
+            break;
+          }
+          heartbeats += (dec.decode(r.value).match(/"type":"heartbeat"/g) ?? []).length;
+        }
+        return { heartbeats, ended };
+      }),
+    );
+    ac.abort();
+    for (const r of results) {
+      expect(r.ended).toBe(false);
+      expect(r.heartbeats).toBeGreaterThanOrEqual(3);
+    }
+  }, 40_000);
 });
