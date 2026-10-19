@@ -36,7 +36,8 @@ var pageDefs = []pageDef{
 // App 是界面的全部状态。视图只在主线程读写它；网络协程只经由 post 改它。
 type App struct {
 	Client *api.Client
-	Demo   bool // 数据来自内置的合成演示数据
+	Demo   bool   // 数据来自内置的合成演示数据
+	Notice string // 启动时的一次性提示（如后台是旧版本），显示为页头下的横幅
 
 	ctx  context.Context
 	post func(func()) // 在主线程执行（win.Update）；测试里直接执行

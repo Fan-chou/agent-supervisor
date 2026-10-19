@@ -4,17 +4,14 @@ package main
 // 并提供 CLI 透传：`sv-ui sv <args>`、`sv-ui hook <args>`。hook 配置直接指向解压后的 sv-hook 固定路径。
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"github.com/Fan-chou/agent-supervisor/ui/internal/bepath"
 	"io/fs"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"time"
 )
 
 var backendFiles = []struct {
@@ -43,6 +40,7 @@ func extractBackend() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	cleanOld(dir)
 	for _, f := range backendFiles {
 		data, err := fs.ReadFile(backendFS, f.src)
 		if err != nil {
@@ -72,7 +70,7 @@ func extractBackend() (string, error) {
 			werr = os.Chmod(tmp.Name(), mode)
 		}
 		if werr == nil {
-			werr = os.Rename(tmp.Name(), dst)
+			werr = replaceFile(tmp.Name(), dst)
 		}
 		if werr != nil {
 			os.Remove(tmp.Name())
@@ -121,40 +119,4 @@ func passthrough(args []string) bool {
 	}
 	os.Exit(0)
 	return true
-}
-
-// ensureDaemon：内嵌构建下，socket 连不上就解压并后台启动 `sv start`（日志写 bin 目录旁的 daemon.log）。
-func ensureDaemon(sock string) {
-	if !hasBackend {
-		return
-	}
-	if c, err := net.DialTimeout("unix", sock, 300*time.Millisecond); err == nil {
-		c.Close()
-		return
-	}
-	dir, err := extractBackend()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "解压后端失败:", err)
-		return
-	}
-	logf, _ := os.OpenFile(filepath.Join(filepath.Dir(dir), "daemon.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	cmd := exec.Command(filepath.Join(dir, exeName("sv")), "start")
-	cmd.Env = backendEnv(dir)
-	cmd.Stdin = bytes.NewReader(nil)
-	if logf != nil {
-		cmd.Stdout, cmd.Stderr = logf, logf
-	}
-	detach(cmd)
-	if err := cmd.Start(); err != nil {
-		fmt.Fprintln(os.Stderr, "启动守护进程失败:", err)
-		return
-	}
-	_ = cmd.Process.Release()
-	for i := 0; i < 30; i++ { // 最多等 3 秒
-		if c, err := net.DialTimeout("unix", sock, 100*time.Millisecond); err == nil {
-			c.Close()
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
 }

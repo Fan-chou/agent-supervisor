@@ -37,6 +37,7 @@ func main() {
 	flag.Parse()
 
 	var cl *api.Client
+	notice := ""
 	switch {
 	case *demo:
 		srv := fake.New()
@@ -65,7 +66,7 @@ func main() {
 		}
 		cl = api.NewHTTP(*url, tok)
 	default:
-		ensureDaemon(*sock)
+		notice = ensureDaemon(*sock)
 		if w := api.CheckPerm(*sock); w != "" {
 			fmt.Fprintln(os.Stderr, "警告:", w)
 		}
@@ -83,6 +84,7 @@ func main() {
 			}
 		})
 		a.Demo = *demo
+		a.Notice = notice
 		win = mygo.NewWindow(mygo.WindowOptions{
 			Title:    "agent-supervisor",
 			Width:    1440,

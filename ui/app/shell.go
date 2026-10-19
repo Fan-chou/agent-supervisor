@@ -64,6 +64,9 @@ func (a *App) View(c *ui.Context) {
 			} else if m.LastErr != "" && m.State != Live && m.State != Connecting {
 				a.banner(c, a.pl.Warn, a.pl.WarnSoft, "实时推送已断开："+m.LastErr+map[bool]string{true: "；数据每 5 秒轮询刷新", false: ""}[m.State == Degraded])
 			}
+			if a.Notice != "" && !stale {
+				a.banner(c, a.pl.Warn, a.pl.WarnSoft, a.Notice)
+			}
 			ui.Column(c).Grow(1).MinHeight(0).Opacity(map[bool]float32{true: 0.5, false: 1}[stale]).Children(func() {
 				ui.Column(c).Key(a.page).Grow(1).MinHeight(0).
 					Transition(ui.ElementTransition{Enter: &ui.Motion{Y: 10}, Duration: 220 * time.Millisecond}).
