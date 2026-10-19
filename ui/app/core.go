@@ -76,6 +76,9 @@ type App struct {
 	fresh  map[string]time.Time
 	reduce bool
 
+	// 输入框聚焦登记（nav.go typingIn）：typing 是上一帧的结果，typingNext 是本帧正在登记的
+	typing, typingNext bool
+
 	pal palState // 命令面板（palette.go）
 
 	ss sessionsPage

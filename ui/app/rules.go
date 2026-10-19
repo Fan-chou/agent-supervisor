@@ -355,7 +355,7 @@ func (a *App) thresholdEditor(c *ui.Context, r *api.Rule) {
 				if f.Value != float64(int64(f.Value)) {
 					lo, hi, step = 0, 1, 0.05
 				}
-				ui.NumberInput(c, v, lo, hi, step).Label("阈值 " + f.Path).FillWidth()
+				a.typingIn(ui.NumberInput(c, v, lo, hi, step).Label("阈值 " + f.Path).FillWidth())
 				if *v != a.rl.orig[f.Path] {
 					changed[f.Path] = *v
 					a.txt(c, fmt.Sprintf("原值 %g", a.rl.orig[f.Path]), 11, p.Warn)

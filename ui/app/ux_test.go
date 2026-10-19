@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -291,6 +292,109 @@ func TestJudgeAndRulesKeys(t *testing.T) {
 	}
 }
 
+// 规则页：阈值输入框有焦点时，J/K/↑/↓ 不能切换规则（否则未保存的草稿会丢）。
+func TestRulesKeysDoNotEatThresholdDraft(t *testing.T) {
+	a, _, tt := newUX(t)
+	a.Goto(PageRules)
+	a.rl.sel = "T1"
+	tt.Frame()
+	tt.Advance(300 * time.Millisecond)
+	tt.Frame()
+	r0, _ := tt.Find("阈值 ladder.H")
+	tt.ClickAt(r0.X+30, r0.Y+r0.H/2)
+	tt.Frame()
+	tt.Type("7")
+	tt.Frame()
+	if a.rl.draft["ladder.H"] == nil {
+		t.Fatal("草稿应存在")
+	}
+	for _, k := range []struct {
+		key ui.Key
+		s   string
+	}{{ui.KeyJ, "j"}, {ui.KeyK, "k"}, {ui.KeyDown, ""}, {ui.KeyUp, ""}} {
+		tt.TypeKey(0, k.key, k.s)
+		tt.Frame()
+		if a.rl.sel != "T1" {
+			t.Fatalf("输入框有焦点时 %v 不应切换规则：sel=%s typing=%v next=%v focused=%v", k.key, a.rl.sel, a.typing, a.typingNext, tt.Focused("阈值 ladder.H"))
+		}
+	}
+}
+
+// 会话搜索框里打 j/k 不能换会话。
+func TestSessionSearchTypingDoesNotSwitch(t *testing.T) {
+	a, _, tt := newUX(t)
+	a.Goto(PageSessions)
+	a.selectSession(fake.SessA)
+	tt.Frame()
+	if err := tt.Click("搜索会话"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Type("jk")
+	tt.Frame()
+	if a.ss.sel != fake.SessA || a.ss.query != "jk" {
+		t.Fatalf("输入应进搜索框：sel=%s query=%q", a.ss.sel, a.ss.query)
+	}
+}
+
+// 系统「减弱动态效果」：高亮不淡出、不请求逐帧动画；面板不做位移。
+func TestReduceMotion(t *testing.T) {
+	a, _, tt := newUX(t)
+	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
+	a.fresh = map[string]time.Time{}
+	a.seen = nil
+	a.noteList("k", []string{"1"})
+	a.noteList("k", []string{"1", "2"})
+	tt.Frame()
+	if !a.reduce {
+		t.Fatal("应读到 ReduceMotion")
+	}
+	if a.freshness("k", "2") != 1 {
+		t.Fatalf("减弱动态效果时高亮固定强度：%v", a.freshness("k", "2"))
+	}
+	if m := a.panelMotion(); m.Enter == nil || m.Enter.X != 0 || m.Exit.X != 0 {
+		t.Fatalf("面板不应位移：%+v", m)
+	}
+}
+
+// 端到端：fake 推一条新的危险事件 → 刷新 → 危险页出现该行，并处于「新事件」高亮。
+func TestLiveEventEndToEnd(t *testing.T) {
+	a, srv := newDemoApp(t)
+	a.Goto(PageDanger)
+	a.LoadAll()
+	tt := ui.NewTester(a.View, 1440, 900)
+	tt.Frame()
+	if tt.HasText("rm -rf /tmp/live-0") {
+		t.Fatal("还没推送，不应出现")
+	}
+	srv.AddLive()
+	a.refresh()
+	tt.Frame()
+	if !tt.HasText("rm -rf /tmp/live-0") {
+		t.Fatal("新危险事件应出现在危险页")
+	}
+	var id int64
+	for _, e := range a.dg.events {
+		if Str(e.Subject) == "rm -rf /tmp/live-0" {
+			id = e.HitID
+		}
+	}
+	if id == 0 || a.freshness("danger", fmt.Sprint(id)) <= 0 {
+		t.Fatalf("新事件应处于高亮：id=%d fresh=%v", id, a.fresh)
+	}
+	if !tt.FramePending() {
+		t.Fatal("高亮期间应请求动画帧")
+	}
+	tt.Advance(3 * time.Second)
+	a.SetNow(func() time.Time { return time.Now().Add(time.Hour) })
+	tt.Frame()
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+	if tt.FramePending() {
+		t.Fatal("高亮过期后不应再请求帧")
+	}
+}
+
 // 命令面板打开时，页面不响应 J/K。
 func TestPalettePausesPageKeys(t *testing.T) {
 	a, _, tt := newUX(t)
@@ -442,11 +546,17 @@ func TestPerfFlood5000(t *testing.T) {
 		t.Errorf("稳态帧过慢：%v", worst)
 	}
 	var sw time.Duration
+	vis0, _ := a.ss.tl.Visible()
 	for i := 0; i < 20; i++ {
 		d := timeIt("滚动一帧", func() { tt.Scroll(700, 500, 0, -400); tt.Frame() })
 		if d > sw {
 			sw = d
 		}
+	}
+	if vis1, _ := a.ss.tl.Visible(); vis1 == vis0 {
+		t.Errorf("滚动没有真的移动列表（可见首行仍是 %d），帧耗时数字无意义", vis0)
+	} else {
+		t.Logf("滚动前后可见首行 %d → %d（共 %d 行）", vis0, vis1, len(a.ss.rows))
 	}
 	if sw > 200*time.Millisecond {
 		t.Errorf("滚动帧过慢：%v", sw)

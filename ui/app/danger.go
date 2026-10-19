@@ -101,7 +101,7 @@ func (a *App) dangerView(c *ui.Context) {
 				if seg.Changed() {
 					a.dg.sel = 0
 				}
-				ui.SearchField(c, &a.dg.query).Width(240).Label("搜索危险事件")
+				a.typingIn(ui.SearchField(c, &a.dg.query).Width(240).Label("搜索危险事件"))
 				ui.Spacer(c)
 				a.muted(c, fmt.Sprintf("%d / %d 条 · 近 7 天", len(evs), len(a.dg.events)))
 			})

@@ -45,6 +45,7 @@ func (a *App) View(c *ui.Context) {
 	if !a.pal.open && a.panelOpen() && c.Shortcut(0, ui.KeyEscape) {
 		a.closePanel()
 	}
+	a.typing, a.typingNext = a.typingNext, false
 	a.tickFresh(c)
 	defer a.palette(c)
 	if a.toast != "" {

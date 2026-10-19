@@ -7,9 +7,19 @@ import (
 // 键盘导航约定（各页一致）：J / ↓ 下一条，K / ↑ 上一条，Enter 打开详情，Esc 关闭。
 // 命令面板打开时，这些键归面板，页面不响应。
 
+// typingIn 登记「输入框有焦点」。页面键位（J/K/↑↓/Enter）在输入框聚焦时一律让给输入框：
+// 数字框的 ↑↓ 用来加减，搜索框里的字母是在打字；否则会切走规则、丢掉未保存的阈值草稿。
+// 键位在页面开头处理，读的是上一帧的登记结果。
+func (a *App) typingIn(e ui.Element) ui.Element {
+	if e.FocusWithin() {
+		a.typingNext = true
+	}
+	return e
+}
+
 // moveDir 读取本帧的上下移动：+1 下、-1 上、0 无。
 func (a *App) moveDir(c *ui.Context) int {
-	if a.pal.open {
+	if a.pal.open || a.typing {
 		return 0
 	}
 	switch {
@@ -23,7 +33,7 @@ func (a *App) moveDir(c *ui.Context) int {
 
 // enterPressed 本帧是否按了 Enter（面板打开时不响应）。
 func (a *App) enterPressed(c *ui.Context) bool {
-	return !a.pal.open && c.Shortcut(0, ui.KeyEnter)
+	return !a.pal.open && !a.typing && c.Shortcut(0, ui.KeyEnter)
 }
 
 // stepIndex 在 [0,n) 内从 cur 走 dir 步；cur<0（还没有游标）时，向下落在第 0 项，向上落在最后一项。
@@ -77,7 +87,7 @@ const (
 func (a *App) sidePanel(c *ui.Context, right, bottom float32, body func()) {
 	p := a.pl
 	ui.Box(c).Key("side-panel").Absolute().Top(0).Right(right).Bottom(bottom).Width(panelW).
-		Radius(10).Background(p.Card).Border(1, p.Line).Padding(14).Transition(slideFromRight).Children(func() {
+		Radius(10).Background(p.Card).Border(1, p.Line).Padding(14).Transition(a.panelMotion()).Children(func() {
 		ui.Scroll(c).Fill().Children(func() {
 			ui.Column(c).FillWidth().Gap(8).Children(body)
 		})

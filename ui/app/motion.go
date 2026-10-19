@@ -15,7 +15,15 @@ const (
 
 var enterFromTop = ui.ElementTransition{Enter: &ui.Motion{Y: -10}, Colors: true, Duration: motionDur, Ease: ui.EaseOut}
 
-// slideFromRight 是右侧详情面板的进出：从右滑入并淡入，退出时反向（减弱动态效果时只淡入淡出）。
+// slideFromRight 是右侧详情面板的进出：从右滑入并淡入，退出时反向。
+// MyGo 不会自动替 Enter/Exit 降级，减弱动态效果时由 panelMotion 改成纯淡入淡出。
+func (a *App) panelMotion() ui.ElementTransition {
+	if a.reduce {
+		return ui.ElementTransition{Enter: &ui.Motion{}, Exit: &ui.Motion{}, Duration: motionDur, Ease: ui.EaseOut}
+	}
+	return slideFromRight
+}
+
 var slideFromRight = ui.ElementTransition{
 	Enter: &ui.Motion{X: 36}, Exit: &ui.Motion{X: 36},
 	Duration: motionDur, Ease: ui.EaseOut,

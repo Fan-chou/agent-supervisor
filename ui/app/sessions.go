@@ -196,7 +196,7 @@ func (a *App) loadTimeline() {
 // sessionsKeys：J/K 在左侧会话列表里换会话；Shift+J/K 在时间线的命中之间移动游标（面板已开时右侧跟着切）；
 // Enter 打开游标命中的检视面板。
 func (a *App) sessionsKeys(c *ui.Context) {
-	if a.pal.open {
+	if a.pal.open || a.typing {
 		return
 	}
 	t := &a.ss
@@ -295,7 +295,7 @@ func (a *App) sessionList(c *ui.Context) {
 		}
 	}
 	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.SearchField(c, &a.ss.query).Grow(1).Label("搜索会话")
+		a.typingIn(ui.SearchField(c, &a.ss.query).Grow(1).Label("搜索会话"))
 		ui.Segmented(c, &a.ss.scope, "进行中", "全部")
 	})
 	if msg := a.errOf("sessions"); msg != "" {
