@@ -29,7 +29,7 @@ describe("sv opencode-probe-project（测试项目准备；decisions #113）", (
   test("文件清单：只项目级配置（opencode.json 的 plugins 指向项目内插件）；脚本用项目内 SV_HOME；observe 不设 ENFORCE；探针脚本只在 probe 里；任何文件都不引用 ~/.config", () => {
     const files = probeFiles({ repoRoot: REPO, pluginSource: "// plugin" });
     const by = Object.fromEntries(files.map((f) => [f.path, f]));
-    expect(JSON.parse(by["opencode.json"].content)).toEqual({ plugins: ["./.opencode/plugins/agent-supervisor.ts"] });
+    expect(JSON.parse(by["opencode.json"].content)).toEqual({});
     expect(by[".opencode/plugins/agent-supervisor.ts"].content).toContain("// plugin");
     for (const n of ["start-daemon.sh", "run-observe.sh", "run-probe.sh", "report.sh"]) {
       expect(by[n].mode).toBe(0o755);

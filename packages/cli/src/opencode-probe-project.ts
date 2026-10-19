@@ -42,7 +42,8 @@ export function probeFiles(o: { repoRoot: string; pluginSource: string }): Probe
   return [
     { path: PROBE_MARKER, mode: 0o644, content: "agent-supervisor OpenCode 真机核对用的测试项目；可以整个删除。\n" },
     // 登记方式：@opencode/schema 的 Config 有 `plugins: Array<string | {package, options?}>`，本地路径由 @opencode/plugin 的 localSource(spec, directory) 解析。配置文件名 opencode.json 是 OpenCode 的惯例，类型里没有——第一次启动看 dump 里有没有 setup 记录来确认。
-    { path: "opencode.json", mode: 0o644, content: JSON.stringify({ plugins: ["./.opencode/plugins/agent-supervisor.ts"] }, null, 2) + "\n" },
+    // 真机 2.0.32 确认：plugins 指向 .ts 文件会警告「plugin path must be a directory」；插件从 .opencode/plugins/ 目录自动加载，所以这里不登记（空配置）。
+    { path: "opencode.json", mode: 0o644, content: "{}\n" },
     { path: ".opencode/plugins/agent-supervisor.ts", mode: 0o644, content: o.pluginSource + "\n" },
     { path: "README.md", mode: 0o644, content: "# OpenCode 核对用测试项目\n\n一个小项目，用来让 agent 做点无害的事。步骤见 agent-supervisor 仓库的 docs/opencode-verify.md §3。\n" },
     { path: "start-daemon.sh", mode: 0o755, content: sh(`# 守护进程（shadow：只记录，永不拦截），数据目录在本项目的 .sv-home\nexec ${sv} start --home "$SV_HOME" --mode shadow`) },
@@ -59,7 +60,7 @@ export function probePlan(dir: string, repoRoot: string): string[] {
   return [
     `测试项目：${d}（只在这里创建文件；不碰 ~/.config/opencode 或任何全局配置；OpenCode 仍会按自己的规则读取全局配置，我们不改它）`,
     "将创建：",
-    `  ${PROBE_MARKER}  opencode.json（plugins 指向本项目 .opencode/plugins/agent-supervisor.ts）  .opencode/plugins/agent-supervisor.ts（sv install opencode 同一份插件）`,
+    `  ${PROBE_MARKER}  opencode.json（空配置，不登记插件）  .opencode/plugins/agent-supervisor.ts（sv install opencode 同一份插件，OpenCode 从该目录自动加载）`,
     "  README.md  start-daemon.sh  run-observe.sh  run-probe.sh  report.sh   并在项目里 git init + 一次提交（让 git reset --hard 之类的 X2 测试有一次性仓库）",
     "数据目录是 <项目>/.sv-home（守护进程库、dump、hook.json 都在这里，不用 ~/.agent-supervisor）。",
     "真机步骤（Jack 在场时，逐步手动做；我不会自己跑）：",

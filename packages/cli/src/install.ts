@@ -109,10 +109,10 @@ export async function opencodeInstallSnippet(): Promise<string> {
   return [
     "# OpenCode V2 接入（只打印，不改任何文件；本命令不会读取或写入 ~/.config/opencode 等用户目录）",
     "# 0) 只支持 OpenCode 2 的插件接口（V2）。下面的插件已对照 @opencode/plugin 2.0.32 的类型（promise API：Plugin.define({id, setup(context)})，import { Plugin } from \"@opencode/plugin\"）核对过钩子名和事件字段，**但还没有在真机上验证**：",
-    "#    钩子名、事件字段、SystemPart、Permission.Effect、Location、session.prompt 参数、interrupt 事件均已对照 vendor 的 @opencode/{plugin,schema,ai,client} 2.0.32 核实；触发顺序、各工具的参数形态、插件登记方式（配置文件名/字段）只能真机确认（见 docs/opencode-verify.md）；形态对不上时插件会 fail-open（什么都不做）。",
+    "#    钩子名、事件字段、SystemPart、Permission.Effect、Location、session.prompt 参数、interrupt 事件均已对照 vendor 的 @opencode/{plugin,schema,ai,client} 2.0.32 核实，并已在真机 2.0.32 上跑过一轮（见 docs/opencode-verify.md）；Esc 中断事件还没验证；形态对不上时插件会 fail-open（什么都不做）。",
     "#    真机核对请用专门的测试项目：`sv opencode-probe-project <目录>`（只项目级配置，不碰 ~/.config/opencode）。",
     "# 1) 启动守护进程：sv start   （默认 mode=shadow：只记录，永不拦截）",
-    "# 2) 把下面的文件保存为 OpenCode 的插件文件（例如 <opencode 配置目录>/plugins/agent-supervisor.ts），并按文档把它登记到 OpenCode 配置里。",
+    "# 2) 把下面的文件保存为 <项目>/.opencode/plugins/agent-supervisor.ts（OpenCode 2.0.32 真机确认：从该目录自动加载；不要在 opencode.json 的 plugins 里写 .ts 路径，会警告 plugin path must be a directory；停用 = 删掉这个文件）。",
     "#    它读 ~/.agent-supervisor/hook.json 找守护进程（只读我们自己的目录）；SV_HOME 可改位置。",
     "# 3) 真机核对载荷：以 SV_OPENCODE_DUMP=1 启动 OpenCode，脱敏样本写到 ~/.agent-supervisor/dumps/opencode-<日期>.jsonl；再用 `sv opencode-report <文件>` 汇总。",
     "# 4) 拦截策略：核对通过前**只观察不拦截**（Jack 的决定）。插件内含本地 X2（用 tool 执行前的参数），但 deny 需要 hook.json 的 mode=enforce **并且** SV_OPENCODE_ENFORCE=1 同时满足；",

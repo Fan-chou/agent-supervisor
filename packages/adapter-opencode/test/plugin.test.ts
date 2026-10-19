@@ -317,6 +317,28 @@ describe("OpenCode 插件（真实执行打印出来的源码）", () => {
     await hooks.get("permission.evaluate")!(mine);
     expect(mine.effect).toBe("deny");
   });
+  test("批量调用 BBBEEA（真机见过）：危险调用不是最后一个 before 也能被精确绑定；没有对应 before 的 evaluate 放行", async () => {
+    startFake();
+    openGate();
+    const port = server!.port;
+    server!.stop(true);
+    writeFileSync(join(home, "hook.json"), JSON.stringify({ mode: "enforce", port }));
+    const { ctx, hooks } = fakeCtx();
+    await setup(ctx);
+    const b = hooks.get("tool.execute.before")!;
+    await b({ sessionID: "s1", id: "c1", tool: "shell", input: { command: "git reset --hard" } });
+    await b({ sessionID: "s1", id: "c2", tool: "shell", input: { command: "ls" } });
+    await b({ sessionID: "s1", id: "c3", tool: "read", input: { path: "a.ts" } });
+    const ev = async (id: string) => {
+      const e: any = { sessionID: "s1", action: "x", resources: [], source: { type: "tool", messageID: "m", id } };
+      await hooks.get("permission.evaluate")!(e);
+      return e.effect;
+    };
+    expect(await ev("c1")).toBe("deny");
+    expect(await ev("c2")).toBeUndefined();
+    expect(await ev("c3")).toBeUndefined();
+    expect(await ev("c-no-before")).toBeUndefined();
+  });
   test("注册返回被拒绝的 Promise → 不抛、不产生未处理的 rejection，其余 hook 照常注册；setup 返回清理函数，调用后注销全部 hook", async () => {
     const f = fakeCtx({ asyncReject: ["session.context"] });
     const cleanup = await setup(f.ctx);

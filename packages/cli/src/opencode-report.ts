@@ -122,6 +122,20 @@ export function analyze(recs: DumpRecord[], now: number = Date.now()): Report {
     const s = sessionOf(r);
     bySession.set(s, [...(bySession.get(s) ?? []), { tag, tool: typeof r.sample?.tool === "string" ? r.sample.tool : undefined }]);
   }
+  // 按调用 id 对账（真机：批量调用会出现 BBBEEA，EA 也出现过）：evaluate.source.id ↔ execute.before/after 的 id
+  const firstB = new Map<string, number>();
+  const toolOf = new Map<string, string>();
+  const evals: { id: string; n: number }[] = [];
+  for (const r of recs) {
+    if (r.phase !== "enter") continue;
+    const sm = r.sample;
+    if (r.hook === "evaluate" && sm?.source?.type === "tool" && typeof sm.source.id === "string") evals.push({ id: sm.source.id, n: r.n });
+    if ((r.hook === "execute.before" || r.hook === "execute.after") && typeof sm?.id === "string") {
+      if (r.hook === "execute.before" && !firstB.has(sm.id)) firstB.set(sm.id, r.n);
+      if (typeof sm.tool === "string") toolOf.set(sm.id, sm.tool);
+    }
+  }
+  const orphanE = evals.filter((x) => !((firstB.get(x.id) ?? Infinity) < x.n));
   const noEvaluateTools: string[] = []; // 没有触发 evaluate 的调用用的工具名（B→A）
   for (const seq of bySession.values()) {
     let cur = "";
@@ -160,7 +174,20 @@ export function analyze(recs: DumpRecord[], now: number = Date.now()): Report {
   check("enough_calls", complete >= 5, `完整工具调用 ${complete} 次（至少 5 次）`);
   const evaluates = Object.entries(o).reduce((a, [k, v]) => a + (k.match(/E/g)?.length ?? 0) * v, 0);
   const eFirst = n(/^E/);
-  check("before_precedes_evaluate", evaluates >= 1 && eFirst === 0, evaluates === 0 ? "没有观察到任何 permission.evaluate" : eFirst ? `${eFirst} 次 evaluate 先于 execute.before` : `${evaluates} 次 evaluate，全部在 execute.before 之后`);
+  if (evals.length > 0) {
+    // evaluate 带了调用 id：只要求「写类/未知工具」的 evaluate 都有同 id 的 execute.before 在前（本地 X2 靠它绑定）；
+    // 只读工具的孤立 evaluate 无害（没有 X2 要判）。批量调用的 BBBEEA 因此通过。
+    const bad = orphanE.filter((x) => {
+      const t = toolOf.get(x.id);
+      return !t || MUTATING_TOOLS.has(t.toLowerCase());
+    });
+    const harmless = orphanE.length - bad.length;
+    check(
+      "before_precedes_evaluate",
+      bad.length === 0,
+      bad.length ? `${bad.length} 次写类/未知工具的 evaluate 找不到先于它的同 id execute.before（本地 X2 绑不上）` : `${evals.length} 次 evaluate 按调用 id 对账：写类工具全部有 execute.before 在前${harmless ? `；另有 ${harmless} 次只读工具的 evaluate 没有先行的 before（无害）` : ""}`,
+    );
+  } else check("before_precedes_evaluate", evaluates >= 1 && eFirst === 0, evaluates === 0 ? "没有观察到任何 permission.evaluate" : eFirst ? `${eFirst} 次 evaluate 先于 execute.before` : `${evaluates} 次 evaluate，全部在 execute.before 之后`);
   const mutNoE = noEvaluateTools.filter((t) => MUTATING_TOOLS.has(t.toLowerCase()));
   check("mutating_calls_have_evaluate", mutNoE.length === 0, mutNoE.length ? `写类工具的调用没有触发 evaluate（deny 覆盖不到）：${[...new Set(mutNoE)].join("、")}` : "写类工具的调用都触发了 evaluate");
   const probe = rep.denyObserved.filter((d) => d.effect === "deny" && typeof d.message === "string" && d.message.includes("探针"));

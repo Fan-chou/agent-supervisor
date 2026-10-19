@@ -209,7 +209,12 @@ async function setup(ctx: Any): Promise<(() => Promise<void>) | void> {
   const registrations: Any[] = [];
   let promptHooked = false;
   // 每个会话一份状态，全在内存里；重启即清空
-  const preCall = new Map<string, { callId: string; deny?: string; done: boolean; ts: number }>(); // sessionID → 最近一次 tool.before（本地 X2 的拦截绑定到它）
+  // 批量调用在真机上会出现 BBBEEA：同一会话有多个 before 在 evaluate 之前，所以按 (会话, 调用 id) 存，evaluate 用 source.id 精确取；
+  // lastCall 只在 evaluate 没带 source.id 时当退路（取该会话最近一次 before）。
+  type Pre = { callId: string; deny?: string; done: boolean; ts: number };
+  const preCall = new Map<string, Pre>();
+  const lastCall = new Map<string, Pre>();
+  const preKey = (s: string, id: string) => `${s}\u0000${id}`;
   const lastUser = new Map<string, string>(); // sessionID → 上次上报的 user 消息 id/文本
   const repeat = new Map<string, { text: string; left: number }>(); // context 建议的重复注入（inject_repeat：连续 2 次请求，或到下一次工具调用结束）
 
@@ -244,11 +249,10 @@ async function setup(ctx: Any): Promise<(() => Promise<void>) | void> {
   // 来源有二：本地 X2（tool.before 时判好，绑定到那次调用）和守护进程 outbox 里的 block/ask；两者都要过 enforceOpen() 这道闸。
   await hook(ctx?.permission, "evaluate", async (e) => {
     const s = sid(e);
-    let pc = s ? preCall.get(s) : undefined;
-    // evaluate 的 source 是 {type:"tool", messageID, id}（permission.d.ts 的 AssertInput）：id 就是工具调用 id，能把这次评估精确绑到某次 tool.before；
-    // 没有 source 时退回「该会话最近一次 tool.before」。两者对不上 = 不是我们判过的那次调用，放行。
+    // evaluate 的 source 是 {type:"tool", messageID, id}（真机确认）：id 就是工具调用 id，把这次评估精确绑到某次 tool.before；
+    // 没有 source 时退回「该会话最近一次 tool.before」。对不上（例如 evaluate 先于 before，真机见过 EA）= 不是我们判过的调用，放行。
     const srcId = e?.source?.type === "tool" && typeof e.source.id === "string" ? e.source.id : undefined;
-    if (pc && srcId !== undefined && pc.callId !== srcId) pc = undefined;
+    const pc = s ? (srcId !== undefined ? preCall.get(preKey(s, srcId)) : lastCall.get(s)) : undefined;
     // 核对用的探针（SV_OPENCODE_PROBE=<子串>，默认关）：命中时拒绝，用来验证 deny/message/异步 hook 在真机上是否有效。只在 Jack 明确设置时才会拦。
     const probe = process.env.SV_OPENCODE_PROBE;
     if (probe && JSON.stringify(sample(e)).includes(probe)) {
@@ -325,7 +329,11 @@ async function setup(ctx: Any): Promise<(() => Promise<void>) | void> {
       } catch {
         /* X2 出错 = 放行 */
       }
-      preCall.set(s, { callId: callId(e) ?? "", deny, done: false, ts: Date.now() });
+      const now = Date.now();
+      for (const [k, v] of preCall) if (now - v.ts > 120_000) preCall.delete(k); // 没等到 after 的残留
+      const pre: Pre = { callId: callId(e) ?? "", deny, done: false, ts: now };
+      preCall.set(preKey(s, pre.callId), pre);
+      lastCall.set(s, pre);
     }
     await post({ event: "tool.before", sessionID: s, directory: dirOf(e, ctx), callID: callId(e), tool, args }, BEFORE_TIMEOUT_MS);
   });
@@ -333,8 +341,10 @@ async function setup(ctx: Any): Promise<(() => Promise<void>) | void> {
     const s = sid(e);
     if (s) {
       repeat.delete(s); // 下一次工具调用结束，旧建议不再重复
-      const pc = preCall.get(s);
+      const id = callId(e);
+      const pc = id !== undefined ? preCall.get(preKey(s, id)) : lastCall.get(s);
       if (pc) pc.done = true; // 这次调用已经结束：绑定在它上面的本地拦截作废（宁可漏拦，不误拦）
+      if (id !== undefined) preCall.delete(preKey(s, id));
     }
     const status = e?.status === "error" || e?.error ? "error" : "completed";
     await post({ event: "tool.after", sessionID: s, directory: dirOf(e, ctx), callID: callId(e), tool: toolName(e), args: plain(e?.args ?? e?.input ?? e?.params), status, result: plain(e?.result ?? e?.output), error: plain(e?.error) }, EVENT_TIMEOUT_MS);
