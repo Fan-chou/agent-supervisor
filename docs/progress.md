@@ -236,3 +236,20 @@
 - 可用 API：守护进程只读查询接口（sessions、events、hits、judge-calls[/csv]、rules、config[/validate]、danger/events、runs[/{id}]、replays[/{id}]、eval/reports、实时流 stream）；唯一可写 `PUT /v1/rules/{id}`。契约在 `packages/daemon/src/schemas.ts`。
 - 黄金样例：`test/fixtures/api/`（由 `test/fixtures/gen.ts` 生成，`packages/daemon/test/golden.test.ts` 校验）；Go 侧结构体生成与对应黄金测试要在 MyGo 仓库做。
 - 前端先用 `sv start` + 回放（`sv replay test/fixtures/claude --judge=mock --log`）灌数据即可开发，不需要真实 agent。
+
+## 前端 run1：MyGo UI0–UI6（decisions #125–136）
+**做了什么**（`ui/`，独立 Go module，未 push）
+- UI0：MyGo v0.5.5 在本机编译、离屏渲染、10 万行表格 57ms、中日文与 ⚠◌■ 符号显示正常；结论写进 `frontend-design.md` §11.1（实测/文档分开标注）。
+- 契约：`bun run gen:ui` 由 schemas.ts 生成 `ui/api/types_gen.go`；`ui/api` 客户端（UDS/HTTP+token、错误分类、NDJSON 流、`PutRule`）；黄金样例契约测试通过。
+- 界面（`ui/app`）：顶栏状态 + 连接状态机 → 回放结果 → 实时会话 → 事件时间线 → 规则统计 → judge 裁决/路由 → 规则配置（唯一可写，X2 不可停用）。三态视觉区分，深浅色截图逐页检查过。
+- `ui/cmd/sv-ui`：真实窗口入口（`-sock/-url/-token-file/-demo/-quit-after`）；`go build` 产物 17 MB（`ui/bin/`，已 gitignore）。
+- `ui/fake`：合成数据假守护进程，供测试/截图/`-demo`。
+**测试**：`go -C ui test ./...` 通过（契约、关键逻辑、阈值往返、runner 断线重连、各页截图断言）；`bun test` 1086 通过 / 0 失败。截图：`go -C ui test ./app -shots=<dir>`（`-shots` 只对 app 包有效）。
+**偏离设计**：无日期选择器（#134）；CSV 导出、子 agent 展开延后（#132、#135）；路由页是推断（#128）。
+**未验证**：没有开过真实窗口（运行 GUI 需 Jack 批准）；VoiceOver、IME、文本选择复制、系统深浅色切换、空窗口内存均未验证。
+**需要 Jack 决定 / 做的**
+1. 在本机运行 `go -C ui build -o bin/sv-ui ./cmd/sv-ui && ui/bin/sv-ui -demo` 看真实窗口效果、中文输入、VoiceOver；再 `sv start` 后直接 `ui/bin/sv-ui` 连真守护进程。
+2. 是否让后端补 `/v1/judge/routes` 与 Status 的 judge 健康/日志大小字段（#128）。
+3. 是否要 CSV 导出入口、子 agent 展开（#132、#135）。
+4. 打包形式（签名/公证/与 Bun 守护进程的安装方式）尚未做。
+5. 确认无日期选择器的取舍（#134）。

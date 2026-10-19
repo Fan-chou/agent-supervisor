@@ -265,7 +265,9 @@ type Run struct {
 
 // StatusJudge 对应 schema StatusJudge。
 type StatusJudge struct {
-	Enabled bool `json:"enabled"`
+	Enabled bool   `json:"enabled"`
+	BaseUrl string `json:"base_url"`
+	Model   string `json:"model"`
 }
 
 // Status 对应 schema Status。

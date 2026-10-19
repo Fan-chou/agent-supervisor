@@ -176,3 +176,17 @@
 ## 2026-10-19 08:49：Jack 的决定
 123. **前端 UI（MyGo）延后（08:49）**：Jack 2026-10-19 08:49: frontend UI (MyGo) deferred to later; this phase only wraps up backend + CLI。
 124. **`mutating_calls_have_evaluate` 也按调用 id 对账（run2，Jack 08:50）**：并行批次里一次调用的 B/E/A 会被别的调用穿插，按先后分组会把 shell 误判成"没有 evaluate"。evaluate 带 `source.id` 时：已结束（有 after）的写类调用必须有同 id 的 evaluate；没有 id 的老样本仍用顺序分组。run2 真机确认：write 调用的 evaluate 动作报的是 `edit`（不影响按 id 绑定）。
+
+## 2026-10-19：前端阶段（MyGo，`ui/`）
+125. **前端 = MyGo（egoist/mygo v0.5.5）原生界面，`ui/` 是独立 Go module**（Jack 09:03）。入口 `ui/cmd/sv-ui`，只走守护进程本地鉴权 API（默认 `~/.agent-supervisor/sock`，或 `-url` + `-token-file`），不读 SQLite/transcript/.env。UI0 结论见 `frontend-design.md` §11.1。
+126. **Go 结构体从 `schemas.ts` 生成**（`bun run gen:ui` → `ui/api/types_gen.go`，勿手改）。为让结构体与黄金样例一致，在 schemas.ts 补了可选字段（Run.thresholds_hash/overrides_json、Status.db/outbox/judge、StreamMessage 附加字段、Rule.source/observeOnly、JudgeCallDetail 展开 JudgeCall 属性并加 request/response）。oneOf 的 `TimelineEntry` 手写（`ui/api/timeline.go`）。契约测试：黄金样例 DisallowUnknownFields + 子集往返 + 必填字段。
+127. **三态只看 `Decision.outcome`**：`would_have_*` = ◌ 本应拦截，`blocked`/`asked` = ■ 已拦截，危险（severity=dangerous）= ⚠；三者形状+颜色都不同。界面不自己重新判断危险。
+128. **API 缺口，界面如实降级**：Status 没有 judge 健康/日志大小字段，顶栏不显示；没有 `/v1/judge/routes`，路由页用 config + judge stats 推断，标注「推断」。需要时由后端补。
+129. **会话状态 active/idle/ended 由前端按 last_event 时间推断**（阈值是通用常量，不按模型分支）。
+130. **刷新策略**：流推送只置 dirty 标记，10 Hz 合并后一次重绘；另有 5 秒兜底轮询。连接状态机 connecting → live → reconnecting → degraded（5 秒轮询）→ offline，退避有上限。`reset` 消息丢弃增量并重拉。
+131. **假守护进程 `ui/fake`**（全合成数据）：契约/截图/runner 测试用，也是 `sv-ui -demo` 的数据源；测试不发外网请求。
+132. **子 agent 展开延后**：时间线先显示会话本身的事件，`Children` 客户端方法已有。
+133. **规则配置是唯一写路径**：`PUT /v1/rules/{id}`，只含改过的阈值键；X2 的停用按钮不可用。草稿在后台刷新时不会被覆盖。
+134. **无日期选择器**：用预设时间范围 Select（MyGo 无日历控件）。
+135. **CSV 导出延后**（守护进程已有 `judge-calls/csv`，界面入口待做）。
+136. **表格列必须唯一 ID/Title**（MyGo 重复会 panic）；选中行的弱化文字走 `pal.dim(selected)` 保证对比度。
